@@ -7,8 +7,7 @@
 extern "C" {
 #endif
 
-JNIEXPORT jobject JNICALL Java_org_chdb_jdbc_ChdbJniUtil_executeQuery(JNIEnv *, jclass, jstring);
-//JNIEXPORT jstring JNICALL Java_org_chdb_jdbc_ChdbJniUtil_executeQuery(JNIEnv *, jclass, jstring);
+JNIEXPORT jobject JNICALL Java_org_chdb_jdbc_ChdbJniUtil_executeQuery(JNIEnv *, jclass, jstring, jstring);
 
 #ifdef __cplusplus
 }

@@ -48,19 +48,21 @@ local_result_v2 * queryToBuffer(
 }
 
 
-JNIEXPORT jobject JNICALL Java_org_chdb_jdbc_ChdbJniUtil_executeQuery(JNIEnv *env, jclass clazz, jstring query) {
+JNIEXPORT jobject JNICALL Java_org_chdb_jdbc_ChdbJniUtil_executeQuery(JNIEnv *env, jclass clazz, jstring query, jstring format) {
     // 1. Convert Java String to C++ string
 
     std::cout << "call func: ChdbJniUtil_executeQuery!" << std::endl;
 
     const char *queryStr = env->GetStringUTFChars(query, nullptr);
+    const char *formatStr = env->GetStringUTFChars(format, nullptr);
+
     if (queryStr == nullptr) {
         std::cerr << "Error: Failed to convert Java string to C++ string" << std::endl;
         return nullptr;
     }
 
     // 2. Call the native query function
-    local_result_v2 *result = queryToBuffer(queryStr);
+    local_result_v2 *result = queryToBuffer(queryStr, formatStr);
 
    //  3. Release the Java string resources
     env->ReleaseStringUTFChars(query, queryStr);

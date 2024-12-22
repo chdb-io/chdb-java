@@ -1,33 +1,38 @@
 package org.chdb.jdbc;
 
-import java.io.*;
+import org.apache.arrow.util.AutoCloseables;
+import org.apache.arrow.vector.BigIntVector;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.ipc.ArrowStreamReader;
+import org.chdb.jdbc.memory.ArrowMemoryManger;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Reader;
 import java.math.BigDecimal;
 import java.net.URL;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.sql.*;
-import java.util.ArrayList;
 import java.util.Calendar;
-import java.util.List;
 import java.util.Map;
 
 public class ChdbResultSet implements ResultSet {
-  private LocalResultV2 result;
   private int cursor = -1;
-  private List<String> records;
+  private int loadedRows = 0;
+  private ArrowStreamReader arrowStreamReader;
+  private VectorSchemaRoot batch;
+  private int batchCursor;
 
   public ChdbResultSet(LocalResultV2 result) throws IOException {
-    this.result = result;
-    this.records = new ArrayList<>();
-    parseData(result.getBuf());
+      parseData(result.getBuf());
   }
 
   private void parseData(ByteBuffer buffer) throws IOException {
-    BufferedReader reader = new BufferedReader(new InputStreamReader(new ByteArrayInputStream(toByteArray(buffer)), StandardCharsets.UTF_8));
-    String line;
-    while ((line = reader.readLine()) != null) {
-      records.add(line);
-    }
+    ByteArrayInputStream inputStream = new ByteArrayInputStream(toByteArray(buffer));
+    this.arrowStreamReader = new ArrowStreamReader(inputStream, ArrowMemoryManger.ROOT_ALLOCATOR);
   }
 
   private byte[] toByteArray(ByteBuffer buffer) {
@@ -38,24 +43,54 @@ public class ChdbResultSet implements ResultSet {
 
   @Override
   public boolean next() throws SQLException {
-    if (cursor < records.size() - 1) {
+    if (cursor < loadedRows - 1) {
       cursor++;
+      batchCursor++;
       return true;
     }
-    return false;
+    try {
+        if (arrowStreamReader.loadNextBatch()) {
+          AutoCloseables.close(batch);
+          batch = arrowStreamReader.getVectorSchemaRoot();
+          loadedRows += batch.getRowCount();
+          cursor++;
+          batchCursor = 0;
+          return true;
+        } else {
+          return false;
+        }
+    } catch (Exception e) {
+        throw new SQLException(e);
+    }
   }
 
-  private String getValue(int columnIndex) throws SQLException {
-    if (cursor < 0 || cursor >= records.size()) {
-      throw new SQLException("Cursor out of bounds");
+  /**
+   * Checks to see whether the given index is a valid column number and throws
+   * an <code>SQLException</code> if it is not. The index is out of bounds
+   * if it is less than <code>1</code> or greater than the number of
+   * columns in this rowset.
+   * <p>
+   * This method is called internally by the <code>getXXX</code> and
+   * <code>updateXXX</code> methods.
+   *
+   * @param idx the number of a column, must be between <code>1</code>
+   *            and the number of rows in this rowset
+   * @throws SQLException if the given index is out of bounds
+   */
+  private void checkColumnIndex(int idx) throws SQLException {
+    if (idx < 1 || idx > getColumnCount()) {
+      throw new SQLException("Column index " + idx + " is out of bound[1, " + getColumnCount() +"]");
     }
+  }
 
-    return records.get(cursor);
+  private int getColumnCount() {
+    return batch.getSchema().getFields().size();
   }
 
   @Override
   public String getString(int columnIndex) throws SQLException {
-    return getValue(columnIndex);
+    checkColumnIndex(columnIndex);
+    return batch.getVector(columnIndex - 1).getObject(batchCursor).toString();
   }
 
   @Override
@@ -75,12 +110,22 @@ public class ChdbResultSet implements ResultSet {
 
   @Override
   public int getInt(int columnIndex) throws SQLException {
-    return Integer.parseInt(getValue(columnIndex));
+    checkColumnIndex(columnIndex);
+    FieldVector vector = batch.getVector(columnIndex - 1);
+    if (vector instanceof IntVector) {
+      return ((IntVector) vector).get(batchCursor);
+    }
+    throw new SQLException("Column [" + vector.getField() + "] is not int");
   }
 
   @Override
-  public long getLong(int i) throws SQLException {
-    throw new SQLException("This method has not been implemented yet.");
+  public long getLong(int columnIndex) throws SQLException {
+    checkColumnIndex(columnIndex);
+    FieldVector vector = batch.getVector(columnIndex);
+    if (vector instanceof BigIntVector) {
+      return ((BigIntVector) vector).get(batchCursor);
+    }
+    throw new SQLException("Column [" + vector.getField() + "] is not long");
   }
 
   @Override
@@ -135,7 +180,11 @@ public class ChdbResultSet implements ResultSet {
 
   @Override
   public void close() throws SQLException {
-    // No resources to close
+      try {
+          AutoCloseables.close(batch, arrowStreamReader);
+      } catch (Exception e) {
+          throw new SQLException(e);
+      }
   }
 
   @Override

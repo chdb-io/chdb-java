@@ -24,3 +24,18 @@ hs_err_pid*
 replay_pid*
 /cmake-build-debug/
 *.lst
+
+##############################
+## Maven
+##############################
+target/
+
+##############################
+## IntelliJ
+##############################
+out/
+.idea/
+.idea_modules/
+*.iml
+*.ipr
+*.iws

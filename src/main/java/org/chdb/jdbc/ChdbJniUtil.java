@@ -5,8 +5,11 @@ public class ChdbJniUtil {
     System.loadLibrary("chdbjni");
   }
 
-  public static native LocalResultV2 executeQuery(String query);
-//  public static native String executeQuery(String query);
+  public static LocalResultV2 executeQuery(String query) {
+    return executeQuery(query, "CSV");
+  }
+
+  public static native LocalResultV2 executeQuery(String query, String format);
 
 //  public static void main(String[] args) {
 //    String query = "SELECT 1";

@@ -12,7 +12,7 @@ public class ChdbStatement implements Statement {
 
   @Override
   public ResultSet executeQuery(String sql) throws SQLException {
-    LocalResultV2 result = ChdbJniUtil.executeQuery(sql);
+    LocalResultV2 result = ChdbJniUtil.executeQuery(sql, "ArrowStream");
     System.out.println("sql: " + sql);
     try {
       return new ChdbResultSet(result);
