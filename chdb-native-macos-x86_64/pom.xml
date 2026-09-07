@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.chdb</groupId>
+    <artifactId>chdb-java-parent</artifactId>
+    <version>26.7.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>chdb-native-macos-x86_64</artifactId>
+  <packaging>jar</packaging>
+  <name>chDB native runtime for macos-x86_64</name>
+  <description>
+    chDB engine (libchdb) and JNI shim for macos-x86_64, plus the manifest, checksums, licences and SBOM
+    that describe them. Depends on chdb-jdbc, so declaring only this package on a macos-x86_64 machine
+    yields a complete runtime (work plan section 4.1).
+  </description>
+
+  <properties>
+    <chdb.platform.id>macos-x86_64</chdb.platform.id>
+    <chdb.platform.os>macos</chdb.platform.os>
+    <chdb.platform.arch>x86_64</chdb.platform.arch>
+    <chdb.jni.suffix>dylib</chdb.jni.suffix>
+    <!-- Set by the platform-build profile below; the engine and shim are produced by
+         scripts/build-native.sh rather than by Maven. -->
+    <chdb.native.staging>${project.build.directory}/native</chdb.native.staging>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.chdb</groupId>
+      <artifactId>chdb-jdbc</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <resources>
+      <!--
+        The two shared libraries and their metadata are staged by scripts/build-native.sh into
+        target/native/META-INF/chdb/native/<os>/<arch>/ and picked up here. They are not in
+        src/ because they are ~350 MB of build output and must never enter git.
+      -->
+      <resource>
+        <directory>${chdb.native.staging}</directory>
+        <filtering>false</filtering>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>org.chdb.runtime.macos.x86_64</Automatic-Module-Name>
+              <chDB-Platform>macos-x86_64</chDB-Platform>
+              <chDB-Engine-Version>${chdb.engine.version}</chDB-Engine-Version>
+              <chDB-JNI-ABI-Version>${chdb.jni.abi.version}</chDB-JNI-ABI-Version>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

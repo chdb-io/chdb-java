@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.chdb</groupId>
+    <artifactId>chdb-java-parent</artifactId>
+    <version>26.7.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>chdb-bom</artifactId>
+  <packaging>pom</packaging>
+  <name>chDB Java BOM</name>
+  <description>Keeps chdb-jdbc and every chdb-native-* platform package on the same version.</description>
+
+  <!--
+    Work plan section 4.3: one binding release publishes chdb-jdbc, all four platform
+    packages and this BOM at the identical version, even when a platform's bytes did not
+    change, so a consumer can never assemble a mixed-version runtime.
+  -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.chdb</groupId>
+        <artifactId>chdb-jdbc</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.chdb</groupId>
+        <artifactId>chdb-native-macos-aarch64</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.chdb</groupId>
+        <artifactId>chdb-native-macos-x86_64</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.chdb</groupId>
+        <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.chdb</groupId>
+        <artifactId>chdb-native-linux-aarch64-gnu</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>

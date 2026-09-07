@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.chdb</groupId>
+    <artifactId>chdb-java-parent</artifactId>
+    <version>26.7.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>chdb-jdbc</artifactId>
+  <packaging>jar</packaging>
+  <name>chDB JDBC Driver</name>
+  <description>
+    Pure-Java JDBC driver and native loader for the embedded chDB engine. Contains no native
+    code: add the chdb-native-&lt;platform&gt; package for the platform you run on.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <!--
+            javac -h emits org_chdb_internal_ChdbNative.h, which the CMake build compiles in
+            so a Java/native signature drift is caught at build time rather than as an
+            UnsatisfiedLinkError in a user's JVM (work plan section 5.2).
+          -->
+          <compilerArgs combine.children="append">
+            <arg>-h</arg>
+            <arg>${project.build.directory}/native-headers</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <!-- Named-module consumers get a stable module name without a module-info,
+                   which would raise the compilation floor above Java 11. -->
+              <Automatic-Module-Name>org.chdb.jdbc</Automatic-Module-Name>
+              <Implementation-Version>${project.version}</Implementation-Version>
+              <chDB-Engine-Version>${chdb.engine.version}</chDB-Engine-Version>
+              <chDB-JNI-ABI-Version>${chdb.jni.abi.version}</chDB-JNI-ABI-Version>
+              <chDB-Java-API-Version>${chdb.java.api.version}</chDB-Java-API-Version>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

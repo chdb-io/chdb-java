@@ -2,46 +2,128 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+  <modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.chdb</groupId>
-    <artifactId>chdb-java</artifactId>
-    <version>1.0-SNAPSHOT</version>
+  <groupId>org.chdb</groupId>
+  <artifactId>chdb-java-parent</artifactId>
+  <version>26.7.0.1-SNAPSHOT</version>
+  <packaging>pom</packaging>
 
-    <properties>
-        <maven.compiler.source>22</maven.compiler.source>
-        <maven.compiler.target>22</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    </properties>
+  <name>chDB Java Binding (parent)</name>
+  <description>JDBC driver and native platform packages for the embedded chDB engine.</description>
+  <url>https://github.com/chdb-io/chdb-java</url>
 
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+    </license>
+  </licenses>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <!-- Java 11 is the V1 floor (work plan section 2.1). Never raise without a plan change. -->
+    <maven.compiler.release>11</maven.compiler.release>
+
+    <!--
+      Engine baseline. These three coordinates are the single source of truth for
+      which chDB Core release this binding is built and tested against; scripts/engine.properties
+      mirrors them for the shell/CMake side. Changing engine.version requires a new
+      Maven version (work plan section 4.3) and a full platform re-test.
+    -->
+    <chdb.engine.version>26.7.0</chdb.engine.version>
+    <chdb.binding.revision>1</chdb.binding.revision>
+    <!-- Bumped only on an incompatible change to the Java <-> JNI shim contract. -->
+    <chdb.jni.abi.version>1</chdb.jni.abi.version>
+    <!-- Bumped only on an incompatible change to the public Java API. -->
+    <chdb.java.api.version>1</chdb.java.api.version>
+
+    <junit.version>5.10.2</junit.version>
+    <surefire.version>3.2.5</surefire.version>
+    <failsafe.version>3.2.5</failsafe.version>
+  </properties>
+
+  <modules>
+    <module>chdb-bom</module>
+    <module>chdb-jdbc</module>
+    <module>chdb-native-macos-aarch64</module>
+    <module>chdb-native-macos-x86_64</module>
+    <module>chdb-native-linux-x86_64-gnu</module>
+    <module>chdb-native-linux-aarch64-gnu</module>
+    <module>chdb-integration-tests</module>
+    <module>chdb-examples</module>
+  </modules>
+
+  <dependencyManagement>
     <dependencies>
-
-        <!-- JUnit 5 dependency -->
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
-            <version>5.8.1</version>
-            <scope>test</scope>
-        </dependency>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
     </dependencies>
+  </dependencyManagement>
 
-    <build>
-        <plugins>
-            <!-- Other plugins -->
-
-            <!-- Surefire plugin to run JUnit 5 tests -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>2.22.2</version>
-                <configuration>
-                    <includes>
-                        <include>**/*Test.java</include>
-                    </includes>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
-
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.13.0</version>
+          <configuration>
+            <compilerArgs>
+              <arg>-Xlint:all</arg>
+              <!-- The JDBC interfaces we implement are stable; serial/this-escape noise is not useful. -->
+              <arg>-Xlint:-serial</arg>
+            </compilerArgs>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${surefire.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-failsafe-plugin</artifactId>
+          <version>${failsafe.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>3.4.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>3.3.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>3.6.3</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-antrun-plugin</artifactId>
+          <version>3.1.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-resources-plugin</artifactId>
+          <version>3.3.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>exec-maven-plugin</artifactId>
+          <version>3.2.0</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
 </project>
-
