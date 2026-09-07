@@ -22,16 +22,24 @@ try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
 
 ## Support matrix
 
+V1 targets four platforms. **One of them has actually been run so far** — the rest have build
+and CI definitions that have not executed yet, so treat them as untested rather than as
+working:
+
 | | Linux glibc | macOS |
 |---|---|---|
-| x86_64 | ✅ `chdb-native-linux-x86_64-gnu` | ✅ `chdb-native-macos-x86_64` |
-| aarch64 / arm64 | ✅ `chdb-native-linux-aarch64-gnu` | ✅ `chdb-native-macos-aarch64` |
+| x86_64 | 🚧 `chdb-native-linux-x86_64-gnu` | 🚧 `chdb-native-macos-x86_64` |
+| aarch64 / arm64 | 🚧 `chdb-native-linux-aarch64-gnu` | ✅ `chdb-native-macos-aarch64` |
 
-- **Java 11 or later.** Verified on 11, 17, 21 and 25.
+- **Java 11 or later.** The floor is enforced at compile time and the CI matrix covers 11, 17,
+  21 and 25, but only **21** has been run. Java 26 is tested for forward compatibility only.
 - **Engine:** chDB Core **26.7.0**, pinned. The C ABI is version-locked, so the driver refuses
   to run against a different engine build rather than risking a struct-layout mismatch.
 - **Not supported in V1:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
   [work plan §2.3](CHDB_JAVA_V1_WORK_PLAN.md).
+
+[docs/v1-progress.md](docs/v1-progress.md) has the phase-by-phase status and says what is
+verified where.
 
 ## Installing
 
@@ -153,11 +161,16 @@ Use a second `Connection` — they can share the storage path — or close the f
 | ✅ | Bounded memory on results far larger than the heap |
 | ✅ | Host JVM signal handlers preserved — see [signal handlers](docs/signal-handlers.md) |
 | ✅ | Native loading from the platform JAR, or a directory you point at |
+| 🚧 | The other three platforms, and the rest of the JDK matrix |
 | 🚧 | Framework smoke tests (Spring, HikariCP, ShardingSphere) |
-| 🚧 | Multi-platform CI, sanitizer builds, soak tests |
+| 🚧 | Sanitizer builds, soak tests |
 | 🚧 | Maven Central publishing |
 | ❌ | Transactions, batch updates, scrollable/updatable result sets, `CallableStatement` |
 | ❌ | `Array`, `Map`, `Tuple`, `Nested`, `Variant`, `JSON`, `Dynamic` columns |
+
+Everything marked ✅ is implemented and covered by tests — 221 of them — on macOS arm64 with
+JDK 21. Nothing about the design is platform-specific, but "tested" currently means that one
+platform.
 
 The full list of refusals, and why each one is a refusal rather than a fake success, is in
 [docs/unsupported.md](docs/unsupported.md).
