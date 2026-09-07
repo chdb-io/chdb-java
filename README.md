@@ -173,6 +173,7 @@ The full list of refusals, and why each one is a refusal rather than a fake succ
 | [Memory](docs/memory.md) | Why `-Xmx` does not bound chDB, and what does |
 | [ClassLoaders](docs/classloaders.md) | Tomcat, Spark, Flink: where to put the driver |
 | [Upstream findings](docs/upstream-findings.md) | Engine behaviours this binding works around, with reproductions |
+| [V1 progress](docs/v1-progress.md) | Phase-by-phase status against the work plan, and what to do next |
 
 ## Building from source
 
