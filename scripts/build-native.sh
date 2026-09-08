@@ -182,8 +182,12 @@ GLIBC_FLOOR=""
 GLIBCXX_FLOOR=""
 if [ "$OS" = linux ]; then
   # Sorted with sort -V so 2.9 does not outrank 2.34.
+  #
+  # The `|| true` is load-bearing under `set -o pipefail`: finding nothing is the expected
+  # answer now that the shim links its C++ runtime statically and references no GLIBCXX symbol
+  # at all, and an unguarded grep would exit 1 and abort the script on its own success.
   highest_version() {
-    grep -oE "$1"'_[0-9]+(\.[0-9]+)*' | sed "s/^$1"'_//' | sort -V | tail -n1
+    { grep -oE "$1"'_[0-9]+(\.[0-9]+)*' || true; } | sed "s/^$1"'_//' | sort -V | tail -n1
   }
   SYMS="$(objdump -T "$SHIM" 2>/dev/null || true)"
   GLIBC_FLOOR="$(printf '%s' "$SYMS" | highest_version GLIBC)"
@@ -201,10 +205,14 @@ if [ "$OS" = linux ]; then
     "${ENGINE_GLIBC:-none}" "${ENGINE_GLIBCXX:-none}"
 
   # The package's real floor.
-  GLIBC_FLOOR="$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$ENGINE_GLIBC" | grep -v '^$' | sort -V | tail -n1)"
-  GLIBCXX_FLOOR="$(printf '%s\n%s\n' "$GLIBCXX_FLOOR" "$ENGINE_GLIBCXX" | grep -v '^$' | sort -V | tail -n1)"
+  # Same reason for the guards here: with both sides statically linked there may be no
+  # GLIBCXX requirement to report, and grep would exit 1 on the empty result.
+  GLIBC_FLOOR="$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$ENGINE_GLIBC" \
+    | { grep -v '^$' || true; } | sort -V | tail -n1)"
+  GLIBCXX_FLOOR="$(printf '%s\n%s\n' "$GLIBCXX_FLOOR" "$ENGINE_GLIBCXX" \
+    | { grep -v '^$' || true; } | sort -V | tail -n1)"
   printf 'build-native: package floor -- glibc >= %s, libstdc++ GLIBCXX >= %s\n' \
-    "${GLIBC_FLOOR:-unknown}" "${GLIBCXX_FLOOR:-unknown}"
+    "${GLIBC_FLOOR:-unknown}" "${GLIBCXX_FLOOR:-none (statically linked)}"
 fi
 
 
