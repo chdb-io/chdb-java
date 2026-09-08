@@ -34,9 +34,15 @@ and is loaded from a real packaged JAR, in CI:
   is tested for forward compatibility only. HotSpot; OpenJ9 is untested.
 - **macOS 11 or later** on arm64, **10.15 or later** on x86_64 — matching what the engine
   supports, pinned at build time and checked against the engine's own minimum.
-- **glibc Linux.** The engine needs only glibc 2.4 and links no libstdc++ at all, and the JNI
-  shim statically links its C++ runtime so it does not raise that floor. Each package records
-  the exact figures it was built against in its `manifest.properties`.
+- **glibc 2.34 or later** on Linux — so Ubuntu 22.04, Debian 12, RHEL 9 and newer. No
+  libstdc++ requirement at all: the shim links its C++ runtime statically, as the engine does.
+
+  That floor comes from the shim, not the engine, which needs only glibc 2.4 on x86_64 and 2.17
+  on aarch64. It is the version of whatever image CI builds on, and bringing it down to the
+  manylinux2014 baseline chDB itself targets means building the shim in a manylinux container —
+  [tracked, not done](docs/v1-progress.md). Until then, older distributions are out of reach
+  even though the engine would run there. Each package records the figure it was built against
+  in its `manifest.properties`.
 - **Engine:** chDB Core **26.7.0**, pinned. The C ABI is version-locked, so the driver refuses
   to run against a different engine build rather than risking a struct-layout mismatch.
 - **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See

@@ -49,8 +49,29 @@ errors, `-fvisibility=hidden` — the shim exports 24 `Java_*` symbols and nothi
 | ✅ | No build-machine absolute path in the shim's load commands — verified the same way |
 | ✅ | Debug symbols split out of the runtime JAR and archived by CI |
 | ✅ | Licences, checksums and a CycloneDX SBOM generated per package |
-| ⬜ | glibc and libstdc++ minimum versions checked | CI builds on `ubuntu-22.04` for this, but nothing asserts the resulting floor |
+| 🟡 | glibc and libstdc++ minimum versions checked | `build-native.sh` now derives both from the binaries and records them in `manifest.properties`. **libstdc++: eliminated** — the shim links it statically, as the engine does. **glibc: 2.34**, which is the shim's floor rather than the engine's (2.4 on x86_64, 2.17 on aarch64) and comes from the CI image. See the note below |
 | ⬜ | macOS codesign/notarization effect on loading from an unpacked JAR |
+
+### Open: the Linux glibc floor is higher than the engine's
+
+The package requires **glibc 2.34** because that is what `ubuntu-22.04` links against, while
+chDB itself targets manylinux2014 — **glibc 2.17** — for both Linux architectures. So Ubuntu
+20.04, Debian 11, RHEL 8 and Amazon Linux 2 are out of reach for the Java binding even though
+the engine runs there.
+
+Nothing about the shim needs 2.34. The floor is an artefact of the build image: glibc 2.34
+merged libpthread, libdl and librt into libc, so anything linked against it references symbols
+versioned at 2.34.
+
+The fix is to build the shim in a manylinux container, as chdb-core does. `manylinux_2_28` is
+the practical target — glibc 2.28, which reaches RHEL 8 and Amazon Linux 2023 — because
+manylinux2014 is CentOS 7-based and its glibc is too old for the Node runtime GitHub Actions
+requires inside a container. That would take the floor from 2.34 to 2.28; closing the last
+step to 2.17 needs a build that does not run actions inside the container at all.
+
+Not done, and deliberately not attempted in the same change as the measurement: the current
+state is correct and documented, and a speculative container change would risk a green matrix
+for a gain that can be made on its own.
 
 ## Phase 3 — Native loader
 
