@@ -61,7 +61,14 @@ case "$PLATFORM" in
   *) die "unknown platform '${PLATFORM}'" ;;
 esac
 
-ENGINE_VERSION="$(sed -n 's/^engine.version=//p' "${SCRIPT_DIR}/engine.properties" | head -n1)"
+prop() {
+  local key="$1" value
+  value="$(sed -n "s/^${key}=//p" "${SCRIPT_DIR}/engine.properties" | head -n1)"
+  [ -n "$value" ] || die "no '${key}' in engine.properties"
+  printf '%s' "$value"
+}
+
+ENGINE_VERSION="$(prop engine.version)"
 ENGINE_DIR="${ROOT}/target/engine/${PLATFORM}"
 HEADER_DIR="${ROOT}/chdb-jdbc/target/native-headers"
 
@@ -74,13 +81,18 @@ HEADER_DIR="${ROOT}/chdb-jdbc/target/native-headers"
 
 BUILD_DIR="${ROOT}/target/jni-sanitize-${PLATFORM}"
 printf 'run-sanitizer-tests: building the shim and the harness with -fsanitize=%s\n' "$SANITIZERS"
+CMAKE_EXTRA=()
+if [ "$OS" = macos ]; then
+  CMAKE_EXTRA+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=$(prop "deployment.target.${PLATFORM}")")
+fi
 cmake -S "${ROOT}/chdb-jni" -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=Debug \
   -DCHDB_ENGINE_DIR="$ENGINE_DIR" \
   -DCHDB_ENGINE_VERSION="$ENGINE_VERSION" \
   -DCHDB_JNI_HEADER_DIR="$HEADER_DIR" \
   -DCHDB_JNI_BUILD_TESTS=ON \
-  -DCHDB_JNI_SANITIZE="$SANITIZERS"
+  -DCHDB_JNI_SANITIZE="$SANITIZERS" \
+  "${CMAKE_EXTRA[@]}"
 cmake --build "$BUILD_DIR" --parallel
 
 RUNTIME="${ROOT}/target/runtime-sanitize-${PLATFORM}"

@@ -24,13 +24,22 @@ cmake_minimum_required(VERSION 3.16)
 # Pinned before project(), which is when the compiler is probed and the target baked in.
 #
 # Without this the deployment target follows the build machine's SDK, so a shim built on a
-# macOS 26 runner demands macOS 26 while the engine beside it runs on macOS 11 -- and the
-# platform package silently stops working for everyone on an older release. The numbers match
-# what chdb-core targets, as declared by its own wheel tags (macosx_11_0_arm64 and
-# macosx_10_15_x86_64): there is no point supporting an older macOS than the engine does, and
-# no reason to support a newer one.
+# macOS 26 runner demands macOS 26 while the engine beside it runs on macOS 11, and the platform
+# package silently stops working for everyone on an older release.
+#
+# scripts/build-native.sh passes the value from scripts/engine.properties, which is the source
+# of truth and knows which platform package it is building. What follows is only the fallback
+# for a hand-run cmake, and it asks uname rather than CMake: APPLE is set this early, but
+# CMAKE_HOST_SYSTEM_PROCESSOR is not -- it is filled in by project(). Reading it here silently
+# yields the empty string, which is how an earlier version of this block gave every
+# architecture the arm64 target and produced an x86_64 shim requiring macOS 11 beside an engine
+# that runs on 10.15.
 if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-  if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
+  execute_process(
+    COMMAND uname -m
+    OUTPUT_VARIABLE _host_arch
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(_host_arch STREQUAL "x86_64")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "macOS deployment target")
   else()
     # arm64 macOS does not exist before 11.0.

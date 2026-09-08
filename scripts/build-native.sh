@@ -117,11 +117,19 @@ fi
 # ---------------------------------------------------------------- shim
 
 BUILD_DIR="${ROOT}/target/jni-build-${PLATFORM}"
+CMAKE_EXTRA=()
+if [ "$OS" = macos ]; then
+  # Passed explicitly rather than left to CMake: this script knows which platform package it is
+  # building, and CMake cannot -- CMAKE_HOST_SYSTEM_PROCESSOR is still empty at the point the
+  # target has to be fixed.
+  CMAKE_EXTRA+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=$(prop "deployment.target.${PLATFORM}")")
+fi
 cmake -S "${ROOT}/chdb-jni" -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCHDB_ENGINE_DIR="$ENGINE_DIR" \
   -DCHDB_ENGINE_VERSION="$ENGINE_VERSION" \
-  -DCHDB_JNI_HEADER_DIR="$HEADER_DIR"
+  -DCHDB_JNI_HEADER_DIR="$HEADER_DIR" \
+  "${CMAKE_EXTRA[@]}"
 cmake --build "$BUILD_DIR" --parallel
 
 SHIM="${BUILD_DIR}/${JNINAME}"
