@@ -213,6 +213,20 @@ if [ "$OS" = linux ]; then
     | { grep -v '^$' || true; } | sort -V | tail -n1)"
   printf 'build-native: package floor -- glibc >= %s, libstdc++ GLIBCXX >= %s\n' \
     "${GLIBC_FLOOR:-unknown}" "${GLIBCXX_FLOOR:-none (statically linked)}"
+
+  # A ceiling, not a target. The shim built in manylinux_2_28 lands at 2.25; built on the CI
+  # image it lands at 2.34 and shuts out every platform between. Checking it here is what makes
+  # forgetting the container a build failure rather than a narrower package nobody notices.
+  MAX_GLIBC="$(prop "max.glibc.${PLATFORM}")"
+  if [ -n "$GLIBC_FLOOR" ] && [ -n "$MAX_GLIBC" ]; then
+    HIGHEST="$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$MAX_GLIBC" | sort -V | tail -n1)"
+    if [ "$HIGHEST" = "$GLIBC_FLOOR" ] && [ "$GLIBC_FLOOR" != "$MAX_GLIBC" ]; then
+      die "the package requires glibc ${GLIBC_FLOOR} but must not need more than ${MAX_GLIBC}.
+Anything above ${MAX_GLIBC} drops the RHEL 8 family, which is supported until May 2029.
+Build the Linux shim with scripts/build-native-in-container.sh, which compiles it in
+manylinux_2_28 instead of on the CI image."
+    fi
+  fi
 fi
 
 

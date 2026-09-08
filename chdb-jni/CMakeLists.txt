@@ -206,7 +206,13 @@ set_target_properties(chdb_java_jni PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON)
 
-target_link_libraries(chdb_java_jni PRIVATE "${CHDB_LIBRARY}")
+# CMAKE_DL_LIBS is -ldl where dlsym lives in libdl, and empty where it does not.
+#
+# Needed by chdb_optional_api.cpp, which resolves the engine's post-baseline entry points with
+# dlsym. glibc 2.34 merged libdl into libc, so a build on Ubuntu 22.04 links without it by
+# accident; on glibc 2.28 -- the floor this package targets -- the link fails with an undefined
+# reference. Found by building in a manylinux_2_28 container, which is why that build exists.
+target_link_libraries(chdb_java_jni PRIVATE "${CHDB_LIBRARY}" ${CMAKE_DL_LIBS})
 
 if(APPLE)
   # libchdb's install_name is @rpath/libchdb.so, so the shim needs an LC_RPATH of

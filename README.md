@@ -34,15 +34,11 @@ and is loaded from a real packaged JAR, in CI:
   is tested for forward compatibility only. HotSpot; OpenJ9 is untested.
 - **macOS 11 or later** on arm64, **10.15 or later** on x86_64 — matching what the engine
   supports, pinned at build time and checked against the engine's own minimum.
-- **glibc 2.34 or later** on Linux — so Ubuntu 22.04, Debian 12, RHEL 9 and newer. No
-  libstdc++ requirement at all: the shim links its C++ runtime statically, as the engine does.
-
-  That floor comes from the shim, not the engine, which needs only glibc 2.4 on x86_64 and 2.17
-  on aarch64 — it is the version of whatever image CI builds on. The one still-supported
-  platform it shuts out is the RHEL 8 family, on glibc 2.28 and maintained to May 2029;
-  Ubuntu 20.04 and Debian 11 are already end-of-life. Lowering it to 2.28 is
-  [tracked, not done](docs/v1-progress.md). Each package records the figure it was built
-  against in its `manifest.properties`.
+- **glibc 2.25 or later** on Linux — RHEL 8, Amazon Linux 2, Ubuntu 20.04 and everything
+  newer. No libstdc++ requirement at all: the shim links its C++ runtime statically, as the
+  engine does. Each package records the figure it was built against in its
+  `manifest.properties`, and CI runs the whole test suite on AlmaLinux 8 to demonstrate the
+  floor rather than infer it from symbol versions.
 - **Engine:** chDB Core **26.7.0**, pinned. The C ABI is version-locked, so the driver refuses
   to run against a different engine build rather than risking a struct-layout mismatch.
 - **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
@@ -234,6 +230,7 @@ detection.
 | Storage path | many connections on one path; a second path refused with a usable diagnosis; rebinding after the last close; a failed connect leaving nothing pinned |
 | Loader | five failure paths: no platform package, a bad override, a missing shim, a corrupted cache and a tampered checksum |
 | Packaging | each platform JAR is built, then the engine is loaded back out of it and a query run, on every platform |
+| Version floors | the full suite again on AlmaLinux 8 — glibc 2.28, RHEL 8's base — against the artefacts the release job would publish; and the build fails if a platform's measured floor rises above its ceiling |
 
 **Sanitizers**, on both a Linux and a macOS toolchain: UBSan over the whole integration suite in
 a real JVM against the real engine, and ASan plus UBSan over a 199-check harness for the shim's
@@ -241,7 +238,8 @@ own logic. ASan cannot cover the full suite — the released engine is not ASan-
 [written up with the evidence](docs/upstream-findings.md).
 
 **Not yet tested:** OpenJ9, a multi-hour soak, cgroup memory limits, `noexec` temporary
-directories, and the JDBC frameworks.
+directories, and the JDBC frameworks. The macOS floors are pinned and checked at build time
+but not exercised on an old macOS, because no such runner exists.
 
 ## Documentation
 

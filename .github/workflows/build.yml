@@ -145,9 +145,19 @@ jobs:
         run: mvn $MAVEN_ARGS -pl chdb-jdbc -am compile
 
       - name: Fetch the engine, build the shim, stage the platform package
-        # Verifies the download's SHA-256, checks the shim's $ORIGIN/@loader_path linkage and
-        # refuses any absolute build-machine path in its load commands.
-        run: scripts/build-native.sh ${{ matrix.platform }}
+        # Verifies the download's SHA-256, checks the shim's $ORIGIN/@loader_path linkage,
+        # refuses any absolute build-machine path in its load commands, and holds the platform's
+        # version floor to its ceiling.
+        #
+        # Linux builds in a manylinux_2_28 container. Built on this image the shim would require
+        # glibc 2.34 and shut out the RHEL 8 family, which is supported until May 2029; built in
+        # the container it needs 2.25. build-native.sh fails the build if that regresses, so
+        # this is not a convention anyone has to remember.
+        run: |
+          case "${{ matrix.platform }}" in
+            linux-*) scripts/build-native-in-container.sh ${{ matrix.platform }} ;;
+            *)       scripts/build-native.sh ${{ matrix.platform }} ;;
+          esac
 
       - name: Report the staged package
         run: |
@@ -252,6 +262,86 @@ jobs:
             chdb-jdbc/target/surefire-reports/
             chdb-integration-tests/target/failsafe-reports/
           retention-days: 14
+
+  # The version floor, proven rather than measured.
+  #
+  # The other Linux jobs read the shim's symbol requirements and check them against a ceiling.
+  # That catches a regression but does not demonstrate the package works on the oldest platform
+  # it claims: symbol versions are necessary, not sufficient. This runs the whole suite on
+  # AlmaLinux 8 -- glibc 2.28, the same base RHEL 8 uses -- against the artefacts the other job
+  # would publish.
+  oldest-supported-linux:
+    name: glibc 2.28 (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+            image: almalinux:8
+          - platform: linux-aarch64-gnu
+            runner: ubuntu-22.04-arm
+            image: almalinux:8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          # The build JDK. The suite then runs on whatever JDK the old distribution ships,
+          # which is the point: a user on RHEL 8 installs java-17-openjdk from their own repo.
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Cache the pinned engine download
+        uses: actions/cache@v4
+        with:
+          path: target/engine/download
+          key: chdb-engine-${{ matrix.platform }}-${{ hashFiles('scripts/engine.properties') }}
+
+      - name: Build the Java side and resolve the test classpath
+        run: |
+          mvn $MAVEN_ARGS -pl chdb-integration-tests -am test-compile dependency:build-classpath             -Dmdep.outputFile="$PWD/target/it-cp.txt" -Dmdep.includeScope=test
+
+      - name: Build the shim in manylinux_2_28
+        run: scripts/build-native-in-container.sh ${{ matrix.platform }}
+
+      - name: Run the integration suite on AlmaLinux 8
+        run: |
+          set -eu
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          LIBS="$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/linux/$ARCH"
+
+          # The workspace and the local Maven repository are mounted at the paths they already
+          # have, so the classpath file needs no rewriting.
+          docker run --rm             -v "$PWD:$PWD"             -v "$HOME/.m2:$HOME/.m2:ro"             -w "$PWD"             ${{ matrix.image }}             bash -c '
+              set -eu
+              echo "target system:"
+              grep PRETTY_NAME /etc/os-release
+              ldd --version | head -1
+              dnf -q -y install java-17-openjdk-headless >/dev/null 2>&1
+              java -version
+
+              echo
+              echo "every dependency of the shim must resolve here:"
+              ldd '"$LIBS"'/libchdb_java_jni.so
+
+              echo
+              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.7.0                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
+            '
+
+      - name: Report the floor this package actually needs
+        if: always()
+        run: |
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          cat "chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/linux/$ARCH/manifest.properties"             | grep -E "platform\.|engine\.version" || true
 
   # Work plan section 5.11. Two passes, because no single tool covers both halves; see the
   # header of scripts/run-sanitizer-tests.sh for why ASan cannot run against the released

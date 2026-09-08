@@ -49,22 +49,33 @@ errors, `-fvisibility=hidden` — the shim exports 24 `Java_*` symbols and nothi
 | ✅ | No build-machine absolute path in the shim's load commands — verified the same way |
 | ✅ | Debug symbols split out of the runtime JAR and archived by CI |
 | ✅ | Licences, checksums and a CycloneDX SBOM generated per package |
-| 🟡 | glibc and libstdc++ minimum versions checked | `build-native.sh` now derives both from the binaries and records them in `manifest.properties`. **libstdc++: eliminated** — the shim links it statically, as the engine does. **glibc: 2.34**, which is the shim's floor rather than the engine's (2.4 on x86_64, 2.17 on aarch64) and comes from the CI image. See the note below |
+| ✅ | glibc and libstdc++ minimum versions checked | `build-native.sh` derives both from the binaries, records them in `manifest.properties`, and fails the build above a ceiling in `engine.properties`. **libstdc++: eliminated** — statically linked, as the engine does. **glibc: 2.25**, achieved by building the Linux shim in a manylinux_2_28 container, and proven by running the whole suite on AlmaLinux 8 |
 | ⬜ | macOS codesign/notarization effect on loading from an unpacked JAR |
 
-### Open: the Linux glibc floor is higher than the engine's
+### Closed: the Linux glibc floor is 2.25
 
-The package requires **glibc 2.34** because that is what `ubuntu-22.04` links against, while
-chDB itself targets manylinux2014 — **glibc 2.17** — for both Linux architectures. So Ubuntu
-20.04, Debian 11, RHEL 8 and Amazon Linux 2 are out of reach for the Java binding even though
-the engine runs there.
+It was **2.34**, an artefact of building on `ubuntu-22.04`: glibc 2.34 merged libpthread, libdl
+and librt into libc, so anything linked there references symbols versioned at 2.34. Nothing
+about the shim needed it. The Linux shim now builds in a `manylinux_2_28` container and needs
+**glibc 2.25**, below the 2.28 of the oldest platform still supported.
 
-Nothing about the shim needs 2.34. The floor is an artefact of the build image: glibc 2.34
-merged libpthread, libdl and librt into libc, so anything linked against it references symbols
-versioned at 2.34.
+Three things hold it there rather than one:
 
-**The target is 2.28, not chdb-core's 2.17.** Checked against what is still alive in September
-2026, only one excluded platform family is:
+- `scripts/build-native-in-container.sh` compiles the Linux shim in manylinux_2_28.
+- `build-native.sh` fails the build if the measured floor exceeds `max.glibc.<platform>` in
+  `engine.properties`, so forgetting the container is an error rather than a quietly narrower
+  package.
+- A CI job runs the entire integration suite on **AlmaLinux 8** — glibc 2.28, the base RHEL 8
+  uses — against the artefacts the release job would publish. Symbol versions are necessary,
+  not sufficient; this is the part that demonstrates it works.
+
+Building for the older glibc immediately found a real portability bug: `dlsym` is used by
+`chdb_optional_api.cpp` and nothing linked `libdl`. glibc 2.34 merged libdl into libc, so the
+build on Ubuntu 22.04 linked by accident; on 2.28 it fails with an undefined reference. That is
+the whole argument for this job existing.
+
+**The ceiling is 2.28, not chdb-core's 2.17.** Checked against what is still alive in September
+2026, only one excluded platform family was:
 
 | glibc | Platforms | Status |
 |---|---|---|
@@ -89,18 +100,18 @@ native code — all of them below us:
 | zstd-jni 1.5.7-3 | 2.8 | statically linked |
 | rocksdbjni 10.2.1 | 2.12 | dynamic |
 | duckdb_jdbc 1.3.1.0 | 2.25 | dynamic |
-| chdb-java, today | 2.34 | statically linked |
+| **chdb-java** | **2.25** | statically linked |
 
 duckdb_jdbc is the closest analogue — an embedded analytical engine behind JNI — and the
 highest of them, at 2.25.
 
-The work is to build the Linux shim in a `manylinux_2_28` (AlmaLinux 8) container.
-manylinux2014 is not usable directly: it is CentOS 7-based and its glibc is too old for the
-Node runtime GitHub Actions needs inside a container.
+duckdb_jdbc is the closest analogue — an embedded analytical engine behind JNI — and at 2.25
+we now match it exactly.
 
-Not attempted in the same change as the measurement: the current state is correct and
-documented, and a speculative container change would risk a green matrix for a gain that can
-be made on its own.
+manylinux2014 is not usable directly, and would buy nothing anyway: it is CentOS 7-based and
+its glibc is too old for the Node runtime GitHub Actions needs inside a container. The
+container is therefore run as a step rather than as a job `container:`, which keeps Actions on
+the host and puts only the compiler in the container.
 
 ## Phase 3 — Native loader
 
