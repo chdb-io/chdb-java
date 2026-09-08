@@ -63,15 +63,44 @@ Nothing about the shim needs 2.34. The floor is an artefact of the build image: 
 merged libpthread, libdl and librt into libc, so anything linked against it references symbols
 versioned at 2.34.
 
-The fix is to build the shim in a manylinux container, as chdb-core does. `manylinux_2_28` is
-the practical target — glibc 2.28, which reaches RHEL 8 and Amazon Linux 2023 — because
-manylinux2014 is CentOS 7-based and its glibc is too old for the Node runtime GitHub Actions
-requires inside a container. That would take the floor from 2.34 to 2.28; closing the last
-step to 2.17 needs a build that does not run actions inside the container at all.
+**The target is 2.28, not chdb-core's 2.17.** Checked against what is still alive in September
+2026, only one excluded platform family is:
 
-Not done, and deliberately not attempted in the same change as the measurement: the current
-state is correct and documented, and a speculative container change would risk a green matrix
-for a gain that can be made on its own.
+| glibc | Platforms | Status |
+|---|---|---|
+| 2.17 | RHEL 7, CentOS 7 | end of life, June 2024 |
+| 2.26 | Amazon Linux 2 | end of life, June 2026 |
+| 2.28 | **RHEL 8, Rocky 8, Alma 8, Oracle Linux 8** | **maintenance support to May 2029** |
+| 2.31 | Ubuntu 20.04, Debian 11 | end of life, April 2025 and 31 August 2026 |
+| 2.34 | RHEL 9, Ubuntu 22.04, Amazon Linux 2023 | current, and where the floor sits today |
+
+Going to 2.28 buys the RHEL 8 family, which has three years of maintenance support left and
+belongs to the distribution family with the largest enterprise Linux share. Going further, to
+the manylinux2014 baseline chdb-core targets, buys only RHEL 7 — which is dead. Matching the
+engine exactly would be effort spent on nobody.
+
+For calibration, measured from the published artifacts of comparable Java projects that ship
+native code — all of them below us:
+
+| project | glibc floor | libstdc++ |
+|---|---|---|
+| sqlite-jdbc 3.49.1.0 | 2.3 | statically linked |
+| snappy-java 1.1.10.7 | 2.3.2 | statically linked |
+| zstd-jni 1.5.7-3 | 2.8 | statically linked |
+| rocksdbjni 10.2.1 | 2.12 | dynamic |
+| duckdb_jdbc 1.3.1.0 | 2.25 | dynamic |
+| chdb-java, today | 2.34 | statically linked |
+
+duckdb_jdbc is the closest analogue — an embedded analytical engine behind JNI — and the
+highest of them, at 2.25.
+
+The work is to build the Linux shim in a `manylinux_2_28` (AlmaLinux 8) container.
+manylinux2014 is not usable directly: it is CentOS 7-based and its glibc is too old for the
+Node runtime GitHub Actions needs inside a container.
+
+Not attempted in the same change as the measurement: the current state is correct and
+documented, and a speculative container change would risk a green matrix for a gain that can
+be made on its own.
 
 ## Phase 3 — Native loader
 

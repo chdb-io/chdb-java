@@ -38,11 +38,11 @@ and is loaded from a real packaged JAR, in CI:
   libstdc++ requirement at all: the shim links its C++ runtime statically, as the engine does.
 
   That floor comes from the shim, not the engine, which needs only glibc 2.4 on x86_64 and 2.17
-  on aarch64. It is the version of whatever image CI builds on, and bringing it down to the
-  manylinux2014 baseline chDB itself targets means building the shim in a manylinux container —
-  [tracked, not done](docs/v1-progress.md). Until then, older distributions are out of reach
-  even though the engine would run there. Each package records the figure it was built against
-  in its `manifest.properties`.
+  on aarch64 — it is the version of whatever image CI builds on. The one still-supported
+  platform it shuts out is the RHEL 8 family, on glibc 2.28 and maintained to May 2029;
+  Ubuntu 20.04 and Debian 11 are already end-of-life. Lowering it to 2.28 is
+  [tracked, not done](docs/v1-progress.md). Each package records the figure it was built
+  against in its `manifest.properties`.
 - **Engine:** chDB Core **26.7.0**, pinned. The C ABI is version-locked, so the driver refuses
   to run against a different engine build rather than risking a struct-layout mismatch.
 - **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
