@@ -81,9 +81,14 @@ jobs:
           - platform: linux-aarch64-gnu
             runner: ubuntu-22.04-arm
           - platform: macos-aarch64
-            runner: macos-14
+            runner: macos-15
+          # macos-15-intel, not macos-15: the plain label is Apple Silicon, and
+          # build-native.sh refuses to build the x86_64 package on an arm64 host. This is the
+          # label chdb-core and the Python binding use for their own x86_64 macOS builds, and
+          # the successor to macos-13, whose runners had become scarce enough that the job sat
+          # queued indefinitely.
           - platform: macos-x86_64
-            runner: macos-13
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
@@ -114,6 +119,13 @@ jobs:
       # ubuntu-22.04 rather than 24.04 on purpose: the shim's glibc and libstdc++ requirements
       # are whatever the build image has, so building on the oldest supported image is what
       # makes the package usable on older distributions.
+      #
+      # macOS needs no such care, because there the floor is pinned rather than inherited:
+      # CMakeLists sets CMAKE_OSX_DEPLOYMENT_TARGET to match what the engine supports, and
+      # build-native.sh fails the build if the shim ends up demanding a newer macOS than the
+      # engine beside it. Without that, moving to a newer runner image would silently raise the
+      # requirement -- an unpinned build on this image produced a shim wanting macOS 26 next to
+      # an engine that runs on 11.
       - name: Show toolchain
         run: |
           cc --version | head -1
@@ -257,7 +269,7 @@ jobs:
           - platform: linux-x86_64-gnu
             runner: ubuntu-22.04
           - platform: macos-aarch64
-            runner: macos-14
+            runner: macos-15
     steps:
       - uses: actions/checkout@v4
 

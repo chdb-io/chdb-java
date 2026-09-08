@@ -323,6 +323,26 @@ so the whole local suite passed; and it surfaced under the sanitizer job rather 
 Linux job only because the JUnit console launcher orders test methods differently from
 surefire, which let this test run before anything else had already set the flag.
 
+### A packaging defect the runner change exposed
+
+Unrelated to the engine, but found while moving CI off the scarce `macos-13` runners and worth
+recording in the same place.
+
+The shim had no `CMAKE_OSX_DEPLOYMENT_TARGET`, so its minimum macOS followed the build
+machine's SDK. Built locally it wanted **macOS 26**, sitting next to an engine that runs on
+**macOS 11**:
+
+```
+shim:   minos 26.0
+engine: minos 11.0
+```
+
+A package built that way loads for nobody below the builder's OS, and moving CI to a newer
+runner image would have raised the bar further without anything failing. The target is now
+pinned to what chdb-core's own wheel tags declare -- 11.0 for arm64, 10.15 for x86_64 -- and
+`build-native.sh` fails the build if the shim ever ends up demanding a newer macOS than the
+engine beside it.
+
 ### What the harness found
 
 Five formats the shim's parser accepted and the Java parser refused: `d:9`, `d:`, `d:a,b`,

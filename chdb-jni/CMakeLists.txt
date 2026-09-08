@@ -20,7 +20,29 @@
 #                         preloaded into a process holding a release libchdb (see test/)
 
 cmake_minimum_required(VERSION 3.16)
+
+# Pinned before project(), which is when the compiler is probed and the target baked in.
+#
+# Without this the deployment target follows the build machine's SDK, so a shim built on a
+# macOS 26 runner demands macOS 26 while the engine beside it runs on macOS 11 -- and the
+# platform package silently stops working for everyone on an older release. The numbers match
+# what chdb-core targets, as declared by its own wheel tags (macosx_11_0_arm64 and
+# macosx_10_15_x86_64): there is no point supporting an older macOS than the engine does, and
+# no reason to support a newer one.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "macOS deployment target")
+  else()
+    # arm64 macOS does not exist before 11.0.
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "macOS deployment target")
+  endif()
+endif()
+
 project(chdb_java_jni CXX)
+
+if(APPLE)
+  message(STATUS "chdb_java_jni: macOS deployment target ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

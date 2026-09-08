@@ -161,6 +161,7 @@ if printf '%s\n' "$DEPS" | grep -Eq '(^|[[:space:]])(/Users/|/home/|/build/|/wor
 $(printf '%s\n' "$DEPS" | grep -E '(/Users/|/home/|/build/|/workspace/|/__w/)')"
 fi
 
+
 # ---------------------------------------------------------------- staging
 
 STAGE="${ROOT}/${MODULE}/target/native"
@@ -170,6 +171,29 @@ mkdir -p "$NATIVE_DIR" "${STAGE}/META-INF/licenses" "${STAGE}/META-INF/sbom"
 
 install -m 0755 "${ENGINE_DIR}/${LIBNAME}" "${NATIVE_DIR}/${LIBNAME}"
 install -m 0755 "$SHIM" "${NATIVE_DIR}/${JNINAME}"
+
+# The shim must not demand a newer macOS than the engine it sits next to. Left unpinned, the
+# deployment target follows the build machine's SDK, so moving CI to a newer runner image would
+# quietly produce a package that no longer loads for users on the macOS versions the engine
+# still supports. CMakeLists pins it; this checks the pin held, against the staged files.
+if [ "$OS" = macos ]; then
+  minos_of() {
+    otool -l "$1" | awk '/LC_BUILD_VERSION/{found=1} found && /minos/{print $2; exit}'
+  }
+  SHIM_MINOS="$(minos_of "${NATIVE_DIR}/${JNINAME}")"
+  ENGINE_MINOS="$(minos_of "${NATIVE_DIR}/${LIBNAME}")"
+  printf 'build-native: macOS deployment target -- shim %s, engine %s\n' \
+    "${SHIM_MINOS:-unknown}" "${ENGINE_MINOS:-unknown}"
+  if [ -n "$SHIM_MINOS" ] && [ -n "$ENGINE_MINOS" ]; then
+    # Sorted numerically by major then minor; the shim must not be the higher of the two.
+    HIGHEST="$(printf '%s\n%s\n' "$SHIM_MINOS" "$ENGINE_MINOS" | sort -t. -k1,1n -k2,2n | tail -n1)"
+    if [ "$HIGHEST" = "$SHIM_MINOS" ] && [ "$SHIM_MINOS" != "$ENGINE_MINOS" ]; then
+      die "the shim requires macOS ${SHIM_MINOS} but the engine runs on ${ENGINE_MINOS}.
+This package would refuse to load for anyone between those versions. Set
+CMAKE_OSX_DEPLOYMENT_TARGET in chdb-jni/CMakeLists.txt to ${ENGINE_MINOS} or lower."
+    fi
+  fi
+fi
 
 # Debug symbols stay out of the runtime JAR and are archived separately by CI: they are several
 # times the size of the library itself (1.5 GB unpacked for the engine).
