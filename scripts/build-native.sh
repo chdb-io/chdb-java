@@ -169,6 +169,44 @@ if printf '%s\n' "$DEPS" | grep -Eq '(^|[[:space:]])(/Users/|/home/|/build/|/wor
 $(printf '%s\n' "$DEPS" | grep -E '(/Users/|/home/|/build/|/workspace/|/__w/)')"
 fi
 
+# The glibc and libstdc++ a user needs (work plan section 5.3).
+#
+# Derived from the binary rather than from the build image, because they are not the same
+# thing: the floor is the highest versioned symbol the shim actually references, which is
+# usually well below the builder's own version. Guessing from the image would overstate the
+# requirement and understate it the moment a new symbol creeps in.
+#
+# Recorded in manifest.properties so the package declares what it needs, and printed so CI
+# shows it moving.
+GLIBC_FLOOR=""
+GLIBCXX_FLOOR=""
+if [ "$OS" = linux ]; then
+  # Sorted with sort -V so 2.9 does not outrank 2.34.
+  highest_version() {
+    grep -oE "$1"'_[0-9]+(\.[0-9]+)*' | sed "s/^$1"'_//' | sort -V | tail -n1
+  }
+  SYMS="$(objdump -T "$SHIM" 2>/dev/null || true)"
+  GLIBC_FLOOR="$(printf '%s' "$SYMS" | highest_version GLIBC)"
+  GLIBCXX_FLOOR="$(printf '%s' "$SYMS" | highest_version GLIBCXX)"
+  CXXABI_FLOOR="$(printf '%s' "$SYMS" | highest_version CXXABI)"
+  printf 'build-native: shim requires glibc >= %s, libstdc++ GLIBCXX >= %s, CXXABI >= %s\n' \
+    "${GLIBC_FLOOR:-none}" "${GLIBCXX_FLOOR:-none}" "${CXXABI_FLOOR:-none}"
+
+  # The engine is the other half of the answer, and it is the higher of the two in practice.
+  # A user needs whichever is greater, so report both rather than only the shim's.
+  ENGINE_SYMS="$(objdump -T "${ENGINE_DIR}/${LIBNAME}" 2>/dev/null || true)"
+  ENGINE_GLIBC="$(printf '%s' "$ENGINE_SYMS" | highest_version GLIBC)"
+  ENGINE_GLIBCXX="$(printf '%s' "$ENGINE_SYMS" | highest_version GLIBCXX)"
+  printf 'build-native: engine requires glibc >= %s, libstdc++ GLIBCXX >= %s\n' \
+    "${ENGINE_GLIBC:-none}" "${ENGINE_GLIBCXX:-none}"
+
+  # The package's real floor.
+  GLIBC_FLOOR="$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$ENGINE_GLIBC" | grep -v '^$' | sort -V | tail -n1)"
+  GLIBCXX_FLOOR="$(printf '%s\n%s\n' "$GLIBCXX_FLOOR" "$ENGINE_GLIBCXX" | grep -v '^$' | sort -V | tail -n1)"
+  printf 'build-native: package floor -- glibc >= %s, libstdc++ GLIBCXX >= %s\n' \
+    "${GLIBC_FLOOR:-unknown}" "${GLIBCXX_FLOOR:-unknown}"
+fi
+
 
 # ---------------------------------------------------------------- staging
 
@@ -248,6 +286,9 @@ platform.id=${PLATFORM}
 platform.os=${OS}
 platform.arch=${ARCH}
 platform.libc=$([ "$OS" = linux ] && printf 'gnu' || printf 'system')
+platform.min.glibc=${GLIBC_FLOOR}
+platform.min.glibcxx=${GLIBCXX_FLOOR}
+platform.min.macos=$([ "$OS" = macos ] && printf '%s' "${SHIM_MINOS:-}" || printf '')
 build.commit=${GIT_COMMIT}
 build.host.os=$(uname -s)
 build.host.release=$(uname -r)

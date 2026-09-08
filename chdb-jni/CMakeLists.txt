@@ -229,4 +229,17 @@ else()
     "LINKER:--enable-new-dtags"
     "LINKER:-z,defs"
     "LINKER:--no-undefined")
+
+  # The C++ runtime goes in the shim rather than being required from the host.
+  #
+  # Otherwise the shim's GLIBCXX and CXXABI requirements come from whatever the build image
+  # ships, and that becomes the floor for the whole package -- while the engine beside it needs
+  # only glibc 2.4 and links no libstdc++ at all, having statically linked its own. Left
+  # dynamic, a shim of 130 KB would narrow the package from "any glibc" to "at least the
+  # distribution CI happened to build on".
+  #
+  # Safe because nothing C++ crosses the boundary: chdb.h is extern "C" throughout, and the
+  # engine catches its own exceptions rather than letting them escape. Two independent static
+  # runtimes never meet.
+  target_link_options(chdb_java_jni PRIVATE -static-libstdc++ -static-libgcc)
 endif()

@@ -31,12 +31,15 @@ and is loaded from a real packaged JAR, in CI:
 | aarch64 / arm64 | ✅ `chdb-native-linux-aarch64-gnu` | ✅ `chdb-native-macos-aarch64` |
 
 - **Java 11 or later.** 11, 17, 21 and 25 each run the full suite on all four platforms. Java 26
-  is tested for forward compatibility only.
+  is tested for forward compatibility only. HotSpot; OpenJ9 is untested.
 - **macOS 11 or later** on arm64, **10.15 or later** on x86_64 — matching what the engine
-  itself supports, and enforced at build time.
+  supports, pinned at build time and checked against the engine's own minimum.
+- **glibc Linux.** The engine needs only glibc 2.4 and links no libstdc++ at all, and the JNI
+  shim statically links its C++ runtime so it does not raise that floor. Each package records
+  the exact figures it was built against in its `manifest.properties`.
 - **Engine:** chDB Core **26.7.0**, pinned. The C ABI is version-locked, so the driver refuses
   to run against a different engine build rather than risking a struct-layout mismatch.
-- **Not supported in V1:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
+- **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
   [work plan §2.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
 [docs/v1-progress.md](docs/v1-progress.md) has the phase-by-phase status and what is left.
@@ -149,6 +152,33 @@ ResultSet inner = statementB.executeQuery("SELECT ...");   // SQLException: 2500
 
 Use a second `Connection` — they can share the storage path — or close the first result set.
 
+### A native crash takes the JVM with it
+
+The engine runs in your process. There is no crash isolation: if it segfaults, your JVM dies
+with it, and no Java `catch` can intervene. That is the price of an in-process binding, and it
+is the reason not to embed chDB in a service where that is unacceptable. Subprocess isolation
+is a post-V1 idea, not something V1 offers.
+
+The related trade is that the driver switches off chDB's own crash handlers, because they
+overwrite the ones HotSpot needs to function. You keep a working JVM and lose ClickHouse-format
+native stack traces; you get the JVM's `hs_err_pid*.log` instead. See
+[docs/signal-handlers.md](docs/signal-handlers.md).
+
+### `-Xmx` does not bound the engine
+
+The engine allocates outside the Java heap, so `-Xmx` limits the heap and nothing else. In a
+container, budget for roughly 350 MB of mapped engine plus whatever your queries need, and cap
+the queries with `max_memory_usage` — which turns an OOM kill into a catchable `SQLException`.
+See [docs/memory.md](docs/memory.md).
+
+### One engine per JVM, owned by one ClassLoader
+
+A JVM holds one copy of the native runtime and it belongs to whichever ClassLoader loaded it.
+Several child ClassLoaders can share one through a common parent; two isolated ones cannot each
+have their own, and the driver refuses with a diagnosis rather than mapping a second 350 MB
+engine. In Tomcat, Spark or Flink this decides where the driver goes. See
+[docs/classloaders.md](docs/classloaders.md).
+
 ## What works today
 
 | | |
@@ -162,20 +192,50 @@ Use a second `Connection` — they can share the storage path — or close the f
 | ✅ | Bounded memory on results far larger than the heap |
 | ✅ | Host JVM signal handlers preserved — see [signal handlers](docs/signal-handlers.md) |
 | ✅ | Native loading from the platform JAR, or a directory you point at |
-| ✅ | UBSan over the whole suite; ASan over the shim's own logic |
-| ✅ | All four platforms × Java 11/17/21/25, in CI |
 | 🚧 | Framework smoke tests (Spring, HikariCP, ShardingSphere) |
 | 🚧 | Soak tests; full-process ASan, which needs an upstream sanitizer build of chdb-core |
-| 🚧 | Maven Central publishing |
+| 🚧 | Maven Central publishing — nothing is released yet |
 | ❌ | Transactions, batch updates, scrollable/updatable result sets, `CallableStatement` |
+| ❌ | Stored procedures, generated keys, `Blob`/`Clob`/`Array`/`SQLXML` |
 | ❌ | `Array`, `Map`, `Tuple`, `Nested`, `Variant`, `JSON`, `Dynamic` columns |
 
-Everything marked ✅ is covered by 238 tests — 148 that need no engine and 90 that do — plus a
-199-check native sanitizer harness. Each of the four platforms runs all of them on each of the
-four JDKs, so ✅ means sixteen platform-and-JDK combinations, not one.
-
-The full list of refusals, and why each one is a refusal rather than a fake success, is in
+Nothing in the ❌ rows returns a fake `null`, `0` or success: each throws
+`SQLFeatureNotSupportedException`, and `DatabaseMetaData` agrees with the behaviour. A column
+the driver cannot decode is a typed error naming the column and the SQL cast that reads it,
+never a wrong value. The full list, with what to do instead, is in
 [docs/unsupported.md](docs/unsupported.md).
+
+## What has been tested
+
+238 tests, run on **all four platforms × Java 11, 17, 21 and 25** — sixteen combinations — plus
+a native sanitizer harness. Every one is green in CI on the current commit.
+
+**148 tests need no engine**, so they run anywhere: the SQL parameter lexer (which `?` is a
+placeholder and which is data, across quotes, comments and dollar-quoting), the Arrow format
+parser and the whole type matrix, JDBC URL parsing, statement classification, platform and libc
+detection.
+
+**90 integration tests drive a real engine:**
+
+| | |
+|---|---|
+| Type matrix | every scalar type end to end, `NULL` and `wasNull()`, unsigned widening, `UInt64` beyond `Long.MAX_VALUE`, `Decimal128`/`Decimal256` past double precision, pre-epoch sub-second timestamps, NaN and both infinities, timezone-tagged `DateTime64`, and that an unreadable type is a typed error rather than a wrong value |
+| Parameters | injection attempts round-trip as data; quotes, backslashes, newlines, embedded NUL and astral characters survive; unbound and out-of-range parameters refused |
+| Streaming | 20 million rows in a 512 MB heap grew RSS by 17 MB; slow consumer, early close, `setMaxRows`, and 1000 queries reaching an RSS plateau rather than climbing |
+| Lifetime | every native handle asserted back to zero after every test, including after 150 deliberate query failures; cascading close; use-after-close refused |
+| Cancellation | `cancel()` from another thread and `setQueryTimeout` both stop the engine, not just the Java-side wait |
+| Signal handlers | dispositions identical across load, connect, query and close — and a real `NullPointerException` after connecting, which would kill the JVM if the guard regressed |
+| Storage path | many connections on one path; a second path refused with a usable diagnosis; rebinding after the last close; a failed connect leaving nothing pinned |
+| Loader | five failure paths: no platform package, a bad override, a missing shim, a corrupted cache and a tampered checksum |
+| Packaging | each platform JAR is built, then the engine is loaded back out of it and a query run, on every platform |
+
+**Sanitizers**, on both a Linux and a macOS toolchain: UBSan over the whole integration suite in
+a real JVM against the real engine, and ASan plus UBSan over a 199-check harness for the shim's
+own logic. ASan cannot cover the full suite — the released engine is not ASan-clean — which is
+[written up with the evidence](docs/upstream-findings.md).
+
+**Not yet tested:** OpenJ9, a multi-hour soak, cgroup memory limits, `noexec` temporary
+directories, and the JDBC frameworks.
 
 ## Documentation
 

@@ -48,7 +48,8 @@ SIGSEGV, SIGILL, SIGBUS, SIGFPE, SIGTSTP
 ```
 
 SIGABRT, SIGSYS and SIGTRAP are absent only because HotSpot leaves them at `SIG_DFL`, so the
-reset does not change them.
+reset does not change them. Running the same JVM under a sanitizer confirms it: the sanitizer
+runtime installs handlers for those three, and the guard then reports all seven.
 
 Two further details that shape the workaround:
 
