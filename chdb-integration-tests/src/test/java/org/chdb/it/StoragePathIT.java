@@ -84,6 +84,7 @@ class StoragePathIT extends NativeTestBase {
     @DisplayName("in-memory counts as a bound path, and the message says so")
     void memoryConflictsWithAFilePath() throws SQLException {
         try (Connection memory = openMemory()) {
+            assertTrue(memory.isValid(1), "the in-memory connection should be usable");
             SQLException e =
                     assertThrows(
                             SQLException.class,
@@ -157,8 +158,9 @@ class StoragePathIT extends NativeTestBase {
 
         try (Connection first = DriverManager.getConnection(direct);
                 Connection second = DriverManager.getConnection(roundabout)) {
-            // If normalization did not happen these would be two paths and the second would be
-            // refused.
+            // If normalization did not happen these would be two paths and the second connect
+            // would have been refused, so reaching here is most of the assertion.
+            assertTrue(first.isValid(1));
             assertTrue(second.isValid(1));
         }
     }

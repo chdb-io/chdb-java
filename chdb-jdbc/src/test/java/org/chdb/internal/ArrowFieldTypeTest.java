@@ -132,9 +132,31 @@ class ArrowFieldTypeTest {
         assertEquals(ArrowFieldType.Kind.TIME64, parse("ttn").kind());
     }
 
+    /**
+     * Every format both parsers must refuse.
+     *
+     * <p>The same table is asserted by {@code chdb-jni/test/chdb_jni_test.cpp}. It has to be:
+     * this parser decides what a column's bytes mean, and the shim's decides how many bytes of
+     * each buffer Java is allowed to see. A format one accepts and the other does not is a
+     * latent inconsistency, and the shim's parser used to be the looser of the two --
+     * {@code d:9}, {@code ts} and {@code tsX:UTC} were all accepted there.
+     */
     @ParameterizedTest
-    @DisplayName("nested, dictionary-encoded and unknown formats are UNSUPPORTED, never guessed")
-    @ValueSource(strings = {"+l", "+L", "+s", "+m", "+ud:0,1", "+r", "vu", "", "qqq", "tiM"})
+    @DisplayName("nested, dictionary-encoded and malformed formats are UNSUPPORTED, never guessed")
+    @ValueSource(
+            strings = {
+                // Nested and other layouts with no flat mapping.
+                "+l", "+L", "+s", "+m", "+ud:0,1", "+r", "+w:3", "vu", "vz",
+                // Not a format at all.
+                "", "qqq", "n", "Q", "tiM",
+                // Malformed decimals: no scale, no fields, non-numeric, unsupported width.
+                "d:9", "d:", "d:a,b", "d:9,2,64",
+                // Malformed fixed-size binary.
+                "w:", "w:0", "w:-1", "w:abc",
+                // Malformed temporals: unknown date unit, truncated time, unknown time unit,
+                // timestamp without the mandatory colon, timestamp with an unknown unit.
+                "tdX", "tt", "ttX", "ts", "tsX:UTC",
+            })
     void unsupportedFormats(String format) {
         ArrowFieldType type = parse(format);
         assertFalse(type.supported(), format);

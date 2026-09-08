@@ -6,8 +6,8 @@ stays the report.
 
 Legend: ✅ done and tested · 🟡 partly done · ⬜ not started · ➖ out of this milestone
 
-Verified on **macOS arm64 / JDK 21 / engine 26.7.0**. The other three platforms have build and
-CI definitions but have not been run — that is the single largest gap.
+Verified on **macOS arm64 / engine 26.7.0**, on **JDK 11 and 21**. The other three platforms
+have build and CI definitions but have not been run — that is the single largest gap.
 
 ---
 
@@ -81,7 +81,9 @@ Batch lifetime is a single place: the Java view is invalidated before the shim f
 so a late read is an exception rather than a use-after-free. Handle counters are exposed and
 asserted zero after every test. Nothing calls back into Java from a native thread.
 
-⬜ `Cleaner` as a leak backstop, and ASan/LSan/UBSan runs (phase 10).
+The handle registry and the Arrow layout parser are additionally covered by `chdb_jni_test`,
+a JVM-free harness run under ASan and UBSan — 197 checks, which found five parser defects on
+its first run. ⬜ `Cleaner` as a leak backstop.
 
 ## Phase 5 — JVM signal-handler safety
 
@@ -142,8 +144,8 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 | Phase | | Notes |
 |---|---|---|
 | 9 — JDBC ecosystem | 🟡 | `META-INF/services/java.sql.Driver` ✅, `DriverPropertyInfo` ✅, minimum `DatabaseMetaData` ✅, `Automatic-Module-Name` ✅, ClassLoader diagnostics ✅ and documented for Tomcat/Spark/Flink. ⬜ Spring, HikariCP and ShardingSphere smoke tests; ⬜ JPMS module-path and two-child-ClassLoader tests |
-| 10 — Off-heap memory and stability | 🟡 | Handle counters asserted zero after every test ✅; bounded streaming, slow consumer, early close, cancel and 1000-query RSS plateau ✅. ⬜ ASan/LSan/UBSan; ⬜ 1-6 hour soak; ⬜ cgroup + `max_memory_usage` matrix; ⬜ `Cleaner` backstop |
-| 11 — Platform and JDK matrix | 🟡 | CI defines all four platforms × JDK 11/21 plus unit tests on 11/17/21/25 and 26 as allow-failure. ⬜ Nothing but macOS arm64 has actually run; ⬜ OpenJ9; ⬜ awkward paths; ⬜ corrupted-library and arch-mismatch cases |
+| 10 — Off-heap memory and stability | 🟡 | Handle counters asserted zero after every test ✅; bounded streaming, slow consumer, early close, cancel and 1000-query RSS plateau ✅. UBSan over the whole JDBC suite ✅ and ASan+UBSan over the shim's own logic ✅ — but **ASan cannot run against the released engine at all** ([findings §8](upstream-findings.md)), so LSan and full-process ASan need an upstream sanitizer build. ⬜ 1-6 hour soak; ⬜ cgroup + `max_memory_usage` matrix; ⬜ `Cleaner` backstop |
+| 11 — Platform and JDK matrix | 🟡 | CI runs the full integration suite on all four platforms × JDK 11/17/21/25, plus unit tests on the same four and 26 as allow-failure. **JDK 11 and 21 verified locally on macOS arm64**; ⬜ the other three platforms and JDK 17/25 have not run; ⬜ OpenJ9; ⬜ awkward paths; ⬜ corrupted-library and arch-mismatch cases |
 | 12 — ADBC experiment | ⬜ | Untouched. Does not block V1 |
 | 13 — Documentation | 🟡 | README, type mapping, unsupported JDBC, native loading, signal handlers, memory, ClassLoaders and upstream findings ✅, plus a runnable example. ⬜ Per-platform dependency snippets await published coordinates; ⬜ crash-report template |
 | 14 — Release preparation | ⬜ | Nothing published. The §4.4 research is open, except that the package size is now measured: 103 MB compressed for 350 MB of engine |
@@ -155,10 +157,10 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 | Gate | |
 |---|---|
 | Four platforms load from a Maven artifact and run `SELECT 1` | 🟡 one platform, from a real packaged JAR |
-| Java 11, 17, 21, 25 pass | 🟡 CI defined, only 21 run |
+| Java 11, 17, 21, 25 pass | 🟡 CI covers all four with the full suite; 11 and 21 verified locally |
 | Version and symbol mismatch fails before first use | ✅ |
 | Signal handlers preserved across load/connect/query/close | ✅ on macOS arm64 |
-| ASan, LSan, UBSan clean | ⬜ |
+| ASan, LSan, UBSan clean | 🟡 UBSan clean over the whole suite; ASan clean over the shim harness; full-process ASan and LSan blocked on an upstream sanitizer build of chdb-core |
 | Native handle count zero after every test | ✅ 221 tests |
 | Large results stream in bounded memory | ✅ 20M rows, +17 MB RSS |
 | 1000 queries and a soak show no linear RSS growth | 🟡 1000 queries ✅, soak ⬜ |
@@ -176,12 +178,13 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 
 1. **Run the CI matrix.** Everything else is guesswork until the other three platforms build
    and pass. The linkage checks in `build-native.sh` are most likely to find something on
-   Linux, where `$ORIGIN` and `-z defs` behave differently from macOS.
-2. **File the signal-handler API request upstream.** It is the one release gate whose
-   workaround depends on upstream behaviour not changing underneath it.
-3. **Sanitizers.** The batch lifetime and handle registry are designed for ASan to have nothing
-   to say; that is worth confirming rather than believing.
-4. **Framework smoke tests.** HikariCP in particular, because it is where the
+   Linux, where `$ORIGIN` and `-z defs` behave differently from macOS, and the Linux sanitizer
+   job is the first place LSan will run at all.
+2. **File the two upstream issues.** The signal-handler API (§1) is the one release gate whose
+   workaround depends on upstream behaviour not changing underneath it. A sanitizer build of
+   chdb-core (§8) is what unblocks the other half of the sanitizer gate.
+3. **Framework smoke tests.** HikariCP in particular, because it is where the
    one-statement-per-connection rule meets real pooling.
+4. **The soak test**, which is the remaining phase-10 item that local runs cannot stand in for.
 5. **The §3.3 batch-access benchmark**, so the data-path choice is recorded as measured rather
    than as reasoned.

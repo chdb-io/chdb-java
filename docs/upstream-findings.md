@@ -252,6 +252,64 @@ so a caller can ask for UUIDs as text and remove the ambiguity.
 
 ---
 
+## 8. The released libchdb cannot run under AddressSanitizer
+
+**Severity: blocks a release gate as written. Worked around by splitting the coverage; the
+remaining half needs upstream.**
+
+Work plan section 5.11 asks for ASan, LSan and UBSan runs. ASan replaces `malloc` for the whole
+process, and a preloaded ASan in a JVM that loads the released `libchdb` crashes before the
+suite finishes:
+
+| JIT | Crash site |
+|---|---|
+| default | `libjvm.dylib` — `IndexSet::initialize`, inside HotSpot's C2 register allocator |
+| `-Xint` | `libchdb.so+0x5801074` |
+
+Neither the release engine nor HotSpot is ASan-clean, and `-XX:TieredStopAtLevel=1` does not
+help — it only moves the crash from the JIT into the engine. There is no ASan option that
+disables allocator interception, so this is not a configuration problem.
+
+The plan already anticipates the answer: it asks for a run against "a full chDB sanitizer
+build", and chdb-core does not publish one.
+
+**What is covered instead:**
+
+- **UBSan over the whole JDBC suite**, in a real JVM against the real engine. UBSan instruments
+  arithmetic and casts rather than intercepting allocation, so it coexists with both. 90 tests,
+  zero reports.
+- **ASan + UBSan over `chdb_jni_test`**, a JVM-free and engine-free harness for the shim's
+  standalone logic: Arrow format parsing, the handle registry, the signal guard. 197 checks,
+  zero reports — and it found five real parser defects on its first run, listed below.
+
+**What would close the gap:** a sanitizer build of chdb-core published as a release asset, or
+buildable by a documented target. Then `scripts/run-sanitizer-tests.sh <platform>
+address,undefined` would run the JDBC suite too rather than skipping it with an explanation.
+
+### A related trap, for anyone running a JVM under any sanitizer
+
+A sanitizer installs handlers for SIGSEGV, SIGBUS, SIGILL and SIGFPE, and HotSpot needs all
+four. Without `handle_segv=0:handle_sigbus=0:handle_sigfpe=0:handle_sigill=0`, the JVM's
+ordinary recovery from an implicit null check is reported as a fatal `DEADLYSIGNAL` — the same
+conflict as finding §1, arriving from the other direction. Observed on the first UBSan run,
+against `SignalHandlerIT.jvmStillOwnsSegv`.
+
+And on macOS the preload has to be exported by the shell that execs `java`: dyld drops `DYLD_*`
+from an environment handed to a hardened binary, so a surefire fork receives `LD_PRELOAD` and
+`ASAN_OPTIONS` but not `DYLD_INSERT_LIBRARIES`, and ASan then loads by `dlopen` and aborts.
+
+### What the harness found
+
+Five formats the shim's parser accepted and the Java parser refused: `d:9`, `d:`, `d:a,b`,
+`ts`, `tsX:UTC`. The shim's parser decides how many bytes of each Arrow buffer Java may see and
+the Java parser decides what the bytes mean, so the two disagreeing is a latent inconsistency
+even where it happens to be harmless. The cause was `std::atoi`, which returns 0 for
+non-numeric input, and an unconditional 8-byte width for anything starting `ts`. Both parsers
+are now pinned to the same table, in `ArrowFieldTypeTest.unsupportedFormats` and
+`chdb_jni_test.cpp`.
+
+---
+
 ## Things that worked exactly as documented
 
 Worth recording, because they carried the design:

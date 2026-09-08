@@ -24,6 +24,10 @@ compile_commands.json
 # StoragePathIT asserts it, but an older jar or another binding still can.
 :memory:/
 
+# JVM crash reports, which the sanitizer investigation produces by design
+hs_err_pid*.log
+replay_pid*.log
+
 # IDE
 .idea/
 *.iml

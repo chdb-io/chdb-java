@@ -31,8 +31,8 @@ working:
 | x86_64 | 🚧 `chdb-native-linux-x86_64-gnu` | 🚧 `chdb-native-macos-x86_64` |
 | aarch64 / arm64 | 🚧 `chdb-native-linux-aarch64-gnu` | ✅ `chdb-native-macos-aarch64` |
 
-- **Java 11 or later.** The floor is enforced at compile time and the CI matrix covers 11, 17,
-  21 and 25, but only **21** has been run. Java 26 is tested for forward compatibility only.
+- **Java 11 or later.** CI runs the full suite on 11, 17, 21 and 25; **11 and 21** have been
+  run so far. Java 26 is tested for forward compatibility only.
 - **Engine:** chDB Core **26.7.0**, pinned. The C ABI is version-locked, so the driver refuses
   to run against a different engine build rather than risking a struct-layout mismatch.
 - **Not supported in V1:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
@@ -161,16 +161,17 @@ Use a second `Connection` — they can share the storage path — or close the f
 | ✅ | Bounded memory on results far larger than the heap |
 | ✅ | Host JVM signal handlers preserved — see [signal handlers](docs/signal-handlers.md) |
 | ✅ | Native loading from the platform JAR, or a directory you point at |
-| 🚧 | The other three platforms, and the rest of the JDK matrix |
+| ✅ | UBSan over the whole suite; ASan over the shim's own logic |
+| 🚧 | The other three platforms, and JDK 17 and 25 |
 | 🚧 | Framework smoke tests (Spring, HikariCP, ShardingSphere) |
-| 🚧 | Sanitizer builds, soak tests |
+| 🚧 | Soak tests; full-process ASan, which needs an upstream sanitizer build of chdb-core |
 | 🚧 | Maven Central publishing |
 | ❌ | Transactions, batch updates, scrollable/updatable result sets, `CallableStatement` |
 | ❌ | `Array`, `Map`, `Tuple`, `Nested`, `Variant`, `JSON`, `Dynamic` columns |
 
-Everything marked ✅ is implemented and covered by tests — 221 of them — on macOS arm64 with
-JDK 21. Nothing about the design is platform-specific, but "tested" currently means that one
-platform.
+Everything marked ✅ is implemented and covered by tests — 238 of them, plus a 197-check native
+sanitizer harness — on macOS arm64 with JDK 11 and 21. Nothing about the design is
+platform-specific, but "tested" currently means that one platform.
 
 The full list of refusals, and why each one is a refusal rather than a fake success, is in
 [docs/unsupported.md](docs/unsupported.md).
@@ -202,7 +203,16 @@ scripts/build-native.sh macos-aarch64        # or your platform id
 
 # 3. Everything, including the integration tests.
 mvn verify
+
+# 4. Optionally, under sanitizers.
+scripts/run-sanitizer-tests.sh macos-aarch64 address,undefined   # shim logic, no JVM
+scripts/run-sanitizer-tests.sh macos-aarch64 undefined           # the whole JDBC suite
 ```
+
+The two sanitizer passes cover different halves: ASan cannot run against the released engine,
+which is not ASan-clean, so it is pointed at a JVM-free harness while UBSan covers the real
+suite. `scripts/run-sanitizer-tests.sh` explains the split in its header, and
+[docs/upstream-findings.md](docs/upstream-findings.md) has the evidence.
 
 `scripts/build-native.sh` refuses a platform id that does not match the machine it runs on: a
 shim linked for another architecture fails at `System.load()` in a user's JVM rather than at

@@ -12,6 +12,12 @@
 # Optional:
 #   CHDB_JNI_HEADER_DIR   javac -h output; when set, the generated header is compiled in so
 #                         a Java/native signature drift is a build error, not a link error
+#   CHDB_JNI_SANITIZE     comma-separated sanitizers, e.g. "address,undefined" (work plan
+#                         section 5.11). Builds an instrumented shim for CI to run the test
+#                         suite under; never used for a published package
+#   CHDB_JNI_BUILD_TESTS  ON to also build chdb_jni_test, a JVM-free and engine-free harness
+#                         for the shim's standalone logic. Needed because ASan cannot be
+#                         preloaded into a process holding a release libchdb (see test/)
 
 cmake_minimum_required(VERSION 3.16)
 project(chdb_java_jni CXX)
@@ -119,6 +125,48 @@ target_compile_options(chdb_java_jni PRIVATE
   # JNIEXPORT already makes the entry points visible; everything else stays internal so the
   # shim cannot accidentally interpose on a libchdb symbol.
   -fvisibility=hidden)
+
+if(CHDB_JNI_BUILD_TESTS)
+  # Links only the translation units that need neither JNI nor the engine: the Arrow layout
+  # parser, the signal guard, and the header-only handle registry. Not linking libchdb is the
+  # entire point -- its allocator is what makes a preloaded ASan crash.
+  add_executable(chdb_jni_test
+    test/chdb_jni_test.cpp
+    src/chdb_jni_arrow.cpp
+    src/chdb_jni_signals.cpp)
+  target_include_directories(chdb_jni_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_compile_options(chdb_jni_test PRIVATE -Wall -Wextra -Wpedantic -g)
+  if(CHDB_JNI_SANITIZE)
+    target_compile_options(chdb_jni_test PRIVATE
+      "-fsanitize=${CHDB_JNI_SANITIZE}" -fno-omit-frame-pointer -fno-optimize-sibling-calls)
+    target_link_options(chdb_jni_test PRIVATE "-fsanitize=${CHDB_JNI_SANITIZE}")
+    if(CHDB_JNI_SANITIZE MATCHES "undefined")
+      target_compile_options(chdb_jni_test PRIVATE -fno-sanitize-recover=undefined)
+    endif()
+  endif()
+  find_package(Threads REQUIRED)
+  target_link_libraries(chdb_jni_test PRIVATE Threads::Threads)
+endif()
+
+if(CHDB_JNI_SANITIZE)
+  message(STATUS "chdb_java_jni: instrumenting with -fsanitize=${CHDB_JNI_SANITIZE}")
+  # Only the shim is instrumented. libchdb comes from a release tarball and is not, so the
+  # sanitizers see the shim's own arithmetic, indexing and lifetimes -- which is exactly the
+  # code this project owns and where a mistake becomes a JVM crash. Instrumenting the engine
+  # too needs a sanitizer build of chdb-core and is tracked separately in the work plan.
+  target_compile_options(chdb_java_jni PRIVATE
+    "-fsanitize=${CHDB_JNI_SANITIZE}"
+    # A report that does not name a line is not worth having.
+    -fno-omit-frame-pointer
+    -fno-optimize-sibling-calls
+    -g)
+  target_link_options(chdb_java_jni PRIVATE "-fsanitize=${CHDB_JNI_SANITIZE}")
+  # Undefined behaviour must fail the test rather than print and carry on, or a CI run stays
+  # green while reporting the defect in its log.
+  if(CHDB_JNI_SANITIZE MATCHES "undefined")
+    target_compile_options(chdb_java_jni PRIVATE -fno-sanitize-recover=undefined)
+  endif()
+endif()
 
 set_target_properties(chdb_java_jni PROPERTIES
   # No "lib" prefix juggling: System.load() takes an absolute path, and the platform package

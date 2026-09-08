@@ -18,8 +18,9 @@ env:
   MAVEN_ARGS: "--batch-mode --no-transfer-progress"
 
 jobs:
-  # Pure Java, no engine needed. Runs first and fast, so a broken lexer or type mapping does
-  # not wait behind a 100 MB engine download.
+  # Unit tests only: the parser, the type mapping and platform detection, none of which need an
+  # engine. Runs first and fast, so a broken lexer does not wait behind a 100 MB download.
+  # The integration suite runs on all four of these JDKs too, in the `native` job below.
   java:
     name: java ${{ matrix.java }} (unit)
     runs-on: ubuntu-latest
@@ -62,9 +63,14 @@ jobs:
       - run: mvn $MAVEN_ARGS -pl chdb-jdbc -am test
 
   # The real matrix: build the shim, stage the platform package, run the integration tests
-  # against a real engine.
+  # against a real engine -- on every supported JDK.
+  #
+  # One job per platform rather than one per platform-and-JDK. The shim is built once and the
+  # integration suite is then run under each JDK via surefire's `jvm` parameter, which forks the
+  # test JVM with a different java while Maven itself keeps running on the build JDK. Sixteen
+  # jobs would download the engine and rebuild the shim sixteen times for no added coverage.
   native:
-    name: ${{ matrix.platform }} / java ${{ matrix.java }}
+    name: ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -72,35 +78,37 @@ jobs:
         include:
           - platform: linux-x86_64-gnu
             runner: ubuntu-22.04
-            java: "11"
-          - platform: linux-x86_64-gnu
-            runner: ubuntu-22.04
-            java: "21"
           - platform: linux-aarch64-gnu
             runner: ubuntu-22.04-arm
-            java: "11"
-          - platform: linux-aarch64-gnu
-            runner: ubuntu-22.04-arm
-            java: "21"
           - platform: macos-aarch64
             runner: macos-14
-            java: "11"
-          - platform: macos-aarch64
-            runner: macos-14
-            java: "21"
           - platform: macos-x86_64
             runner: macos-13
-            java: "11"
-          - platform: macos-x86_64
-            runner: macos-13
-            java: "21"
     steps:
       - uses: actions/checkout@v4
 
+      # Every JDK the plan requires, installed side by side. Each call sets
+      # JAVA_HOME_<major>_<ARCH>, which the test loop below resolves. The last one installed is
+      # what JAVA_HOME points at, so it is the one Maven and the shim build use; the Java
+      # bytecode targets 11 regardless, via maven.compiler.release.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ matrix.java }}
+          java-version: "17"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      # Installed last so JAVA_HOME is 11: building against the floor's headers and compiling
+      # with the floor's javac is what proves the floor is real rather than declared.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
           cache: maven
 
       # ubuntu-22.04 rather than 24.04 on purpose: the shim's glibc and libstdc++ requirements
@@ -145,15 +153,50 @@ jobs:
           cat "$DIR/manifest.properties"
           cat "$DIR/sha256sums.txt"
 
-      - name: Integration tests
+      - name: Integration tests on Java 11, 17, 21 and 25
         run: |
-          mvn $MAVEN_ARGS -pl chdb-integration-tests -am verify \
-            -Dchdb.it.platform=${{ matrix.platform }} \
-            -Dchdb.it.library.path="$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/$(
-              case "${{ matrix.platform }}" in macos-*) echo macos ;; *) echo linux ;; esac
-            )/$(
-              case "${{ matrix.platform }}" in *aarch64*) echo aarch64 ;; *) echo x86_64 ;; esac
-            )"
+          set -eu
+          case "${{ matrix.platform }}" in
+            macos-*) OS=macos ;;
+            *)       OS=linux ;;
+          esac
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64; ARCH_SUFFIX=ARM64 ;;
+            *)         ARCH=x86_64;  ARCH_SUFFIX=X64 ;;
+          esac
+          LIBS="$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/$OS/$ARCH"
+
+          failed=""
+          for VERSION in 11 17 21 25; do
+            # setup-java names these JAVA_HOME_<major>_<ARCH>; ARM64 runners use the ARM64
+            # suffix and x64 runners the X64 one.
+            eval "HOME_DIR=\${JAVA_HOME_${VERSION}_${ARCH_SUFFIX}:-}"
+            if [ -z "$HOME_DIR" ] || [ ! -x "$HOME_DIR/bin/java" ]; then
+              echo "::error::no JDK $VERSION on this runner (JAVA_HOME_${VERSION}_${ARCH_SUFFIX})"
+              failed="$failed $VERSION"
+              continue
+            fi
+
+            echo "::group::Java $VERSION ($HOME_DIR)"
+            "$HOME_DIR/bin/java" -version
+            # -Djvm forks the test JVM with this java while Maven keeps running on the build
+            # JDK, so the shim and the Java classes are built once and exercised four times.
+            if mvn $MAVEN_ARGS -pl chdb-integration-tests -am verify \
+                 -Djvm="$HOME_DIR/bin/java" \
+                 -Dchdb.it.platform=${{ matrix.platform }} \
+                 -Dchdb.it.library.path="$LIBS"; then
+              echo "Java $VERSION passed"
+            else
+              echo "::error::integration tests failed on Java $VERSION"
+              failed="$failed $VERSION"
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ -n "$failed" ]; then
+            echo "integration tests failed on Java:$failed"
+            exit 1
+          fi
 
       - name: Package the platform JAR and check its layout
         run: |
@@ -196,6 +239,65 @@ jobs:
           path: |
             chdb-jdbc/target/surefire-reports/
             chdb-integration-tests/target/failsafe-reports/
+          retention-days: 14
+
+  # Work plan section 5.11. Two passes, because no single tool covers both halves; see the
+  # header of scripts/run-sanitizer-tests.sh for why ASan cannot run against the released
+  # engine.
+  sanitizers:
+    name: sanitizers (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One of each toolchain: GNU/glibc on Linux, Apple clang on macOS. The sanitizer
+          # runtimes and their quirks differ between them, so both are worth running; a second
+          # architecture of the same toolchain would not add much.
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+          - platform: macos-aarch64
+            runner: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Cache the pinned engine download
+        uses: actions/cache@v4
+        with:
+          path: target/engine/download
+          key: chdb-engine-${{ matrix.platform }}-${{ hashFiles('scripts/engine.properties') }}
+
+      - name: Compile the Java side
+        run: mvn $MAVEN_ARGS -pl chdb-jdbc compile
+
+      - name: Fetch the pinned engine
+        run: scripts/fetch-libchdb.sh ${{ matrix.platform }} target/engine/${{ matrix.platform }}
+
+      - name: ASan and UBSan over the shim's own logic
+        # chdb_jni_test: Arrow format parsing, the handle registry and the signal guard, with
+        # no JVM and no engine in the process, so ASan's allocator interception is safe.
+        run: scripts/run-sanitizer-tests.sh ${{ matrix.platform }} address,undefined
+
+      - name: UBSan over the whole JDBC suite
+        # In a real JVM against the real engine. UBSan instruments arithmetic rather than
+        # intercepting allocation, so unlike ASan it coexists with both.
+        run: scripts/run-sanitizer-tests.sh ${{ matrix.platform }} undefined
+
+      - name: Archive sanitizer output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitizer-${{ matrix.platform }}
+          path: |
+            hs_err_pid*.log
+            chdb-integration-tests/target/failsafe-reports/
+          if-no-files-found: ignore
           retention-days: 14
 
   # Guards the invariants that are cheap to check and expensive to discover late.

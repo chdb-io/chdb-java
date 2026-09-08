@@ -8,6 +8,61 @@ namespace chdb_jni
 namespace
 {
 
+// Strict decimal parse: the whole field must be digits, with an optional leading sign.
+//
+// std::atoi is not usable here. It returns 0 for "a" and for "", so "d:a,b" would be read as
+// precision 0 and accepted, while ArrowFieldType.parse on the Java side rejects it. The two
+// parsers have to agree about which formats are supported: this one decides how many bytes of
+// each buffer Java may see, and that one decides what the bytes mean. A format one accepts and
+// the other does not is a latent inconsistency even when it happens to be harmless.
+bool parseWholeInt(const std::string & text, int64_t & out)
+{
+    if (text.empty())
+        return false;
+    size_t i = 0;
+    bool negative = false;
+    if (text[0] == '+' || text[0] == '-')
+    {
+        negative = text[0] == '-';
+        i = 1;
+        if (i == text.size())
+            return false;
+    }
+    int64_t value = 0;
+    for (; i < text.size(); ++i)
+    {
+        const char c = text[i];
+        if (c < '0' || c > '9')
+            return false;
+        // Bail out rather than overflow; no Arrow field legitimately needs more than this.
+        if (value > 1000000000LL)
+            return false;
+        value = value * 10 + (c - '0');
+    }
+    out = negative ? -value : value;
+    return true;
+}
+
+// Splits on ',' without allocating a vector of substrings per call.
+size_t splitFields(const std::string & text, std::string (&fields)[3])
+{
+    size_t count = 0;
+    size_t start = 0;
+    while (count < 3)
+    {
+        const size_t comma = text.find(',', start);
+        if (comma == std::string::npos)
+        {
+            fields[count++] = text.substr(start);
+            return count;
+        }
+        fields[count++] = text.substr(start, comma - start);
+        start = comma + 1;
+    }
+    // A fourth field means this is not a format either parser knows.
+    return text.find(',', start) == std::string::npos ? count : 0;
+}
+
 ArrowColumnLayout fixedWidth(int32_t bytes)
 {
     ArrowColumnLayout layout;
@@ -21,6 +76,12 @@ ArrowColumnLayout simple(ArrowLayout kind)
     ArrowColumnLayout layout;
     layout.layout = kind;
     return layout;
+}
+
+// The unit characters Arrow uses for timestamp, time and duration: second, milli, micro, nano.
+bool isTimeUnit(char c)
+{
+    return c == 's' || c == 'm' || c == 'u' || c == 'n';
 }
 
 }  // namespace
@@ -67,10 +128,22 @@ ArrowColumnLayout parseArrowFormat(const std::string & format)
     // width explicitly. ClickHouse Decimal256 arrives as the three-field form.
     if (format.rfind("d:", 0) == 0)
     {
-        const size_t second_comma = format.find(',', format.find(',') + 1);
-        if (second_comma == std::string::npos)
-            return fixedWidth(16);
-        const int bits = std::atoi(format.c_str() + second_comma + 1);
+        std::string fields[3];
+        const size_t count = splitFields(format.substr(2), fields);
+        if (count < 2)
+            return simple(ArrowLayout::kUnsupported);
+
+        int64_t precision = 0;
+        int64_t scale = 0;
+        if (!parseWholeInt(fields[0], precision) || precision < 0)
+            return simple(ArrowLayout::kUnsupported);
+        // A negative scale is legal in the Arrow spec, so only the parse has to succeed.
+        if (!parseWholeInt(fields[1], scale))
+            return simple(ArrowLayout::kUnsupported);
+
+        int64_t bits = 128;
+        if (count >= 3 && !parseWholeInt(fields[2], bits))
+            return simple(ArrowLayout::kUnsupported);
         if (bits == 256)
             return fixedWidth(32);
         if (bits == 128)
@@ -82,14 +155,15 @@ ArrowColumnLayout parseArrowFormat(const std::string & format)
     // output_format_arrow_fixed_string_as_fixed_byte_array, UUID as w:16.
     if (format.rfind("w:", 0) == 0)
     {
-        const int width = std::atoi(format.c_str() + 2);
-        if (width <= 0)
+        int64_t width = 0;
+        if (!parseWholeInt(format.substr(2), width) || width <= 0)
             return simple(ArrowLayout::kUnsupported);
-        return fixedWidth(width);
+        return fixedWidth(static_cast<int32_t>(width));
     }
 
     // Temporal types. The unit and timezone matter to Java, not to the buffer layout;
-    // only the storage width does.
+    // only the storage width does. The unit character is still validated, so that a format
+    // neither parser recognizes is unsupported on both sides.
     if (format.rfind("td", 0) == 0)
     {
         if (format == "tdD")  // date32, days
@@ -98,8 +172,16 @@ ArrowColumnLayout parseArrowFormat(const std::string & format)
             return fixedWidth(8);
         return simple(ArrowLayout::kUnsupported);
     }
-    if (format.rfind("ts", 0) == 0)  // timestamp: tss:/tsm:/tsu:/tsn: with optional tz
+    if (format.rfind("ts", 0) == 0)
+    {
+        // timestamp: "ts<unit>:<optional timezone>", unit one of s, m, u, n. The colon is
+        // mandatory even when the timezone is empty.
+        if (format.size() < 4 || format[3] != ':')
+            return simple(ArrowLayout::kUnsupported);
+        if (!isTimeUnit(format[2]))
+            return simple(ArrowLayout::kUnsupported);
         return fixedWidth(8);
+    }
     if (format.rfind("tt", 0) == 0)  // time
     {
         if (format == "tts" || format == "ttm")

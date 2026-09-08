@@ -28,6 +28,21 @@
     -->
     <chdb.it.library.path>${project.basedir}/../target/runtime/${chdb.it.platform}</chdb.it.library.path>
     <chdb.it.platform>macos-aarch64</chdb.it.platform>
+
+    <!--
+      Sanitizer support (work plan section 5.11). Empty by default; scripts/run-sanitizer-tests.sh
+      fills these in.
+
+      These reach a surefire fork on Linux, where LD_PRELOAD survives. They do not on macOS:
+      dyld drops DYLD_* from an environment handed to a hardened binary, so an ASan runtime
+      cannot be preloaded into a fork there at all. scripts/run-sanitizer-tests.sh therefore
+      execs the test JVM itself on both platforms and does not depend on these; they are kept
+      because they make a plain `mvn verify` under LD_PRELOAD work on Linux. Both loaders
+      ignore an empty value, so setting them unconditionally costs nothing.
+    -->
+    <chdb.it.sanitizer.preload></chdb.it.sanitizer.preload>
+    <chdb.it.asan.options></chdb.it.asan.options>
+    <chdb.it.ubsan.options></chdb.it.ubsan.options>
   </properties>
 
   <dependencies>
@@ -39,6 +54,18 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!--
+      For the sanitizer run, which drives JUnit directly rather than through Maven.
+      scripts/run-sanitizer-tests.sh has to exec the test JVM itself: macOS strips DYLD_* from
+      an environment handed to a hardened binary through ProcessBuilder, so a preloaded ASan
+      runtime cannot reach a surefire fork. Exec'ing java from the shell does work.
+    -->
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-console-standalone</artifactId>
+      <version>1.10.2</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -69,6 +96,12 @@
             <chdb.it.engine.version>${chdb.engine.version}</chdb.it.engine.version>
             <chdb.it.jni.abi.version>${chdb.jni.abi.version}</chdb.it.jni.abi.version>
           </systemPropertyVariables>
+          <environmentVariables>
+            <DYLD_INSERT_LIBRARIES>${chdb.it.sanitizer.preload}</DYLD_INSERT_LIBRARIES>
+            <LD_PRELOAD>${chdb.it.sanitizer.preload}</LD_PRELOAD>
+            <ASAN_OPTIONS>${chdb.it.asan.options}</ASAN_OPTIONS>
+            <UBSAN_OPTIONS>${chdb.it.ubsan.options}</UBSAN_OPTIONS>
+          </environmentVariables>
         </configuration>
         <executions>
           <execution>
