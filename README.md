@@ -22,24 +22,24 @@ try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
 
 ## Support matrix
 
-V1 targets four platforms. **One of them has actually been run so far** — the rest have build
-and CI definitions that have not executed yet, so treat them as untested rather than as
-working:
+Every one of the four platforms builds, passes the full test suite on Java 11, 17, 21 and 25,
+and is loaded from a real packaged JAR, in CI:
 
 | | Linux glibc | macOS |
 |---|---|---|
-| x86_64 | 🚧 `chdb-native-linux-x86_64-gnu` | 🚧 `chdb-native-macos-x86_64` |
-| aarch64 / arm64 | 🚧 `chdb-native-linux-aarch64-gnu` | ✅ `chdb-native-macos-aarch64` |
+| x86_64 | ✅ `chdb-native-linux-x86_64-gnu` | ✅ `chdb-native-macos-x86_64` |
+| aarch64 / arm64 | ✅ `chdb-native-linux-aarch64-gnu` | ✅ `chdb-native-macos-aarch64` |
 
-- **Java 11 or later.** CI runs the full suite on 11, 17, 21 and 25; **11 and 21** have been
-  run so far. Java 26 is tested for forward compatibility only.
+- **Java 11 or later.** 11, 17, 21 and 25 each run the full suite on all four platforms. Java 26
+  is tested for forward compatibility only.
+- **macOS 11 or later** on arm64, **10.15 or later** on x86_64 — matching what the engine
+  itself supports, and enforced at build time.
 - **Engine:** chDB Core **26.7.0**, pinned. The C ABI is version-locked, so the driver refuses
   to run against a different engine build rather than risking a struct-layout mismatch.
 - **Not supported in V1:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
   [work plan §2.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
-[docs/v1-progress.md](docs/v1-progress.md) has the phase-by-phase status and says what is
-verified where.
+[docs/v1-progress.md](docs/v1-progress.md) has the phase-by-phase status and what is left.
 
 ## Installing
 
@@ -88,8 +88,9 @@ architecture — declare the driver plus each native package you need:
 
 The BOM keeps the driver and every native package on one version, which they must be.
 
-**A native package is large** — around 100 MB compressed, 350 MB unpacked, because it contains
-the whole engine. There is no all-platforms package, on purpose: it would be four times that.
+**A native package is large**, because it contains the whole engine: 112 MB for macOS arm64,
+128 MB for macOS x86_64, 130 MB for Linux aarch64, 167 MB for Linux x86_64, and around 350 MB
+unpacked. There is no all-platforms package, on purpose: it would be the sum of those four.
 
 ### Versioning
 
@@ -162,16 +163,16 @@ Use a second `Connection` — they can share the storage path — or close the f
 | ✅ | Host JVM signal handlers preserved — see [signal handlers](docs/signal-handlers.md) |
 | ✅ | Native loading from the platform JAR, or a directory you point at |
 | ✅ | UBSan over the whole suite; ASan over the shim's own logic |
-| 🚧 | The other three platforms, and JDK 17 and 25 |
+| ✅ | All four platforms × Java 11/17/21/25, in CI |
 | 🚧 | Framework smoke tests (Spring, HikariCP, ShardingSphere) |
 | 🚧 | Soak tests; full-process ASan, which needs an upstream sanitizer build of chdb-core |
 | 🚧 | Maven Central publishing |
 | ❌ | Transactions, batch updates, scrollable/updatable result sets, `CallableStatement` |
 | ❌ | `Array`, `Map`, `Tuple`, `Nested`, `Variant`, `JSON`, `Dynamic` columns |
 
-Everything marked ✅ is implemented and covered by tests — 238 of them, plus a 197-check native
-sanitizer harness — on macOS arm64 with JDK 11 and 21. Nothing about the design is
-platform-specific, but "tested" currently means that one platform.
+Everything marked ✅ is covered by 238 tests — 148 that need no engine and 90 that do — plus a
+199-check native sanitizer harness. Each of the four platforms runs all of them on each of the
+four JDKs, so ✅ means sixteen platform-and-JDK combinations, not one.
 
 The full list of refusals, and why each one is a refusal rather than a fake success, is in
 [docs/unsupported.md](docs/unsupported.md).

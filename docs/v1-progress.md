@@ -6,8 +6,10 @@ stays the report.
 
 Legend: ✅ done and tested · 🟡 partly done · ⬜ not started · ➖ out of this milestone
 
-Verified on **macOS arm64 / engine 26.7.0**, on **JDK 11 and 21**. The other three platforms
-have build and CI definitions but have not been run — that is the single largest gap.
+Verified in CI against **engine 26.7.0** on all four platforms — Linux x86_64 and aarch64,
+macOS arm64 and x86_64 — each running the full suite on **Java 11, 17, 21 and 25**, plus
+sanitizer runs on one Linux and one macOS toolchain. Sixteen platform-and-JDK combinations, all
+green.
 
 ---
 
@@ -94,8 +96,10 @@ lock. Dispositions are compared across load, connect, query and close, and a rea
 `NullPointerException` after connecting proves the JVM still owns SIGSEGV. The lost
 ClickHouse-format crash trace is documented.
 
-🟡 Verified on macOS arm64 only. ⬜ SIGTERM/SIGINT graceful-shutdown test; ⬜ native-crash
-diagnostic-file test. ⬜ Upstream API request not yet filed.
+Verified on all four platforms. CI also caught a bug local testing could not: the guard
+treated glibc's `SA_RESTORER` as a changed disposition, so on Linux it reported four signals as
+clobbered forever ([findings §8](upstream-findings.md)). ⬜ SIGTERM/SIGINT graceful-shutdown
+test; ⬜ native-crash diagnostic-file test. ⬜ Upstream API request not yet filed.
 
 ## Phase 6 — Connection and process-level storage path
 
@@ -144,8 +148,8 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 | Phase | | Notes |
 |---|---|---|
 | 9 — JDBC ecosystem | 🟡 | `META-INF/services/java.sql.Driver` ✅, `DriverPropertyInfo` ✅, minimum `DatabaseMetaData` ✅, `Automatic-Module-Name` ✅, ClassLoader diagnostics ✅ and documented for Tomcat/Spark/Flink. ⬜ Spring, HikariCP and ShardingSphere smoke tests; ⬜ JPMS module-path and two-child-ClassLoader tests |
-| 10 — Off-heap memory and stability | 🟡 | Handle counters asserted zero after every test ✅; bounded streaming, slow consumer, early close, cancel and 1000-query RSS plateau ✅. UBSan over the whole JDBC suite ✅ and ASan+UBSan over the shim's own logic ✅ — but **ASan cannot run against the released engine at all** ([findings §8](upstream-findings.md)), so LSan and full-process ASan need an upstream sanitizer build. ⬜ 1-6 hour soak; ⬜ cgroup + `max_memory_usage` matrix; ⬜ `Cleaner` backstop |
-| 11 — Platform and JDK matrix | 🟡 | CI runs the full integration suite on all four platforms × JDK 11/17/21/25, plus unit tests on the same four and 26 as allow-failure. **JDK 11 and 21 verified locally on macOS arm64**; ⬜ the other three platforms and JDK 17/25 have not run; ⬜ OpenJ9; ⬜ awkward paths; ⬜ corrupted-library and arch-mismatch cases |
+| 10 — Off-heap memory and stability | 🟡 | Handle counters asserted zero after every test ✅; bounded streaming, slow consumer, early close, cancel and 1000-query RSS plateau ✅. UBSan over the whole JDBC suite ✅ and ASan+UBSan over the shim's own logic ✅, on both a Linux and a macOS toolchain — but **ASan cannot run against the released engine at all** ([findings §8](upstream-findings.md)), so full-process ASan and LSan need an upstream sanitizer build. ⬜ 1-6 hour soak; ⬜ cgroup + `max_memory_usage` matrix; ⬜ `Cleaner` backstop |
+| 11 — Platform and JDK matrix | 🟡 | ✅ All four platforms × Java 11/17/21/25 run the full suite in CI, plus Java 26 as allow-failure and a packaged-JAR load on each. ⬜ OpenJ9; ⬜ awkward paths; ⬜ corrupted-library and arch-mismatch cases |
 | 12 — ADBC experiment | ⬜ | Untouched. Does not block V1 |
 | 13 — Documentation | 🟡 | README, type mapping, unsupported JDBC, native loading, signal handlers, memory, ClassLoaders and upstream findings ✅, plus a runnable example. ⬜ Per-platform dependency snippets await published coordinates; ⬜ crash-report template |
 | 14 — Release preparation | ⬜ | Nothing published. The §4.4 research is open, except that the package size is now measured: 103 MB compressed for 350 MB of engine |
@@ -156,11 +160,11 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 
 | Gate | |
 |---|---|
-| Four platforms load from a Maven artifact and run `SELECT 1` | 🟡 one platform, from a real packaged JAR |
-| Java 11, 17, 21, 25 pass | 🟡 CI covers all four with the full suite; 11 and 21 verified locally |
+| Four platforms load from a Maven artifact and run `SELECT 1` | ✅ all four, from a real packaged JAR, in CI |
+| Java 11, 17, 21, 25 pass | ✅ all four, on all four platforms |
 | Version and symbol mismatch fails before first use | ✅ |
 | Signal handlers preserved across load/connect/query/close | ✅ on macOS arm64 |
-| ASan, LSan, UBSan clean | 🟡 UBSan clean over the whole suite; ASan clean over the shim harness; full-process ASan and LSan blocked on an upstream sanitizer build of chdb-core |
+| ASan, LSan, UBSan clean | 🟡 UBSan clean over the whole suite and ASan clean over the shim harness, on Linux and macOS; full-process ASan and LSan blocked on an upstream sanitizer build of chdb-core |
 | Native handle count zero after every test | ✅ 221 tests |
 | Large results stream in bounded memory | ✅ 20M rows, +17 MB RSS |
 | 1000 queries and a soak show no linear RSS growth | 🟡 1000 queries ✅, soak ⬜ |
@@ -176,15 +180,16 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 
 ## What to do next, in order
 
-1. **Run the CI matrix.** Everything else is guesswork until the other three platforms build
-   and pass. The linkage checks in `build-native.sh` are most likely to find something on
-   Linux, where `$ORIGIN` and `-z defs` behave differently from macOS, and the Linux sanitizer
-   job is the first place LSan will run at all.
-2. **File the two upstream issues.** The signal-handler API (§1) is the one release gate whose
+1. **File the two upstream issues.** The signal-handler API (§1) is the one release gate whose
    workaround depends on upstream behaviour not changing underneath it. A sanitizer build of
    chdb-core (§8) is what unblocks the other half of the sanitizer gate.
-3. **Framework smoke tests.** HikariCP in particular, because it is where the
-   one-statement-per-connection rule meets real pooling.
-4. **The soak test**, which is the remaining phase-10 item that local runs cannot stand in for.
-5. **The §3.3 batch-access benchmark**, so the data-path choice is recorded as measured rather
+2. **Framework smoke tests.** HikariCP in particular, because it is where the
+   one-statement-per-connection rule meets real pooling; then Spring `JdbcTemplate` and
+   ShardingSphere, which is also where issue #2's reporter came from.
+3. **The soak test**, the remaining phase-10 item that a CI run cannot stand in for.
+4. **The §3.3 batch-access benchmark**, so the data-path choice is recorded as measured rather
    than as reasoned.
+5. **Phase 14 release preparation**, which is now the largest untouched block: nothing is
+   published, and the Maven Central size, signing and SBOM requirements are unverified. The
+   package sizes are at least measured: 112 MB (macOS arm64), 128 MB (macOS x86_64), 130 MB
+   (Linux aarch64), 167 MB (Linux x86_64).
