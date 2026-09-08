@@ -1,0 +1,461 @@
+name: build
+
+# Work plan §5.12: every supported platform, every supported JDK. The matrix is the release
+# gate, so it runs on every push rather than only on a release branch.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Each native package is built on its own platform: a shim linked for another architecture
+  # fails at System.load() in a user's JVM rather than in CI.
+  MAVEN_ARGS: "--batch-mode --no-transfer-progress"
+
+jobs:
+  # Unit tests only: the parser, the type mapping and platform detection, none of which need an
+  # engine. Runs first and fast, so a broken lexer does not wait behind a 100 MB download.
+  # The integration suite runs on all four of these JDKs too, in the `native` job below.
+  java:
+    name: java ${{ matrix.java }} (unit)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 11 is the floor, 25 the newest LTS-track release the plan requires. 26 is
+        # forward-compatibility only; see the allow-failure job below.
+        java: ["11", "17", "21", "25"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Compile and run unit tests
+        run: mvn $MAVEN_ARGS -pl chdb-jdbc -am test
+
+      - name: Check the generated JNI header exists
+        # The shim compiles against it, so its absence would turn a signature mismatch from a
+        # build error into an UnsatisfiedLinkError in a user's JVM.
+        run: test -f chdb-jdbc/target/native-headers/org_chdb_internal_ChdbNative.h
+
+  # Forward compatibility. Allowed to fail, but a failure has to be triaged before release
+  # rather than discovered by a user on a new JDK.
+  java-next:
+    name: java 26 (forward compatibility)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "26"
+          cache: maven
+      - run: mvn $MAVEN_ARGS -pl chdb-jdbc -am test
+
+  # The real matrix: build the shim, stage the platform package, run the integration tests
+  # against a real engine -- on every supported JDK.
+  #
+  # One job per platform rather than one per platform-and-JDK. The shim is built once and the
+  # integration suite is then run under each JDK via surefire's `jvm` parameter, which forks the
+  # test JVM with a different java while Maven itself keeps running on the build JDK. Sixteen
+  # jobs would download the engine and rebuild the shim sixteen times for no added coverage.
+  native:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+          - platform: linux-aarch64-gnu
+            runner: ubuntu-22.04-arm
+          - platform: macos-aarch64
+            runner: macos-15
+          # macos-15-intel, not macos-15: the plain label is Apple Silicon, and
+          # build-native.sh refuses to build the x86_64 package on an arm64 host. This is the
+          # label chdb-core and the Python binding use for their own x86_64 macOS builds, and
+          # the successor to macos-13, whose runners had become scarce enough that the job sat
+          # queued indefinitely.
+          - platform: macos-x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every JDK the plan requires, installed side by side. Each call sets
+      # JAVA_HOME_<major>_<ARCH>, which the test loop below resolves. The last one installed is
+      # what JAVA_HOME points at, so it is the one Maven and the shim build use; the Java
+      # bytecode targets 11 regardless, via maven.compiler.release.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      # Installed last so JAVA_HOME is 11: building against the floor's headers and compiling
+      # with the floor's javac is what proves the floor is real rather than declared.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+
+      # ubuntu-22.04 rather than 24.04 on purpose: the shim's glibc and libstdc++ requirements
+      # are whatever the build image has, so building on the oldest supported image is what
+      # makes the package usable on older distributions.
+      #
+      # macOS needs no such care, because there the floor is pinned rather than inherited:
+      # CMakeLists sets CMAKE_OSX_DEPLOYMENT_TARGET to match what the engine supports, and
+      # build-native.sh fails the build if the shim ends up demanding a newer macOS than the
+      # engine beside it. Without that, moving to a newer runner image would silently raise the
+      # requirement -- an unpinned build on this image produced a shim wanting macOS 26 next to
+      # an engine that runs on 11.
+      - name: Show toolchain
+        run: |
+          cc --version | head -1
+          cmake --version | head -1
+          java -version
+          if [ "$RUNNER_OS" = "Linux" ]; then ldd --version | head -1; fi
+
+      - name: Cache the pinned engine download
+        uses: actions/cache@v4
+        with:
+          # Keyed on engine.properties, which holds the version and the asset checksums, so a
+          # baseline bump invalidates the cache exactly when it should.
+          path: target/engine/download
+          key: chdb-engine-${{ matrix.platform }}-${{ hashFiles('scripts/engine.properties') }}
+
+      - name: Compile the Java side
+        run: mvn $MAVEN_ARGS -pl chdb-jdbc -am compile
+
+      - name: Fetch the engine, build the shim, stage the platform package
+        # Verifies the download's SHA-256, checks the shim's $ORIGIN/@loader_path linkage,
+        # refuses any absolute build-machine path in its load commands, and holds the platform's
+        # version floor to its ceiling.
+        #
+        # Linux builds in a manylinux_2_28 container. Built on this image the shim would require
+        # glibc 2.34 and shut out the RHEL 8 family, which is supported until May 2029; built in
+        # the container it needs 2.25. build-native.sh fails the build if that regresses, so
+        # this is not a convention anyone has to remember.
+        run: |
+          case "${{ matrix.platform }}" in
+            linux-*) scripts/build-native-in-container.sh ${{ matrix.platform }} ;;
+            *)       scripts/build-native.sh ${{ matrix.platform }} ;;
+          esac
+
+      - name: Report the staged package
+        run: |
+          set -eu
+          case "${{ matrix.platform }}" in
+            macos-*) OS=macos ;;
+            *)       OS=linux ;;
+          esac
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          DIR="chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/$OS/$ARCH"
+          ls -la "$DIR"
+          cat "$DIR/manifest.properties"
+          cat "$DIR/sha256sums.txt"
+
+      - name: Integration tests on Java 11, 17, 21 and 25
+        run: |
+          set -eu
+          case "${{ matrix.platform }}" in
+            macos-*) OS=macos ;;
+            *)       OS=linux ;;
+          esac
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64; ARCH_SUFFIX=ARM64 ;;
+            *)         ARCH=x86_64;  ARCH_SUFFIX=X64 ;;
+          esac
+          LIBS="$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/$OS/$ARCH"
+
+          failed=""
+          for VERSION in 11 17 21 25; do
+            # setup-java names these JAVA_HOME_<major>_<ARCH>; ARM64 runners use the ARM64
+            # suffix and x64 runners the X64 one.
+            eval "HOME_DIR=\${JAVA_HOME_${VERSION}_${ARCH_SUFFIX}:-}"
+            if [ -z "$HOME_DIR" ] || [ ! -x "$HOME_DIR/bin/java" ]; then
+              echo "::error::no JDK $VERSION on this runner (JAVA_HOME_${VERSION}_${ARCH_SUFFIX})"
+              failed="$failed $VERSION"
+              continue
+            fi
+
+            echo "::group::Java $VERSION ($HOME_DIR)"
+            "$HOME_DIR/bin/java" -version
+            # -Djvm forks the test JVM with this java while Maven keeps running on the build
+            # JDK, so the shim and the Java classes are built once and exercised four times.
+            if mvn $MAVEN_ARGS -pl chdb-integration-tests -am verify \
+                 -Djvm="$HOME_DIR/bin/java" \
+                 -Dchdb.it.platform=${{ matrix.platform }} \
+                 -Dchdb.it.library.path="$LIBS"; then
+              echo "Java $VERSION passed"
+            else
+              echo "::error::integration tests failed on Java $VERSION"
+              failed="$failed $VERSION"
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ -n "$failed" ]; then
+            echo "integration tests failed on Java:$failed"
+            exit 1
+          fi
+
+      - name: Package the platform JAR and check its layout
+        run: |
+          mvn $MAVEN_ARGS -pl chdb-jdbc,chdb-native-${{ matrix.platform }} package -DskipTests
+          JAR=$(ls chdb-native-${{ matrix.platform }}/target/*.jar | head -1)
+          echo "packaged $JAR ($(du -h "$JAR" | cut -f1))"
+          # Every file the loader reads has to be there, and the licences and SBOM the plan
+          # requires must ship with it.
+          for entry in manifest.properties sha256sums.txt; do
+            unzip -l "$JAR" | grep -q "$entry" || { echo "missing $entry"; exit 1; }
+          done
+          unzip -l "$JAR" | grep -q "META-INF/licenses/" || { echo "missing licences"; exit 1; }
+          unzip -l "$JAR" | grep -q "META-INF/sbom/bom.json" || { echo "missing SBOM"; exit 1; }
+
+      - name: Load from the packaged JAR, not from a directory
+        # The production path: unpack into a content-addressed cache, verify the checksums,
+        # load. Exercised separately because the integration tests use chdb.library.path.
+        run: |
+          mvn $MAVEN_ARGS -pl chdb-examples -am compile
+          java -cp "chdb-jdbc/target/chdb-jdbc-26.7.0.1-SNAPSHOT.jar:$(ls chdb-native-${{ matrix.platform }}/target/*.jar | head -1):chdb-examples/target/classes" \
+            -Dchdb.cache.dir="$PWD/target/ci-cache" \
+            org.chdb.examples.QuickStart
+
+      - name: Archive debug symbols
+        # Kept out of the runtime JAR (they are several times its size) but needed to read a
+        # crash report, so they are archived per build.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-symbols-${{ matrix.platform }}-java${{ matrix.java }}
+          path: target/debug-symbols/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Archive test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.platform }}-java${{ matrix.java }}
+          path: |
+            chdb-jdbc/target/surefire-reports/
+            chdb-integration-tests/target/failsafe-reports/
+          retention-days: 14
+
+  # The version floor, proven rather than measured.
+  #
+  # The other Linux jobs read the shim's symbol requirements and check them against a ceiling.
+  # That catches a regression but does not demonstrate the package works on the oldest platform
+  # it claims: symbol versions are necessary, not sufficient. This runs the whole suite on
+  # AlmaLinux 8 -- glibc 2.28, the same base RHEL 8 uses -- against the artefacts the other job
+  # would publish.
+  oldest-supported-linux:
+    name: glibc 2.28 (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+            image: almalinux:8
+          - platform: linux-aarch64-gnu
+            runner: ubuntu-22.04-arm
+            image: almalinux:8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          # The build JDK. The suite then runs on whatever JDK the old distribution ships,
+          # which is the point: a user on RHEL 8 installs java-17-openjdk from their own repo.
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Cache the pinned engine download
+        uses: actions/cache@v4
+        with:
+          path: target/engine/download
+          key: chdb-engine-${{ matrix.platform }}-${{ hashFiles('scripts/engine.properties') }}
+
+      - name: Build the Java side and resolve the test classpath
+        run: |
+          mvn $MAVEN_ARGS -pl chdb-integration-tests -am test-compile dependency:build-classpath             -Dmdep.outputFile="$PWD/target/it-cp.txt" -Dmdep.includeScope=test
+
+      - name: Build the shim in manylinux_2_28
+        run: scripts/build-native-in-container.sh ${{ matrix.platform }}
+
+      - name: Run the integration suite on AlmaLinux 8
+        run: |
+          set -eu
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          LIBS="$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/linux/$ARCH"
+
+          # The workspace and the local Maven repository are mounted at the paths they already
+          # have, so the classpath file needs no rewriting.
+          docker run --rm             -v "$PWD:$PWD"             -v "$HOME/.m2:$HOME/.m2:ro"             -w "$PWD"             ${{ matrix.image }}             bash -c '
+              set -eu
+              echo "target system:"
+              grep PRETTY_NAME /etc/os-release
+              ldd --version | head -1
+              dnf -q -y install java-17-openjdk-headless >/dev/null 2>&1
+              java -version
+
+              echo
+              echo "every dependency of the shim must resolve here:"
+              ldd '"$LIBS"'/libchdb_java_jni.so
+
+              echo
+              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.7.0                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
+            '
+
+      - name: Report the floor this package actually needs
+        if: always()
+        run: |
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          cat "chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/linux/$ARCH/manifest.properties"             | grep -E "platform\.|engine\.version" || true
+
+  # Work plan section 5.11. Two passes, because no single tool covers both halves; see the
+  # header of scripts/run-sanitizer-tests.sh for why ASan cannot run against the released
+  # engine.
+  sanitizers:
+    name: sanitizers (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One of each toolchain: GNU/glibc on Linux, Apple clang on macOS. The sanitizer
+          # runtimes and their quirks differ between them, so both are worth running; a second
+          # architecture of the same toolchain would not add much.
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+          - platform: macos-aarch64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Cache the pinned engine download
+        uses: actions/cache@v4
+        with:
+          path: target/engine/download
+          key: chdb-engine-${{ matrix.platform }}-${{ hashFiles('scripts/engine.properties') }}
+
+      - name: Compile the Java side
+        run: mvn $MAVEN_ARGS -pl chdb-jdbc compile
+
+      - name: Fetch the pinned engine
+        run: scripts/fetch-libchdb.sh ${{ matrix.platform }} target/engine/${{ matrix.platform }}
+
+      - name: ASan and UBSan over the shim's own logic
+        # chdb_jni_test: Arrow format parsing, the handle registry and the signal guard, with
+        # no JVM and no engine in the process, so ASan's allocator interception is safe.
+        run: scripts/run-sanitizer-tests.sh ${{ matrix.platform }} address,undefined
+
+      - name: UBSan over the whole JDBC suite
+        # In a real JVM against the real engine. UBSan instruments arithmetic rather than
+        # intercepting allocation, so unlike ASan it coexists with both.
+        run: scripts/run-sanitizer-tests.sh ${{ matrix.platform }} undefined
+
+      - name: Archive sanitizer output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitizer-${{ matrix.platform }}
+          path: |
+            hs_err_pid*.log
+            chdb-integration-tests/target/failsafe-reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Guards the invariants that are cheap to check and expensive to discover late.
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No vendored JDK headers
+        # The old prototype committed jni.h and jni_md.h, which pinned the build to one JDK's
+        # internals. They come from find_package(JNI) now. Checked against the index rather
+        # than the filesystem, so a JDK unpacked into the workspace does not trip it.
+        run: |
+          if git ls-files | grep -E 'jni(_md)?\.h$'; then
+            echo "a JDK header is committed; use find_package(JNI) instead"
+            exit 1
+          fi
+
+      - name: No shared libraries in git
+        run: |
+          if git ls-files | grep -E '\.(so|dylib|a)(\.[0-9]+)*$' | grep -q .; then
+            echo "a binary artefact is committed"
+            git ls-files | grep -E '\.(so|dylib|a)(\.[0-9]+)*$'
+            exit 1
+          fi
+
+      - name: Engine version agrees between the pom and engine.properties
+        # Two sources of truth for the pinned engine is one too many; this keeps them equal.
+        run: |
+          POM=$(sed -n 's:.*<chdb.engine.version>\(.*\)</chdb.engine.version>.*:\1:p' pom.xml | head -1)
+          PROPS=$(sed -n 's/^engine.version=//p' scripts/engine.properties | head -1)
+          echo "pom=$POM engine.properties=$PROPS"
+          test "$POM" = "$PROPS"
+
+      - name: No 'latest' engine URL
+        # A release asset resolved at build time from a moving URL would make the build
+        # unreproducible and the checksums meaningless. Matched on URL-shaped lines only, so
+        # the comments in those files that say not to do this do not trip the check.
+        run: |
+          if grep -nE '^[^#]*https?://[^[:space:]]*latest' scripts/engine.properties scripts/*.sh; then
+            echo "engine downloads must name a pinned release, not a moving 'latest' URL"
+            exit 1
+          fi
+
+      - name: JNI ABI version agrees across Java, C++ and the pom
+        run: |
+          POM=$(sed -n 's:.*<chdb.jni.abi.version>\(.*\)</chdb.jni.abi.version>.*:\1:p' pom.xml | head -1)
+          JAVA=$(sed -n 's/.*JNI_ABI_VERSION = \([0-9]*\);.*/\1/p' \
+            chdb-jdbc/src/main/java/org/chdb/internal/ChdbNative.java | head -1)
+          CPP=$(sed -n 's/.*kJniAbiVersion = \([0-9]*\);.*/\1/p' \
+            chdb-jni/src/chdb_jni_handles.h | head -1)
+          echo "pom=$POM java=$JAVA cpp=$CPP"
+          test "$POM" = "$JAVA" && test "$JAVA" = "$CPP"
+
+      - name: The driver is registered as a service
+        run: |
+          test "$(cat chdb-jdbc/src/main/resources/META-INF/services/java.sql.Driver)" \
+            = "org.chdb.jdbc.ChdbDriver"

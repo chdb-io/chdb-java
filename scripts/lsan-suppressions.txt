@@ -1,0 +1,33 @@
+# LeakSanitizer suppressions for the chdb-java sanitizer run (Linux only; LSan has no Darwin
+# support).
+#
+# Only the JNI shim is instrumented. LSan still tracks every allocation its malloc interceptor
+# sees, which includes the JVM's and libchdb's, and neither of those is this project's to fix:
+#
+#   - the JVM allocates for its lifetime and frees at exit, so LSan sees its arenas as leaks;
+#   - libchdb is an uninstrumented release build with its own allocators and caches, and the
+#     engine deliberately keeps some of them alive for the life of the process.
+#
+# Suppressing by library keeps the run meaningful: a leak in the shim's own frames still fails.
+# If a suppression here ever hides a real shim leak, the frames would name libchdb_java_jni,
+# which nothing below matches.
+
+# The JVM itself.
+leak:libjvm
+leak:libjava
+leak:libjimage
+leak:libnet
+leak:libnio
+leak:libzip
+leak:libverify
+leak:libmanagement
+
+# The engine. Its allocations are reachable through frames that name the library or its
+# ClickHouse internals; neither appears in the shim's own stacks.
+leak:libchdb.so
+leak:DB::
+leak:Poco::
+
+# The C++ runtime's own one-time initialization, reached from either side.
+leak:__cxa_thread_atexit
+leak:std::__1::__libcpp_

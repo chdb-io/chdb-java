@@ -1,0 +1,636 @@
+package org.chdb.jdbc;
+
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLWarning;
+import java.sql.Statement;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import org.chdb.internal.ChdbNative;
+import org.chdb.internal.ChdbNativeException;
+
+/**
+ * Executes one statement at a time on a {@link ChdbConnection}.
+ *
+ * <h2>Streaming or materialized</h2>
+ * A statement with a result set goes through the Arrow streaming API and yields a {@link
+ * ChdbResultSet} that holds one batch at a time. Everything else -- DDL, DML, session control
+ * -- goes through {@code chdb_query_n}, because the streaming API only accepts statements
+ * that have a result schema. {@link StatementShape} decides which, from the engine's
+ * classifier where available.
+ *
+ * <h2>Cancellation</h2>
+ * {@link #cancel()} is the one method that may be called from another thread while this one
+ * is executing, and it deliberately does not take the connection's statement slot -- taking it
+ * would mean waiting for the query it is meant to interrupt. It reads the in-flight stream
+ * handle from an {@link AtomicReference} and asks the engine to cancel it.
+ *
+ * <p>{@link #setQueryTimeout(int)} is built on the same mechanism: a timer thread calls the
+ * same cancel path, so a timeout actually stops the engine rather than only abandoning the
+ * Java-side wait (work plan section 5.8).
+ */
+public class ChdbStatement implements Statement {
+
+    /**
+     * chDB streams in blocks the engine chooses, so this is not a fetch size the driver can
+     * enforce. Recorded for {@code getFetchSize} and otherwise inert; saying so beats
+     * pretending to honour it.
+     */
+    private static final int DEFAULT_FETCH_SIZE = 0;
+
+    final ChdbConnection connection;
+
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
+    /** The stream currently executing, for {@link #cancel()}. Null when nothing is in flight. */
+    private final AtomicReference<Long> inFlightStream = new AtomicReference<>(null);
+
+    private ChdbResultSet currentResultSet;
+    /**
+     * Armed while a streaming statement is in flight and disarmed when its result set closes
+     * or is exhausted, so the clock covers the fetches rather than only the open.
+     */
+    private QueryTimeout activeTimeout = QueryTimeout.NONE;
+    private long currentUpdateCount = -1;
+    private int queryTimeoutSeconds;
+    private int fetchSize = DEFAULT_FETCH_SIZE;
+    private int maxRows;
+    private boolean poolable = true;
+    private boolean closeOnCompletion;
+
+    ChdbStatement(ChdbConnection connection) {
+        this.connection = connection;
+    }
+
+    // ------------------------------------------------------------------ execution
+
+    @Override
+    public ResultSet executeQuery(String sql) throws SQLException {
+        if (!executeInternal(sql, Collections.<String>emptyList(), Collections.<String>emptyList(), true)) {
+            throw new SQLException(
+                    "executeQuery() requires a statement that returns a result set, but "
+                            + describeStatement(sql)
+                            + " does not. Use executeUpdate() or execute() instead.",
+                    "07500");
+        }
+        return currentResultSet;
+    }
+
+    @Override
+    public int executeUpdate(String sql) throws SQLException {
+        long count = executeLargeUpdate(sql);
+        // JDBC's int form saturates rather than overflowing; the long form is exact.
+        return count > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) count;
+    }
+
+    @Override
+    public long executeLargeUpdate(String sql) throws SQLException {
+        if (executeInternal(sql, Collections.<String>emptyList(), Collections.<String>emptyList(), false)) {
+            // Close the result set we were handed: leaving it open would pin a stream that
+            // the caller has no way to reach.
+            closeCurrentResultSet();
+            throw new SQLException(
+                    "executeUpdate() requires a statement that does not return a result set, but "
+                            + describeStatement(sql)
+                            + " does. Use executeQuery() instead.",
+                    "07500");
+        }
+        return currentUpdateCount;
+    }
+
+    @Override
+    public boolean execute(String sql) throws SQLException {
+        return executeInternal(sql, Collections.<String>emptyList(), Collections.<String>emptyList(), null);
+    }
+
+    /**
+     * The single execution path for every {@code execute*} entry point.
+     *
+     * @param expectResultSet {@code TRUE} to require one, {@code FALSE} to require none,
+     *     {@code null} to accept whatever the statement is
+     * @return whether a result set is now current
+     */
+    boolean executeInternal(
+            String sql, List<String> parameterNames, List<String> parameterValues, Boolean expectResultSet)
+            throws SQLException {
+        checkOpen();
+        connection.checkOpen();
+
+        // Any previous result set of this statement is released before the slot is taken,
+        // because closing it is what frees the slot the previous execution held.
+        closeCurrentResultSet();
+        currentUpdateCount = -1;
+        cancelled.set(false);
+
+        // Held until the result set closes for a streaming statement, and only for the call
+        // itself for one with no result set. The engine runs one statement per connection at a
+        // time, and its fetches count.
+        connection.statementSlot().acquire(sql);
+        boolean handedOff = false;
+        try {
+            boolean producesResultSet = producesResultSet(sql);
+            if (expectResultSet != null && expectResultSet && !producesResultSet) {
+                return false;
+            }
+
+            if (producesResultSet) {
+                // Armed before the open, because the open performs the first fetch, and
+                // disarmed by the result set rather than here -- the fetches that follow are
+                // where the time goes.
+                activeTimeout = QueryTimeout.start(this, queryTimeoutSeconds);
+                try {
+                    boolean opened = openStream(sql, parameterNames, parameterValues);
+                    // The result set now owns the slot and releases it when it closes.
+                    handedOff = opened;
+                    return opened;
+                } catch (RuntimeException | SQLException e) {
+                    stopTimeout();
+                    throw e;
+                }
+            }
+            // No timeout for a statement with no result set: chdb_query_n is synchronous and
+            // the C ABI offers no way to interrupt it, so arming a timer would only produce a
+            // cancel that does nothing while the caller keeps waiting.
+            runMaterialized(sql, parameterNames, parameterValues);
+            return false;
+        } finally {
+            if (!handedOff) {
+                connection.statementSlot().release();
+            }
+        }
+    }
+
+    private boolean producesResultSet(String sql) throws SQLException {
+        int[] analysis;
+        try {
+            // Null when the engine predates chdb_classify_query_n (the pinned v26.7.0
+            // baseline does), in which case StatementShape falls back to its keyword scan.
+            analysis = ChdbNative.classifyQuery(connection.handle(), Utf8.encode(sql));
+        } catch (ChdbNativeException e) {
+            // A statement the parser rejects will fail on execution too, with a better
+            // message than anything this classification step could produce.
+            analysis = null;
+        }
+        return StatementShape.producesResultSet(analysis, sql);
+    }
+
+    private boolean openStream(String sql, List<String> parameterNames, List<String> parameterValues)
+            throws SQLException {
+        ChdbUrl url = connection.chdbUrl();
+        long stream;
+        try {
+            stream =
+                    ChdbNative.streamOpen(
+                            connection.handle(),
+                            Utf8.encode(sql),
+                            Utf8.encodeAll(parameterNames),
+                            Utf8.encodeAll(parameterValues),
+                            url.booleanProperty(ChdbUrl.PROP_LOW_CARDINALITY_AS_DICTIONARY, false),
+                            url.booleanProperty(ChdbUrl.PROP_UNSUPPORTED_AS_BINARY, false),
+                            url.booleanProperty(ChdbUrl.PROP_STRING_AS_STRING, true));
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Query failed", e);
+        }
+
+        inFlightStream.set(stream);
+        try {
+            currentResultSet = new ChdbResultSet(this, stream, maxRows);
+        } catch (RuntimeException | SQLException e) {
+            // The stream is ours until a ResultSet takes ownership of it.
+            safeCloseStream(stream);
+            inFlightStream.compareAndSet(stream, null);
+            throw e;
+        }
+        return true;
+    }
+
+    private void runMaterialized(String sql, List<String> parameterNames, List<String> parameterValues)
+            throws SQLException {
+        long result;
+        try {
+            result =
+                    ChdbNative.query(
+                            connection.handle(),
+                            Utf8.encode(sql),
+                            // The payload is discarded for a statement with no result set, so
+                            // the format only has to be one the engine accepts.
+                            Utf8.encode("CSV"),
+                            Utf8.encodeAll(parameterNames),
+                            Utf8.encodeAll(parameterValues));
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Statement failed", e);
+        }
+
+        try {
+            long written = ChdbNative.resultRowsWritten(result);
+            // rows_written is the engine's own count of what an INSERT wrote, including rows
+            // materialized views wrote downstream. For DDL it is 0, which JDBC also uses for
+            // "nothing to report", so the two cases coincide without a special case.
+            currentUpdateCount = written;
+        } finally {
+            try {
+                ChdbNative.destroyResult(result);
+            } catch (ChdbNativeException ignored) {
+                // Destroying a result cannot fail in a way the caller can act on, and the
+                // statement itself succeeded; reporting this would mask that.
+            }
+        }
+    }
+
+    private String describeStatement(String sql) {
+        String keyword = StatementShape.leadingKeyword(sql);
+        return keyword == null ? "this statement" : "a " + keyword + " statement";
+    }
+
+    // ------------------------------------------------------------------ cancellation
+
+    /**
+     * Asks the engine to abandon the statement in flight.
+     *
+     * <p>Called from another thread, by design, and therefore without the connection's
+     * execution lock. Safe to call when nothing is running, or after the stream has already
+     * ended: the shim treats cancelling a finished stream as a no-op.
+     */
+    @Override
+    public void cancel() throws SQLException {
+        Long stream = inFlightStream.get();
+        cancelled.set(true);
+        if (stream == null) {
+            return;
+        }
+        try {
+            ChdbNative.streamCancel(connection.handle(), stream);
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Failed to cancel the statement", e);
+        }
+    }
+
+    /** Whether {@link #cancel()} was called for the statement currently or last in flight. */
+    boolean wasCancelled() {
+        return cancelled.get();
+    }
+
+    /** Whether the cancel that ended the statement came from an expired query timeout. */
+    boolean timedOut() {
+        return activeTimeout.expired();
+    }
+
+    void clearInFlight(long stream) {
+        inFlightStream.compareAndSet(stream, null);
+    }
+
+    /** Disarms the query timeout. Called by the result set once it closes or hits its end. */
+    void stopTimeout() {
+        activeTimeout.stop();
+    }
+
+    // ------------------------------------------------------------------ results
+
+    @Override
+    public ResultSet getResultSet() throws SQLException {
+        checkOpen();
+        return currentResultSet;
+    }
+
+    @Override
+    public int getUpdateCount() throws SQLException {
+        long count = getLargeUpdateCount();
+        return count > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) count;
+    }
+
+    @Override
+    public long getLargeUpdateCount() throws SQLException {
+        checkOpen();
+        return currentResultSet != null ? -1 : currentUpdateCount;
+    }
+
+    @Override
+    public boolean getMoreResults() throws SQLException {
+        checkOpen();
+        closeCurrentResultSet();
+        currentUpdateCount = -1;
+        // A chDB statement produces at most one result. Multiple result sets would need
+        // multi-statement execution, which the driver does not do.
+        return false;
+    }
+
+    @Override
+    public boolean getMoreResults(int current) throws SQLException {
+        checkOpen();
+        if (current == Statement.KEEP_CURRENT_RESULT) {
+            throw ChdbExceptions.notSupported("KEEP_CURRENT_RESULT (a statement has one result)");
+        }
+        return getMoreResults();
+    }
+
+    @Override
+    public ResultSet getGeneratedKeys() throws SQLException {
+        throw ChdbExceptions.notSupported("Generated keys");
+    }
+
+    void resultSetClosed(ChdbResultSet resultSet) {
+        stopTimeout();
+        // The slot was handed to this result set when it opened; closing it is what lets the
+        // next statement on this connection run.
+        connection.statementSlot().release();
+        if (currentResultSet == resultSet) {
+            currentResultSet = null;
+        }
+        if (closeOnCompletion) {
+            try {
+                close();
+            } catch (SQLException ignored) {
+                // closeOnCompletion is a convenience; a failure closing the statement must
+                // not replace whatever the caller was doing with the result set.
+            }
+        }
+    }
+
+    private void closeCurrentResultSet() throws SQLException {
+        ChdbResultSet resultSet = currentResultSet;
+        currentResultSet = null;
+        if (resultSet != null) {
+            resultSet.close();
+        }
+    }
+
+    private void safeCloseStream(long stream) {
+        try {
+            ChdbNative.streamClose(stream);
+        } catch (ChdbNativeException ignored) {
+            // Already reporting a more useful failure to the caller.
+        }
+    }
+
+    // ------------------------------------------------------------------ lifecycle
+
+    @Override
+    public void close() throws SQLException {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            closeCurrentResultSet();
+        } finally {
+            connection.unregister(this);
+        }
+    }
+
+    /** Closes without touching the connection's statement set, which is being iterated. */
+    void closeOnConnectionClose() throws SQLException {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        closeCurrentResultSet();
+    }
+
+    @Override
+    public boolean isClosed() {
+        return closed.get();
+    }
+
+    void checkOpen() throws SQLException {
+        if (closed.get()) {
+            throw ChdbExceptions.closed("Statement");
+        }
+    }
+
+    @Override
+    public Connection getConnection() throws SQLException {
+        checkOpen();
+        return connection;
+    }
+
+    // ------------------------------------------------------------------ knobs
+
+    @Override
+    public int getQueryTimeout() throws SQLException {
+        checkOpen();
+        return queryTimeoutSeconds;
+    }
+
+    @Override
+    public void setQueryTimeout(int seconds) throws SQLException {
+        checkOpen();
+        if (seconds < 0) {
+            throw new SQLException("query timeout must not be negative", "22023");
+        }
+        this.queryTimeoutSeconds = seconds;
+    }
+
+    @Override
+    public int getMaxRows() throws SQLException {
+        checkOpen();
+        return maxRows;
+    }
+
+    @Override
+    public void setMaxRows(int max) throws SQLException {
+        checkOpen();
+        if (max < 0) {
+            throw new SQLException("maxRows must not be negative", "22023");
+        }
+        this.maxRows = max;
+    }
+
+    @Override
+    public long getLargeMaxRows() throws SQLException {
+        return getMaxRows();
+    }
+
+    @Override
+    public void setLargeMaxRows(long max) throws SQLException {
+        if (max > Integer.MAX_VALUE) {
+            throw ChdbExceptions.notSupported("More than Integer.MAX_VALUE max rows");
+        }
+        setMaxRows((int) max);
+    }
+
+    @Override
+    public int getFetchSize() throws SQLException {
+        checkOpen();
+        return fetchSize;
+    }
+
+    @Override
+    public void setFetchSize(int rows) throws SQLException {
+        checkOpen();
+        if (rows < 0) {
+            throw new SQLException("fetchSize must not be negative", "22023");
+        }
+        // Recorded but inert: batch size is the engine's block size, which the driver does not
+        // control. Throwing here would break frameworks that set a fetch size as a matter of
+        // course, and honouring it is not possible.
+        this.fetchSize = rows;
+    }
+
+    @Override
+    public int getFetchDirection() throws SQLException {
+        checkOpen();
+        return ResultSet.FETCH_FORWARD;
+    }
+
+    @Override
+    public void setFetchDirection(int direction) throws SQLException {
+        checkOpen();
+        if (direction != ResultSet.FETCH_FORWARD) {
+            throw ChdbExceptions.notSupported(
+                    "Fetch direction " + direction + " (result sets are forward-only)");
+        }
+    }
+
+    @Override
+    public int getResultSetType() throws SQLException {
+        checkOpen();
+        return ResultSet.TYPE_FORWARD_ONLY;
+    }
+
+    @Override
+    public int getResultSetConcurrency() throws SQLException {
+        checkOpen();
+        return ResultSet.CONCUR_READ_ONLY;
+    }
+
+    @Override
+    public int getResultSetHoldability() throws SQLException {
+        checkOpen();
+        return ResultSet.CLOSE_CURSORS_AT_COMMIT;
+    }
+
+    @Override
+    public int getMaxFieldSize() throws SQLException {
+        checkOpen();
+        return 0;
+    }
+
+    @Override
+    public void setMaxFieldSize(int max) throws SQLException {
+        checkOpen();
+        if (max != 0) {
+            throw ChdbExceptions.notSupported("Truncating values with setMaxFieldSize");
+        }
+    }
+
+    @Override
+    public void setEscapeProcessing(boolean enable) throws SQLException {
+        checkOpen();
+        // There is no escape processing to enable or disable; SQL is passed through verbatim.
+    }
+
+    @Override
+    public void setCursorName(String name) throws SQLException {
+        throw ChdbExceptions.notSupported("Named cursors");
+    }
+
+    @Override
+    public boolean isPoolable() throws SQLException {
+        checkOpen();
+        return poolable;
+    }
+
+    @Override
+    public void setPoolable(boolean poolable) throws SQLException {
+        checkOpen();
+        this.poolable = poolable;
+    }
+
+    @Override
+    public void closeOnCompletion() throws SQLException {
+        checkOpen();
+        this.closeOnCompletion = true;
+    }
+
+    @Override
+    public boolean isCloseOnCompletion() throws SQLException {
+        checkOpen();
+        return closeOnCompletion;
+    }
+
+    @Override
+    public SQLWarning getWarnings() throws SQLException {
+        checkOpen();
+        return null;
+    }
+
+    @Override
+    public void clearWarnings() throws SQLException {
+        checkOpen();
+    }
+
+    // ------------------------------------------------------------------ batch: not in V1
+
+    @Override
+    public void addBatch(String sql) throws SQLException {
+        throw ChdbExceptions.notSupported("Batch updates");
+    }
+
+    @Override
+    public void clearBatch() throws SQLException {
+        throw ChdbExceptions.notSupported("Batch updates");
+    }
+
+    @Override
+    public int[] executeBatch() throws SQLException {
+        throw ChdbExceptions.notSupported("Batch updates");
+    }
+
+    @Override
+    public long[] executeLargeBatch() throws SQLException {
+        throw ChdbExceptions.notSupported("Batch updates");
+    }
+
+    @Override
+    public int executeUpdate(String sql, int autoGeneratedKeys) throws SQLException {
+        if (autoGeneratedKeys != Statement.NO_GENERATED_KEYS) {
+            throw ChdbExceptions.notSupported("Generated keys");
+        }
+        return executeUpdate(sql);
+    }
+
+    @Override
+    public int executeUpdate(String sql, int[] columnIndexes) throws SQLException {
+        throw ChdbExceptions.notSupported("Generated keys");
+    }
+
+    @Override
+    public int executeUpdate(String sql, String[] columnNames) throws SQLException {
+        throw ChdbExceptions.notSupported("Generated keys");
+    }
+
+    @Override
+    public boolean execute(String sql, int autoGeneratedKeys) throws SQLException {
+        if (autoGeneratedKeys != Statement.NO_GENERATED_KEYS) {
+            throw ChdbExceptions.notSupported("Generated keys");
+        }
+        return execute(sql);
+    }
+
+    @Override
+    public boolean execute(String sql, int[] columnIndexes) throws SQLException {
+        throw ChdbExceptions.notSupported("Generated keys");
+    }
+
+    @Override
+    public boolean execute(String sql, String[] columnNames) throws SQLException {
+        throw ChdbExceptions.notSupported("Generated keys");
+    }
+
+    // ------------------------------------------------------------------ wrapper
+
+    @Override
+    public <T> T unwrap(Class<T> iface) throws SQLException {
+        if (iface.isInstance(this)) {
+            return iface.cast(this);
+        }
+        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+    }
+
+    @Override
+    public boolean isWrapperFor(Class<?> iface) {
+        return iface.isInstance(this);
+    }
+}

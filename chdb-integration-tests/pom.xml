@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.chdb</groupId>
+    <artifactId>chdb-java-parent</artifactId>
+    <version>26.7.0.1-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>chdb-integration-tests</artifactId>
+  <packaging>jar</packaging>
+  <name>chDB JDBC integration tests</name>
+  <description>
+    Tests that need a real engine: the type matrix, streaming, cancellation, signal handlers,
+    the process-level storage path and the native loader. Not published.
+  </description>
+
+  <properties>
+    <maven.deploy.skip>true</maven.deploy.skip>
+    <maven.install.skip>true</maven.install.skip>
+    <!--
+      Where the two shared libraries live. Defaults to what scripts/build-native.sh stages for
+      this platform; override with -Dchdb.it.library.path to test a different pair, or leave the
+      platform native JAR on the classpath and set it empty to exercise the JAR unpack path.
+    -->
+    <chdb.it.library.path>${project.basedir}/../target/runtime/${chdb.it.platform}</chdb.it.library.path>
+    <chdb.it.platform>macos-aarch64</chdb.it.platform>
+
+    <!--
+      Sanitizer support (work plan section 5.11). Empty by default; scripts/run-sanitizer-tests.sh
+      fills these in.
+
+      These reach a surefire fork on Linux, where LD_PRELOAD survives. They do not on macOS:
+      dyld drops DYLD_* from an environment handed to a hardened binary, so an ASan runtime
+      cannot be preloaded into a fork there at all. scripts/run-sanitizer-tests.sh therefore
+      execs the test JVM itself on both platforms and does not depend on these; they are kept
+      because they make a plain `mvn verify` under LD_PRELOAD work on Linux. Both loaders
+      ignore an empty value, so setting them unconditionally costs nothing.
+    -->
+    <chdb.it.sanitizer.preload></chdb.it.sanitizer.preload>
+    <chdb.it.asan.options></chdb.it.asan.options>
+    <chdb.it.ubsan.options></chdb.it.ubsan.options>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.chdb</groupId>
+      <artifactId>chdb-jdbc</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!--
+      For the sanitizer run, which drives JUnit directly rather than through Maven.
+      scripts/run-sanitizer-tests.sh has to exec the test JVM itself: macOS strips DYLD_* from
+      an environment handed to a hardened binary through ProcessBuilder, so a preloaded ASan
+      runtime cannot reach a surefire fork. Exec'ing java from the shell does work.
+    -->
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-console-standalone</artifactId>
+      <version>1.10.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Everything here is an *IT and belongs to failsafe. -->
+          <skipTests>true</skipTests>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <!--
+            One JVM for the whole run, reused across classes. The engine binds a storage path
+            per process and loads its libraries once, so forking per class would pay a 350 MB
+            load repeatedly; the tests are written to leave no state behind instead.
+          -->
+          <forkCount>1</forkCount>
+          <reuseForks>true</reuseForks>
+          <argLine>-Xmx512m -Dchdb.library.path=${chdb.it.library.path}</argLine>
+          <systemPropertyVariables>
+            <chdb.it.engine.version>${chdb.engine.version}</chdb.it.engine.version>
+            <chdb.it.jni.abi.version>${chdb.jni.abi.version}</chdb.it.jni.abi.version>
+          </systemPropertyVariables>
+          <environmentVariables>
+            <DYLD_INSERT_LIBRARIES>${chdb.it.sanitizer.preload}</DYLD_INSERT_LIBRARIES>
+            <LD_PRELOAD>${chdb.it.sanitizer.preload}</LD_PRELOAD>
+            <ASAN_OPTIONS>${chdb.it.asan.options}</ASAN_OPTIONS>
+            <UBSAN_OPTIONS>${chdb.it.ubsan.options}</UBSAN_OPTIONS>
+          </environmentVariables>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
