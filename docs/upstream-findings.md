@@ -298,6 +298,31 @@ And on macOS the preload has to be exported by the shell that execs `java`: dyld
 from an environment handed to a hardened binary, so a surefire fork receives `LD_PRELOAD` and
 `ASAN_OPTIONS` but not `DYLD_INSERT_LIBRARIES`, and ASan then loads by `dlopen` and aborts.
 
+### What CI found in the guard itself
+
+Worth recording because it is the shape of bug local testing structurally cannot reach.
+
+On Linux the signal guard reported four signals -- SIGABRT, SIGSYS, SIGTSTP, SIGTRAP -- as
+clobbered-and-restored on every call, and `SignalHandlerIT.optOutRestoresHostHandlers` failed
+because the before/after dispositions never matched. The handler was `SIG_DFL` in both
+snapshots. Only the flags differed:
+
+```
+before:  SIGABRT=SIG_DFL flags=0x0
+after:   SIGABRT=SIG_DFL flags=0x4000000
+```
+
+`0x04000000` is `SA_RESTORER`, which glibc sets on every `sigaction()` it performs to name the
+trampoline a handler returns through. chDB's reset sets `SIG_DFL` over `SIG_DFL` and the flag
+appears; the guard's restore goes through glibc too and sets it again, so the difference could
+never be removed. The disposition was behaviourally identical throughout -- with `SIG_DFL`
+there is no handler and so no trampoline.
+
+The comparison and the report now mask flags a caller cannot control. macOS has no such flag,
+so the whole local suite passed; and it surfaced under the sanitizer job rather than the plain
+Linux job only because the JUnit console launcher orders test methods differently from
+surefire, which let this test run before anything else had already set the flag.
+
 ### What the harness found
 
 Five formats the shim's parser accepted and the Java parser refused: `d:9`, `d:`, `d:a,b`,

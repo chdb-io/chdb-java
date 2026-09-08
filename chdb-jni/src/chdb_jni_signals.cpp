@@ -35,6 +35,37 @@ const NamedSignal kNamedSignals[] = {
     {SIGPIPE, "SIGPIPE"}, {SIGUSR1, "SIGUSR1"}, {SIGUSR2, "SIGUSR2"}, {SIGXFSZ, "SIGXFSZ"},
 };
 
+// Flags the kernel or libc sets for itself, which a caller can neither control nor observe the
+// effect of.
+//
+// SA_RESTORER is the one that matters. glibc sets it on every sigaction() it performs, naming
+// the trampoline used to return from a handler. So a signal that starts at SIG_DFL with no
+// flags and is then set to SIG_DFL by chDB comes back reading SA_RESTORER -- and restoring the
+// original goes through glibc too, which sets it again. Comparing it would make the guard see a
+// difference it can never remove, and report a signal as clobbered when the disposition is
+// behaviourally identical: SIG_DFL either way, and with no handler there is no trampoline to
+// return through.
+//
+// Found by CI on Linux; macOS has no such flag, so no amount of local testing would have shown
+// it.
+constexpr int kUncontrollableFlags =
+#if defined(__linux__)
+#    if defined(SA_RESTORER)
+    SA_RESTORER
+#    else
+    // Not declared by glibc's <signal.h>; it lives in <asm/signal.h>, which conflicts with it.
+    0x04000000
+#    endif
+#else
+    0
+#endif
+    ;
+
+int meaningfulFlags(const struct sigaction & sa)
+{
+    return sa.sa_flags & ~kUncontrollableFlags;
+}
+
 // sa_handler and sa_sigaction share a union, so which one carries the pointer depends on
 // SA_SIGINFO. Reading the wrong member is not a crash but it does make two different
 // dispositions compare equal, which would defeat the guard.
@@ -47,7 +78,7 @@ const void * handlerOf(const struct sigaction & sa)
 
 bool sameDisposition(const struct sigaction & a, const struct sigaction & b)
 {
-    if (a.sa_flags != b.sa_flags)
+    if (meaningfulFlags(a) != meaningfulFlags(b))
         return false;
     if (handlerOf(a) != handlerOf(b))
         return false;
@@ -152,11 +183,16 @@ std::string describeSignalDispositions()
         else if (handler == reinterpret_cast<const void *>(SIG_IGN))
             symbolic = "SIG_IGN";
 
+        // Reported with the uncontrollable flags masked out, for the same reason they are not
+        // compared: a caller diffing this output across a chDB call should see a difference
+        // only where the disposition actually differs.
+        const int flags = meaningfulFlags(sa);
+
         char line[160];
         if (symbolic != nullptr)
-            std::snprintf(line, sizeof(line), "%s=%s flags=0x%x\n", named.name, symbolic, sa.sa_flags);
+            std::snprintf(line, sizeof(line), "%s=%s flags=0x%x\n", named.name, symbolic, flags);
         else
-            std::snprintf(line, sizeof(line), "%s=handler:%p flags=0x%x\n", named.name, handler, sa.sa_flags);
+            std::snprintf(line, sizeof(line), "%s=handler:%p flags=0x%x\n", named.name, handler, flags);
         out += line;
     }
     return out;

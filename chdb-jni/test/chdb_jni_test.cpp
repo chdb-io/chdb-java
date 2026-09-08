@@ -322,6 +322,51 @@ void testSignalGuard()
         check(guard.restore().empty(), "an untouched guard restores nothing");
     }
 
+    // Re-installing the same disposition must not count as a change.
+    //
+    // The case this pins is a Linux one. glibc sets SA_RESTORER on every sigaction() it
+    // performs, so a signal sitting at SIG_DFL with no flags reads back with SA_RESTORER after
+    // anything -- chDB's reset included -- sets it to SIG_DFL again. Restoring the original
+    // goes through glibc too and sets the flag again, so a guard that compared it would report
+    // the signal as clobbered forever while the disposition never actually changed.
+    //
+    // On macOS there is no such flag and this passes trivially, which is exactly why it took
+    // CI on Linux to find the bug.
+    {
+        struct sigaction defaulted;
+        std::memset(&defaulted, 0, sizeof(defaulted));
+        defaulted.sa_handler = SIG_DFL;
+        sigemptyset(&defaulted.sa_mask);
+        defaulted.sa_flags = 0;
+        sigaction(SIGUSR2, &defaulted, nullptr);
+
+        SignalGuard guard;
+        // Exactly what chdb_reset_signal_handlers() does: set SIG_DFL over SIG_DFL.
+        sigaction(SIGUSR2, &defaulted, nullptr);
+        const std::vector<int> restored = guard.restore();
+        for (int signum : restored)
+            check(signum != SIGUSR2,
+                  "re-installing SIG_DFL over SIG_DFL must not read as a change"
+                  " (libc-set flags such as SA_RESTORER are not part of the disposition)");
+        check(restored.empty(), "no signal should have needed restoring");
+    }
+
+    // And the description must agree with the comparison, or a caller diffing it across a chDB
+    // call would see a difference the guard says is not there.
+    {
+        struct sigaction defaulted;
+        std::memset(&defaulted, 0, sizeof(defaulted));
+        defaulted.sa_handler = SIG_DFL;
+        sigemptyset(&defaulted.sa_mask);
+        defaulted.sa_flags = 0;
+        sigaction(SIGUSR2, &defaulted, nullptr);
+
+        const std::string before = describeSignalDispositions();
+        sigaction(SIGUSR2, &defaulted, nullptr);
+        check(describeSignalDispositions() == before,
+              "the disposition report must not change when nothing behavioural did");
+    }
+
     sigaction(SIGUSR2, &original, nullptr);
 }
 
