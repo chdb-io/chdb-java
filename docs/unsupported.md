@@ -118,10 +118,22 @@ which is worse than an error.
 
 | | |
 |---|---|
+| `?` parameters on `SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK` | throws (SQLSTATE `0A000`) |
 | `setMaxFieldSize(n)` for `n != 0` | throws; the driver does not truncate values |
 | `getMoreResults(KEEP_CURRENT_RESULT)` | throws; a statement has one result |
 | `Driver.getParentLogger()` | throws; the driver does not use `java.util.logging` |
 | `Connection.unwrap(x)` for an unrelated `x` | throws |
+
+A `SHOW`/`DESCRIBE`/`EXPLAIN`/`EXISTS`/`CHECK` statement goes through the engine's materialized
+Arrow entry point, because the streaming one accepts only a SELECT pipeline — and the engine
+exports `chdb_query_arrow_n` but no parameter-binding form of it. So those statements execute,
+with their full result set, but cannot carry server-side bindings; a `PreparedStatement` with a
+`?` in one is refused rather than having its values interpolated into the SQL, which is the
+injection server-side binding exists to avoid.
+
+**Instead:** put the value in the SQL of a plain `Statement`, or ask `system.tables` /
+`system.columns` / `system.settings` the same question — those are `SELECT`s and do take
+parameters. `DatabaseMetaData` already does exactly that.
 
 ## Accepted but inert
 

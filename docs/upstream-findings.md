@@ -15,6 +15,7 @@ of these entries changed with it rather than being carried over:
   as documented. An unrecognized setting *name* is still accepted and ignored.
 - **§6 no longer applies to the baseline**: both optional symbols are exported now.
 - **§9 is new**, from measuring what `chdb_shutdown()` does and does not do.
+- **§10 is new**, from measuring which statements the streaming Arrow entry point accepts.
 
 The rest still hold on the new engine, and the tests named against each are what demonstrates
 that — they run in `mvn verify` against whichever engine is pinned.
@@ -497,6 +498,56 @@ everything first — cancel and join whatever is running, since the process is g
 regardless — would let a host make its own exit safe without racing its own application
 threads. Failing that, `chdb_close_conn()` on a connection with a query in flight should be
 safe, which would let the hook do its job in the one case it currently cannot.
+
+---
+
+## 10. The streaming Arrow API refuses every non-`SELECT` read
+
+**Severity: would have shipped a driver where `SHOW TABLES` fails. Worked around with a second
+route; the parameter half still needs upstream.**
+
+`chdb_stream_query_arrow_n` admits a statement only if it parses as an `ASTSelectWithUnionQuery`:
+
+```cpp
+// src/Client/ClientBase.cpp, ClientBase::processTextAsSingleQuery
+else if (streaming_query_context->is_streaming_query && parsed_query->as<ASTSelectWithUnionQuery>())
+    ...
+else
+    throw Exception(ErrorCodes::BAD_ARGUMENTS, "Streaming query is not supported for query: {}", full_query);
+```
+
+Every other row-returning statement is refused. Measured on v26.7.0, macOS arm64: `SHOW
+TABLES`, `SHOW DATABASES`, `SHOW CREATE TABLE`, `SHOW COLUMNS`, `SHOW SETTINGS`, `DESCRIBE`,
+`DESC`, `EXISTS TABLE`, `EXISTS DATABASE`, `CHECK TABLE` and all seven `EXPLAIN` forms — all
+with `Code: 36 ... Streaming query is not supported`. The engine's own classifier puts them in
+`CHDB_QUERY_READ_ONLY`, so a driver that treats "read-only" as "streamable" has no route for
+any of them.
+
+`chdb_query_arrow_n` accepts all of them and exports the whole result through the same Arrow C
+Data Interface, so nothing above the shim has to change. The driver therefore carries three
+routes rather than two, and `StatementShape` decides which from the leading keyword; see
+`NonStreamableResultsIT`.
+
+Two things are worth noting for upstream:
+
+- **The refusal is raised before execution**, in `processTextAsSingleQuery` and ahead of
+  `processParsedSingleQuery`. Confirmed by measurement: `WITH q AS (SELECT 2 AS v) INSERT INTO
+  t SELECT v FROM q` is accepted by the parser, refused by the streaming door, and leaves the
+  table untouched. That ordering is what would make a retry safe — but it is only observable
+  through an error-message prefix, and this driver will not key a re-execution decision on
+  one. A `chdb_state` or error code distinguishing "not streamable, nothing ran" from every
+  other failure would let a client retry without guessing.
+- **`chdb_query_arrow_n` has no `_with_params_n` variant.** `chdb_query_arrow_with_settings_n`
+  takes a `NameToNameMap` of parameters but lives in `namespace CHDB` and is absent from
+  `chdb/libchdb_export_macos.txt` and `chdb/libchdb_export.map`. So a non-streamable statement
+  with server-side bindings has no entry point at all, and the driver reports that rather than
+  interpolating the values into the SQL.
+
+**Suggested upstream fix:** export a `chdb_query_arrow_with_params_n`, and give the streaming
+initialisation a machine-readable "this statement is not streamable" state so a client can
+route on it instead of on a keyword scan.
+
+**Documented in:** `NonStreamableResultsIT`, `StatementShape`, issue #12.
 
 ---
 

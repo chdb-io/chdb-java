@@ -15,12 +15,19 @@ import org.chdb.internal.ChdbNativeException;
 /**
  * Executes one statement at a time on a {@link ChdbConnection}.
  *
- * <h2>Streaming or materialized</h2>
- * A statement with a result set goes through the Arrow streaming API and yields a {@link
- * ChdbResultSet} that holds one batch at a time. Everything else -- DDL, DML, session control
- * -- goes through {@code chdb_query_n}, because the streaming API only accepts statements
- * that have a result schema. {@link StatementShape} decides which, from the engine's
- * classifier where available.
+ * <h2>Three routes, not two</h2>
+ * A statement with a result set the engine will stream goes through {@code
+ * chdb_stream_query_arrow_n} and yields a {@link ChdbResultSet} that holds one batch at a
+ * time. A statement with a result set the engine refuses to stream -- {@code SHOW}, {@code
+ * DESCRIBE}, {@code EXPLAIN}, {@code EXISTS}, {@code CHECK}, none of which parse as a SELECT
+ * pipeline -- goes through {@code chdb_query_arrow_n}, which delivers the same Arrow C Data
+ * Interface materialized, and produces a {@link ChdbResultSet} indistinguishable from the
+ * first. Everything else -- DDL, DML, session control -- goes through {@code chdb_query_n}.
+ * {@link StatementShape} decides which, from the engine's classifier where available.
+ *
+ * <p>The route is decided once, before execution, and no statement is ever executed twice:
+ * {@link StatementShape} documents why a failed stream open is reported rather than retried
+ * on the materialized route.
  *
  * <h2>Cancellation</h2>
  * {@link #cancel()} is the one method that may be called from another thread while this one
@@ -132,7 +139,8 @@ public class ChdbStatement implements Statement {
         connection.statementSlot().acquire(sql);
         boolean handedOff = false;
         try {
-            boolean producesResultSet = producesResultSet(sql);
+            StatementShape.Route route = route(sql);
+            boolean producesResultSet = route != StatementShape.Route.NO_RESULT_SET;
             if (expectResultSet != null && expectResultSet && !producesResultSet) {
                 return false;
             }
@@ -143,7 +151,7 @@ public class ChdbStatement implements Statement {
                 // where the time goes.
                 activeTimeout = QueryTimeout.start(this, queryTimeoutSeconds);
                 try {
-                    boolean opened = openStream(sql, parameterNames, parameterValues);
+                    boolean opened = openStream(route, sql, parameterNames, parameterValues);
                     // The result set now owns the slot and releases it when it closes.
                     handedOff = opened;
                     return opened;
@@ -164,7 +172,7 @@ public class ChdbStatement implements Statement {
         }
     }
 
-    private boolean producesResultSet(String sql) throws SQLException {
+    private StatementShape.Route route(String sql) throws SQLException {
         int[] analysis;
         try {
             // Null when the engine predates chdb_classify_query_n, which the v26.7.2-rc.2
@@ -176,23 +184,59 @@ public class ChdbStatement implements Statement {
             // message than anything this classification step could produce.
             analysis = null;
         }
-        return StatementShape.producesResultSet(analysis, sql);
+        return StatementShape.route(analysis, sql);
     }
 
-    private boolean openStream(String sql, List<String> parameterNames, List<String> parameterValues)
+    private boolean openStream(
+            StatementShape.Route route,
+            String sql,
+            List<String> parameterNames,
+            List<String> parameterValues)
             throws SQLException {
         ChdbUrl url = connection.chdbUrl();
+        boolean lowCardinalityAsDictionary =
+                url.booleanProperty(ChdbUrl.PROP_LOW_CARDINALITY_AS_DICTIONARY, false);
+        boolean unsupportedAsBinary = url.booleanProperty(ChdbUrl.PROP_UNSUPPORTED_AS_BINARY, false);
+        boolean stringAsString = url.booleanProperty(ChdbUrl.PROP_STRING_AS_STRING, true);
+
+        boolean materialize = route == StatementShape.Route.MATERIALIZED_RESULT_SET;
+        if (materialize && !parameterNames.isEmpty()) {
+            // The engine exports chdb_query_arrow_n but no _with_params_n variant of it, so
+            // there is no entry point that both accepts this statement and binds parameters.
+            // Reported rather than worked around: interpolating the values into the SQL is
+            // the injection this driver's server-side binding exists to avoid, and running
+            // the statement with the bindings dropped would answer the wrong question.
+            throw new SQLException(
+                    "Server-side parameters are not supported for "
+                            + describeStatement(sql)
+                            + ", because the engine has no parameter-binding form of the Arrow"
+                            + " entry point that accepts it (chdb_query_arrow_with_params_n is"
+                            + " not exported by engine "
+                            + ChdbNative.engineVersion()
+                            + "). Use a Statement with the value written into the SQL, or a"
+                            + " query over system.tables / system.columns, which is a SELECT and"
+                            + " does take parameters.",
+                    "0A000");
+        }
+
         long stream;
         try {
             stream =
-                    ChdbNative.streamOpen(
-                            connection.handle(),
-                            Utf8.encode(sql),
-                            Utf8.encodeAll(parameterNames),
-                            Utf8.encodeAll(parameterValues),
-                            url.booleanProperty(ChdbUrl.PROP_LOW_CARDINALITY_AS_DICTIONARY, false),
-                            url.booleanProperty(ChdbUrl.PROP_UNSUPPORTED_AS_BINARY, false),
-                            url.booleanProperty(ChdbUrl.PROP_STRING_AS_STRING, true));
+                    materialize
+                            ? ChdbNative.streamOpenMaterialized(
+                                    connection.handle(),
+                                    Utf8.encode(sql),
+                                    lowCardinalityAsDictionary,
+                                    unsupportedAsBinary,
+                                    stringAsString)
+                            : ChdbNative.streamOpen(
+                                    connection.handle(),
+                                    Utf8.encode(sql),
+                                    Utf8.encodeAll(parameterNames),
+                                    Utf8.encodeAll(parameterValues),
+                                    lowCardinalityAsDictionary,
+                                    unsupportedAsBinary,
+                                    stringAsString);
         } catch (ChdbNativeException e) {
             throw ChdbExceptions.wrap("Query failed", e);
         }

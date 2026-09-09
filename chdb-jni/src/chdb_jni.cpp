@@ -109,6 +109,19 @@ struct ResultHandle : HandleBase
     chdb_result * result = nullptr;
 };
 
+// Where a stream handle's batches come from. Both kinds are the same Arrow C Data
+// Interface to Java -- ArrowSchemaView, ArrowBatch and ChdbResultSet cannot tell them
+// apart -- and differ only in which engine call produces the next batch.
+enum class BatchSource
+{
+    // chdb_stream_query_arrow_n: the engine holds the pipeline and hands over one batch per
+    // chdb_stream_fetch_arrow. Only a SELECT pipeline is admitted (issue #12).
+    kEngineStream,
+    // chdb_query_arrow_n: the statement ran to completion and exported the whole result into
+    // an ArrowArrayStream this handle owns. Batches come from its get_next.
+    kMaterializedArrow,
+};
+
 struct StreamHandle : HandleBase
 {
     StreamHandle() : HandleBase(kKindStream) { }
@@ -157,14 +170,41 @@ struct StreamHandle : HandleBase
             chdb_destroy_query_result(to_destroy);
         }
 
+        // Released after the batches above, which is what frees the engine buffers behind a
+        // materialized result: the batches are independently owned per the Arrow C ABI, but
+        // releasing the producer first would leave them reading from a retired allocator.
+        if (has_array_stream)
+        {
+            has_array_stream = false;
+            if (array_stream.release != nullptr)
+                array_stream.release(&array_stream);
+            std::memset(&array_stream, 0, sizeof(array_stream));
+        }
+
         closed = true;
         // Dropped last: the connection must outlive every stream opened on it, so the
         // stream holds a strong reference and releases it only here.
         owner.reset();
     }
 
+    // Whether this handle still has a batch producer to drive. Kind-dependent: a
+    // materialized handle has no chdb_result at all -- chdb_query_arrow_n's metrics object is
+    // destroyed at open, because the data lives in array_stream and the two have independent
+    // lifetimes.
+    bool hasProducer() const
+    {
+        return source == BatchSource::kEngineStream ? stream != nullptr : has_array_stream;
+    }
+
+    BatchSource source = BatchSource::kEngineStream;
+
     chdb_result * stream = nullptr;
     std::shared_ptr<ConnHandle> owner;
+
+    // kMaterializedArrow only: the stream chdb_query_arrow_n exported into. Owned here, and
+    // released by closeNow().
+    ArrowArrayStream array_stream{};
+    bool has_array_stream = false;
 
     ArrowSchema schema{};
     bool has_schema = false;
@@ -341,11 +381,65 @@ std::string resultError(chdb_result * result)
 
 // ---------------------------------------------------------------------- arrow plumbing
 
+// Reads the last error off an ArrowArrayStream, for the materialized path. The Arrow C
+// stream ABI puts the text behind get_last_error rather than on a result object.
+std::string arrowStreamError(ArrowArrayStream & stream)
+{
+    if (stream.get_last_error == nullptr)
+        return std::string();
+    const char * error = stream.get_last_error(&stream);
+    return error == nullptr ? std::string() : std::string(error);
+}
+
+// Fetches one batch from a materialized Arrow stream. Same contract as fetchBatch below.
+bool fetchMaterializedBatch(JNIEnv * env, StreamHandle & handle, ArrowArray * out, bool want_schema)
+{
+    if (!handle.has_array_stream)
+    {
+        throwNative(env, "this result has no Arrow stream to read from");
+        return false;
+    }
+
+    // Unlike the engine's streaming door, the schema is available without producing a batch:
+    // the whole result is already exported, so get_schema answers straight away.
+    if (want_schema && !handle.has_schema)
+    {
+        if (handle.array_stream.get_schema == nullptr
+            || handle.array_stream.get_schema(&handle.array_stream, &handle.schema) != 0
+            || handle.schema.release == nullptr)
+        {
+            std::string error = arrowStreamError(handle.array_stream);
+            throwNative(env, error.empty()
+                    ? "chDB executed the statement but exported no Arrow schema for it"
+                    : error);
+            return false;
+        }
+        handle.has_schema = true;
+    }
+
+    if (handle.array_stream.get_next == nullptr)
+    {
+        throwNative(env, "chDB exported an Arrow stream with no get_next callback");
+        return false;
+    }
+
+    if (handle.array_stream.get_next(&handle.array_stream, out) != 0)
+    {
+        std::string error = arrowStreamError(handle.array_stream);
+        throwNative(env, error.empty() ? "failed to read the next Arrow batch from the result" : error);
+        return false;
+    }
+    return true;
+}
+
 // Fetches one batch. Returns false and queues a Java exception on engine error.
 // `out` is left released (out->release == nullptr) at end of stream.
 bool fetchBatch(JNIEnv * env, StreamHandle & handle, ArrowArray * out, bool want_schema)
 {
     std::memset(out, 0, sizeof(*out));
+
+    if (handle.source == BatchSource::kMaterializedArrow)
+        return fetchMaterializedBatch(env, handle, out, want_schema);
 
     ArrowArrayStream one_batch;
     std::memset(&one_batch, 0, sizeof(one_batch));
@@ -441,6 +535,37 @@ bool captureColumns(JNIEnv * env, StreamHandle & handle)
         handle.column_nullable.push_back((child->flags & ARROW_FLAG_NULLABLE) != 0 ? 1 : 0);
     }
     return true;
+}
+
+// Fetches the first batch, captures the schema and column metadata from it, and registers
+// the handle. Returns its id, or 0 with a Java exception already queued.
+//
+// Shared by both open paths. JDBC requires getMetaData() to answer before the first next(),
+// and the engine's streaming door has no schema until a batch has been produced, so the
+// first batch is fetched here and kept as the pending batch rather than discarded.
+jlong primeAndRegister(JNIEnv * env, const std::shared_ptr<StreamHandle> & handle)
+{
+    {
+        std::lock_guard<std::mutex> lock(handle->owner->mutex);
+        if (!fetchBatch(env, *handle, &handle->pending, /*want_schema=*/true))
+            return 0;  // handle's destructor tears down whatever it already owns.
+    }
+
+    if (handle->pending.release == nullptr)
+    {
+        std::memset(&handle->pending, 0, sizeof(handle->pending));
+        handle->has_pending = false;
+        handle->eos = true;
+    }
+    else
+    {
+        handle->has_pending = true;
+    }
+
+    if (!captureColumns(env, *handle))
+        return 0;
+
+    return static_cast<jlong>(HandleRegistry::instance().insert(handle));
 }
 
 // Byte length of a validity bitmap covering `offset + length` slots.
@@ -969,32 +1094,11 @@ Java_org_chdb_internal_ChdbNative_streamOpen(
         }
 
         auto handle = std::make_shared<StreamHandle>();
+        handle->source = BatchSource::kEngineStream;
         handle->stream = stream;
         handle->owner = connection;
 
-        // The schema only exists once a batch has been produced, and JDBC requires
-        // getMetaData() to answer before the first next(). So the first batch is fetched
-        // here and kept as pending rather than discarded.
-        {
-            std::lock_guard<std::mutex> lock(connection->mutex);
-            if (!fetchBatch(env, *handle, &handle->pending, /*want_schema=*/true))
-                return 0;  // handle's destructor tears down the engine stream.
-        }
-        if (handle->pending.release == nullptr)
-        {
-            std::memset(&handle->pending, 0, sizeof(handle->pending));
-            handle->has_pending = false;
-            handle->eos = true;
-        }
-        else
-        {
-            handle->has_pending = true;
-        }
-
-        if (!captureColumns(env, *handle))
-            return 0;
-
-        return static_cast<jlong>(HandleRegistry::instance().insert(handle));
+        return primeAndRegister(env, handle);
     }
     catch (const std::bad_alloc &)
     {
@@ -1009,6 +1113,94 @@ Java_org_chdb_internal_ChdbNative_streamOpen(
     catch (...)
     {
         throwNative(env, "chDB streaming query failed with an unknown native exception");
+        return 0;
+    }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_chdb_internal_ChdbNative_streamOpenMaterialized(
+    JNIEnv * env,
+    jclass,
+    jlong connection_id,
+    jbyteArray sql_bytes,
+    jboolean low_cardinality_as_dictionary,
+    jboolean unsupported_as_binary,
+    jboolean string_as_string)
+{
+    try
+    {
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return 0;
+
+        std::string sql;
+        if (!toBytes(env, sql_bytes, sql))
+            return 0;
+
+        chdb_arrow_options options;
+        options.unsupported_as_binary = unsupported_as_binary == JNI_TRUE ? 1 : 0;
+        options.low_cardinality_as_dictionary = low_cardinality_as_dictionary == JNI_TRUE ? 1 : 0;
+        options.string_as_string = string_as_string == JNI_TRUE ? 1 : 0;
+
+        // Built before the call because chdb_query_arrow_n writes straight into the handle's
+        // ArrowArrayStream, and that memory has to already have an owner if the call fails
+        // partway: the handle's destructor is what releases it.
+        auto handle = std::make_shared<StreamHandle>();
+        handle->source = BatchSource::kMaterializedArrow;
+        handle->owner = connection;
+
+        chdb_result * metrics = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            if (connection->conn == nullptr)
+            {
+                throwNative(env, "the connection was closed while the query was starting");
+                return 0;
+            }
+            metrics = chdb_query_arrow_n(
+                *connection->conn,
+                sql.data(),
+                sql.size(),
+                reinterpret_cast<chdb_arrow_stream>(&handle->array_stream),
+                &options);
+        }
+
+        // The metrics object and the exported stream have independent lifetimes -- the rows
+        // are kept alive by the stream's private_data, not by the result -- so the result is
+        // read for its error text and destroyed here. Nothing above this needs elapsed or
+        // rows_read: an update count comes from chdb_query_n, and a result set reports its
+        // rows by being iterated.
+        const std::string error = resultError(metrics);
+        chdb_destroy_query_result(metrics);
+        if (!error.empty())
+        {
+            throwNative(env, error);
+            return 0;
+        }
+
+        if (handle->array_stream.release == nullptr)
+        {
+            throwNative(env, "chDB reported no error but exported no Arrow stream for the "
+                             "statement; the engine's Arrow output is inconsistent");
+            return 0;
+        }
+        handle->has_array_stream = true;
+
+        return primeAndRegister(env, handle);
+    }
+    catch (const std::bad_alloc &)
+    {
+        throwOutOfMemory(env, "out of memory executing a chDB Arrow query");
+        return 0;
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("chDB Arrow query failed: ") + e.what());
+        return 0;
+    }
+    catch (...)
+    {
+        throwNative(env, "chDB Arrow query failed with an unknown native exception");
         return 0;
     }
 }
@@ -1063,7 +1255,7 @@ Java_org_chdb_internal_ChdbNative_streamAdvance(JNIEnv * env, jclass, jlong conn
             return -1;
 
         std::lock_guard<std::mutex> lock(handle->mutex);
-        if (handle->closed || handle->stream == nullptr)
+        if (handle->closed || !handle->hasProducer())
         {
             throwNative(env, "the stream is closed");
             return -1;
@@ -1296,12 +1488,27 @@ Java_org_chdb_internal_ChdbNative_streamCancel(JNIEnv * env, jclass, jlong conne
         }
 
         std::lock_guard<std::mutex> lock(handle->mutex);
-        if (handle->closed || handle->stream == nullptr || !handle->owner
+        if (handle->closed || !handle->hasProducer() || !handle->owner
             || handle->owner->conn == nullptr)
             return;  // Already finished or torn down: cancel is a no-op, not an error.
 
         if (handle->cancelled)
             return;  // Idempotent: cancelling twice must not reach the engine twice.
+
+        if (handle->source == BatchSource::kMaterializedArrow)
+        {
+            // There is no engine-side query left to interrupt: chdb_query_arrow_n ran the
+            // statement to completion before this handle existed, and what remains is a
+            // buffer to copy out of. chdb_stream_cancel_query must not be reached with it --
+            // it reinterpret_casts its argument to StreamQueryResult, which this is not.
+            //
+            // The flag is still set, so the next advance reports the cancel rather than
+            // handing out the rest of the rows. That is the honest answer for a caller that
+            // asked to stop: it distinguishes "you told me to stop" from "there was no more
+            // data", which is the same reason the streaming path keeps the flag.
+            handle->cancelled = true;
+            return;
+        }
 
         chdb_stream_cancel_query(*handle->owner->conn, handle->stream);
         handle->cancelled = true;

@@ -76,6 +76,13 @@ Two things you have to do for that to hold:
 Reading one row of a huge result and closing is cheap and supported: the driver cancels the
 query rather than draining it.
 
+**One exception, and it is bounded by the schema rather than by the data.** `SHOW`, `DESCRIBE`,
+`DESC`, `EXPLAIN`, `EXISTS` and `CHECK` cannot be streamed — the engine's streaming entry point
+accepts only a SELECT pipeline — so they run through `chdb_query_arrow_n`, which materializes
+the whole result before the first `next()`. What they return is a table's column list, a query
+plan or a one-row answer, so this is bytes to kilobytes, not a size a caller chooses. Nothing
+that reads user data takes that route.
+
 ## Measuring it
 
 **`jcmd <pid> VM.native_memory` does not cover chDB.** Native Memory Tracking instruments the
