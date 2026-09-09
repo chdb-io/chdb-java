@@ -38,8 +38,8 @@ import org.junit.jupiter.api.io.TempDir;
  *
  * <p>{@link #insertIsNeverRunTwice()} is the other half. A statement whose leading keyword says
  * "result set" can still be a write -- {@code WITH q AS (...) INSERT INTO t SELECT ...} is one
- * -- so the driver must not have a route that re-runs a refused statement. That is asserted
- * against a table where a duplicate write is visible in {@code count()}, not against an
+ * -- so the driver must not have a route that re-runs a refused statement. That is asserted as a
+ * per-call row-count delta on a table where a duplicate write is visible, not against an
  * exception type.
  */
 class NonStreamableResultsIT extends NativeTestBase {
@@ -402,14 +402,23 @@ class NonStreamableResultsIT extends NativeTestBase {
 
     /**
      * No route may run a statement twice, and none may run a write the caller sent down a
-     * result-set path.
+     * path that returns a result set.
      *
-     * <p>The table observes duplicates: the first two steps insert the same value twice and
-     * {@code count()} goes to 2, which is what makes every {@code count()} assertion after
-     * that meaningful rather than vacuous.
+     * <p>Asserted as a per-call delta on a table where a duplicate write is visible in {@code
+     * count()}: a call that throws must move the count by 0, and a call that succeeds by
+     * exactly 1. Never 2. That is the property, and it does not depend on which engine is
+     * pinned -- which matters, because the answer for the dangerous statement below does.
+     *
+     * <p>{@code WITH q AS (...) INSERT INTO t SELECT ...} parses, writes, and has a leading
+     * keyword the scan calls a result set. On the v26.7.2-rc.2 baseline {@code
+     * chdb_classify_query_n} reports it MUTATING, so it is routed to {@code chdb_query_n} and
+     * simply works. Without the classifier the keyword scan sends it to the streaming door,
+     * which refuses it, and it is reported rather than retried -- which is the whole reason
+     * this route is chosen by a keyword scan and not by a fallback. Either way it is executed
+     * at most once, which is what this asserts.
      */
     @Test
-    @DisplayName("no fallback re-runs an INSERT")
+    @DisplayName("no route runs an INSERT twice")
     void insertIsNeverRunTwice() throws Exception {
         try (Connection connection = openMemory();
                 Statement statement = connection.createStatement()) {
@@ -417,45 +426,90 @@ class NonStreamableResultsIT extends NativeTestBase {
             statement.execute(
                     "CREATE TABLE " + DB + ".audit (v Int32) ENGINE = MergeTree ORDER BY tuple()");
 
-            // Control: this table shows duplicate writes.
+            // Control: this table shows duplicate writes, so every delta below means something.
             assertEquals(1, statement.executeUpdate("INSERT INTO " + DB + ".audit VALUES (1)"));
             assertEquals(1, countAudit(statement));
             assertEquals(1, statement.executeUpdate("INSERT INTO " + DB + ".audit VALUES (1)"));
             assertEquals(2, countAudit(statement), "the fixture cannot observe a duplicate write");
 
-            // The dangerous shape. Leading keyword WITH, so the keyword scan calls it a result
-            // set and it goes to the streaming door, which refuses it -- with the same text a
-            // SHOW used to get. A route that retried on the materialized door would execute
-            // this write.
             String writeBehindAResultSetKeyword =
                     "WITH q AS (SELECT 7 AS v) INSERT INTO " + DB + ".audit SELECT v FROM q";
-            SQLException refused =
-                    assertThrows(
-                            SQLException.class,
-                            () -> statement.executeQuery(writeBehindAResultSetKeyword));
-            assertTrue(
-                    refused.getMessage().contains("Streaming query is not supported"),
-                    () -> "expected the engine's streaming refusal, got: " + refused.getMessage());
-            assertEquals(2, countAudit(statement), "a refused stream open executed the write");
-            assertEquals(0, countAudit(statement, 7), "a refused stream open wrote row 7");
 
-            // Same statement through execute() and executeUpdate(): still one attempt, still
-            // no write.
-            assertThrows(SQLException.class, () -> statement.execute(writeBehindAResultSetKeyword));
-            assertEquals(2, countAudit(statement));
-            assertThrows(
-                    SQLException.class, () -> statement.executeUpdate(writeBehindAResultSetKeyword));
-            assertEquals(2, countAudit(statement));
-            assertEquals(0, countAudit(statement, 7));
+            // executeQuery must never execute a write, on any engine: with the classifier it is
+            // refused as "does not return a result set" before anything runs, and without it the
+            // streaming door refuses it and the driver does not retry.
+            assertWritesAtMostOnce(
+                    statement,
+                    "executeQuery",
+                    0,
+                    () -> {
+                        // Closed if it ever returns one, so a driver bug shows up as the delta
+                        // assertion below rather than as a leaked handle.
+                        try (ResultSet ignored =
+                                statement.executeQuery(writeBehindAResultSetKeyword)) {
+                            // no rows to read: reaching here is already the failure
+                        }
+                    });
+
+            // execute() and executeUpdate() may legitimately run it -- once.
+            assertWritesAtMostOnce(
+                    statement, "execute", 7, () -> statement.execute(writeBehindAResultSetKeyword));
+            assertWritesAtMostOnce(
+                    statement,
+                    "executeUpdate",
+                    7,
+                    () -> statement.executeUpdate(writeBehindAResultSetKeyword));
 
             // And an ordinary INSERT sent to executeQuery is refused by the driver before it
             // reaches the engine at all, so the row never lands.
-            assertThrows(
-                    SQLException.class,
-                    () -> statement.executeQuery("INSERT INTO " + DB + ".audit VALUES (9)"));
-            assertEquals(2, countAudit(statement));
+            assertWritesAtMostOnce(
+                    statement,
+                    "executeQuery on a plain INSERT",
+                    0,
+                    () -> {
+                        try (ResultSet ignored =
+                                statement.executeQuery("INSERT INTO " + DB + ".audit VALUES (9)")) {
+                            // as above
+                        }
+                    });
             assertEquals(0, countAudit(statement, 9), "executeQuery executed an INSERT");
         }
+    }
+
+    /**
+     * Runs {@code call} and asserts it wrote 0 rows if it threw and exactly 1 if it did not --
+     * never 2, which is what a route that re-ran the statement would produce.
+     *
+     * @param expectedValue the value the write would insert, checked for the same delta, or 0 to
+     *     skip that check
+     */
+    private static void assertWritesAtMostOnce(
+            Statement statement, String label, int expectedValue, ThrowingCall call)
+            throws SQLException {
+        long before = countAudit(statement);
+        long beforeValue = expectedValue == 0 ? 0 : countAudit(statement, expectedValue);
+        boolean threw = false;
+        try {
+            call.run();
+        } catch (SQLException e) {
+            threw = true;
+        }
+        long delta = countAudit(statement) - before;
+        boolean failed = threw;
+        assertEquals(
+                failed ? 0L : 1L,
+                delta,
+                () -> label + (failed ? " threw but still wrote " : " wrote ") + delta + " rows");
+        if (expectedValue != 0) {
+            assertEquals(
+                    failed ? 0L : 1L,
+                    countAudit(statement, expectedValue) - beforeValue,
+                    label + " did not write exactly one row with v = " + expectedValue);
+        }
+    }
+
+    private interface ThrowingCall {
+        void run() throws SQLException;
     }
 
     private static long countAudit(Statement statement) throws SQLException {
@@ -592,6 +646,58 @@ class NonStreamableResultsIT extends NativeTestBase {
             // literals are ours to count, and a truncated result loses them.
             assertEquals(unions + 1, literals, "the plan lost branches; it had " + rows + " rows");
             assertTrue(rows > 20_000, "expected a five-figure plan, got " + rows + " rows");
+        }
+    }
+
+    /**
+     * A materialized statement still works after a streaming result set was abandoned half-read.
+     *
+     * <p>This looks like a redundant pairing and is not. Measured on v26.7.2-rc.2 by driving the
+     * shim directly: opening a stream and closing it <em>without</em> cancelling leaves the
+     * engine in streaming mode, and the next {@code chdb_query_arrow_n} on that connection comes
+     * back with {@code Streaming query is not supported for query: SHOW DATABASES} -- the
+     * streaming refusal, from the materialized entry point. Cancelling first clears it, and so
+     * does draining the stream to its end.
+     *
+     * <p>The driver is safe because {@code ChdbResultSet.close()} already cancels when the
+     * stream is not exhausted, for an unrelated reason: not making the engine finish a query
+     * nobody is reading. So the new route depends on that cancel for its correctness, which was
+     * not true of anything before it and is not obvious from either side. "Read one row of a
+     * huge result and close" is the documented cheap case, and a `SHOW TABLES` right after it is
+     * what a JDBC GUI does; if that cancel were ever dropped as an optimisation, this test is
+     * what would notice.
+     */
+    @Test
+    @DisplayName("a materialized statement works after an abandoned streaming result set")
+    void materializedStatementAfterAnAbandonedStream() throws Exception {
+        try (Connection connection = openMemory();
+                Statement statement = fixture(connection)) {
+            // One row of a million, then close: the engine still has rows to produce.
+            try (ResultSet rs = statement.executeQuery("SELECT number FROM numbers(1000000)")) {
+                assertTrue(rs.next());
+            }
+
+            try (ResultSet rs = statement.executeQuery("SHOW DATABASES")) {
+                assertTrue(rs.next());
+            }
+            try (ResultSet rs = statement.executeQuery("DESCRIBE TABLE " + DB + ".d")) {
+                assertTrue(rs.next());
+                assertEquals("x", rs.getString("name"));
+            }
+
+            // And the other order, since the engine's mode is per connection and both routes
+            // leave state behind.
+            try (ResultSet rs = statement.executeQuery("EXISTS TABLE " + DB + ".d")) {
+                assertTrue(rs.next());
+                assertEquals(1, rs.getInt(1));
+            }
+            try (ResultSet rs = statement.executeQuery("SELECT number FROM numbers(1000000)")) {
+                assertTrue(rs.next());
+            }
+            try (ResultSet rs = statement.executeQuery("SHOW TABLES FROM " + DB)) {
+                assertTrue(rs.next());
+                assertEquals("d", rs.getString(1));
+            }
         }
     }
 

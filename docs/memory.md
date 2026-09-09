@@ -33,12 +33,18 @@ docker run --memory=4g \
 jdbc:chdb:/data?max_memory_usage=2000000000
 ```
 
-**On the pinned v26.7.0 engine that URL form is silently inert** — settings in the connect
-argument vector never reach a session, so `max_memory_usage` stays 0 and no cap is applied. Use
-`SET max_memory_usage = 2000000000` on the connection until the engine baseline moves; it is
-fixed upstream in v26.7.2-rc.2 (chdb-core #191, commit `3231c03afca`), measured either way in
-[findings §9](upstream-findings.md). The engine's automatic cgroup limit below still applies
-regardless, which is what keeps this from being an OOM kill.
+That URL form works on the pinned v26.7.2-rc.2 baseline. Measured with
+`?max_threads=7&max_result_rows=13&max_block_size=4096`: `system.settings` reports 7, 13 and
+4096 with `changed = 1`, and the cap is enforced rather than merely reported — a 100-row
+`SELECT` under `max_result_rows=13` fails with ClickHouse error 396.
+
+**On v26.7.0 and v26.7.1-rc.1 it was silently inert**, if you are pointing the loader at one of
+those: settings in the connect argument vector never reached a session, so the same URL left
+`max_threads` at `auto(18)`, `max_result_rows` at 0 and `max_block_size` at 65409, and no cap
+was applied. `SET max_memory_usage = 2000000000` on the connection was the workaround, and still
+works. Fixed upstream in v26.7.2-rc.2 (chdb-core #191, commit `3231c03afca`); both measurements
+are in [findings §10](upstream-findings.md). The engine's automatic cgroup limit below applies
+regardless of either, which is what keeps this from being an OOM kill.
 
 The arithmetic: 4 GB limit − 1 GB heap − 0.4 GB library − JVM overhead leaves the engine about
 2 GB, which is what `max_memory_usage` should say.

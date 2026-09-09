@@ -64,10 +64,35 @@ import java.util.Set;
  * the statements in {@link #MATERIALIZED_RESULT_SET_KEYWORDS}, because they are never sent to
  * the streaming door in the first place.
  *
- * <p>The residual gap is a write whose leading keyword is a result-set keyword -- the {@code
- * WITH ... INSERT} form above. It fails with the engine's own message and is not retried,
- * which is the same answer this class gave before, and it resolves on its own once the
- * classifier is available: {@code chdb_classify_query_n} reports it as MUTATING.
+ * <p>The residual gap was a write whose leading keyword is a result-set keyword -- the {@code
+ * WITH ... INSERT} form above. The classifier closes it: measured on the v26.7.2-rc.2 baseline,
+ * {@code chdb_classify_query_n} reports that statement {@code MUTATING}, so it is routed to
+ * {@code chdb_query_n} and simply works. It only reaches the streaming door, and only fails
+ * there, on an engine that does not export the classifier.
+ *
+ * <h2>Why the keyword scan is not a stopgap</h2>
+ * The classifier being present does not make the keyword scan temporary, because it does not
+ * answer the question the two Arrow doors need answered. Measured on v26.7.2-rc.2, {@code
+ * chdb_classify_query_n} returns {@code CHDB_QUERY_READ_ONLY} for all of these, with no field
+ * distinguishing them:
+ *
+ * <pre>
+ *   SELECT 1                   READ_ONLY   streamable
+ *   WITH x AS (...) SELECT     READ_ONLY   streamable
+ *   SHOW TABLES                READ_ONLY   refused by the streaming door
+ *   SHOW CREATE TABLE t        READ_ONLY   refused
+ *   DESCRIBE TABLE t           READ_ONLY   refused
+ *   EXPLAIN [AST|SYNTAX|...]   READ_ONLY   refused
+ *   EXISTS TABLE t             READ_ONLY   refused
+ *   CHECK TABLE t              READ_ONLY   refused
+ * </pre>
+ *
+ * So the engine's own classifier draws the line this class needs on the wrong axis: it separates
+ * read from write, not streamable from not. Asking it instead of the keyword scan would put
+ * every {@code SHOW} back on the streaming door, which is issue #12. What the classifier is
+ * authoritative about -- whether there is a result set at all -- {@link #route(int[], String)}
+ * already defers to it. The rest is the keyword scan's for as long as the ABI has no
+ * "streamable" bit; {@code docs/upstream-findings.md} §10 carries the upstream ask.
  */
 final class StatementShape {
 
