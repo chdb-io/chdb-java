@@ -6,8 +6,10 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
@@ -65,6 +67,28 @@ final class NativePackage {
 
         Map<String, String> checksums = readChecksums(platform);
         return new NativePackage(platform, manifest, checksums);
+    }
+
+    /**
+     * Platform package ids on the classpath that are for a machine other than this one.
+     *
+     * <p>{@link #find(Platform)} looks only for the current platform's resources, so a JAR for
+     * another architecture is indistinguishable from no JAR at all -- which makes the "no
+     * native runtime" message read identically whether a consumer declared nothing or declared
+     * the wrong package. This is how the two are told apart. Diagnostics only: nothing here
+     * makes a foreign package loadable.
+     */
+    static List<String> foreignPackages(Platform platform) {
+        List<String> found = new ArrayList<>();
+        for (String id : Platform.ALL_IDS) {
+            if (id.equals(platform.id())) {
+                continue;
+            }
+            if (loader().getResource(Platform.resourcePrefixFor(id) + "/manifest.properties") != null) {
+                found.add(id);
+            }
+        }
+        return found;
     }
 
     /**

@@ -3,6 +3,7 @@ package org.chdb.internal;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.DisplayName;
@@ -73,5 +74,27 @@ class PlatformTest {
                 platform.resourcePrefix());
         // Detection is cached, so repeated calls must agree.
         assertEquals(platform.id(), Platform.current().id());
+    }
+
+    @Test
+    @DisplayName("resourcePrefixFor covers every V1 id and agrees with the detected platform's own")
+    void resourcePrefixForEveryId() {
+        // Two ways of computing the same path -- one from the detected triple, one from an id
+        // for a machine this JVM is not -- and the diagnostic that tells a consumer they
+        // declared the wrong platform package depends on them matching. A new platform added
+        // to ALL_IDS without a case in the switch fails here rather than in a message.
+        assertEquals(4, Platform.ALL_IDS.length);
+        for (String id : Platform.ALL_IDS) {
+            String prefix = Platform.resourcePrefixFor(id);
+            assertTrue(prefix.startsWith("META-INF/chdb/native/"), prefix);
+        }
+        Platform platform = Platform.current();
+        assertEquals(platform.resourcePrefix(), Platform.resourcePrefixFor(platform.id()));
+    }
+
+    @Test
+    @DisplayName("resourcePrefixFor rejects an id that is not a V1 platform")
+    void resourcePrefixForRejectsUnknown() {
+        assertThrows(IllegalArgumentException.class, () -> Platform.resourcePrefixFor("windows-x86_64"));
     }
 }

@@ -120,6 +120,12 @@ Every load failure names what was tried and what to do. The ones you are most li
 **No platform package.** Lists all three locations that were searched and gives the Maven
 coordinate for your platform.
 
+**The wrong platform package.** The same message, plus a line naming the `chdb-native-*` JARs
+that *are* on the classpath. Without that line the two cases read identically, which is worst
+for the more common one: someone looking at a `chdb-native-linux-x86_64-gnu` dependency in
+their POM being told to add a platform package. Found by `scripts/verify-consumer.sh`, which
+reproduces both from a Maven repository rather than from the reactor.
+
 **Unsupported platform.** Names the detected `os.name`/`os.arch`/libc and the supported set.
 musl Linux is detected specifically — via `/proc/self/maps`, falling back to `ldd --version` —
 and reported as unsupported rather than left to fail as a link error.
