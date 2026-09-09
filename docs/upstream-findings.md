@@ -509,6 +509,22 @@ The two abort messages are counted separately, because only the first is the dri
 | #22, counter only | off | 0 / 80 | 3 / 80 |
 | #22, with the claim | on | 0 / 80 | 1 / 80 |
 
+**The materialized route carries the same hazard**, measured after #16 landed it. `DESC` over a
+1.9 GB `JSONEachRow` file with `input_format_max_rows_to_read_for_schema_inference` raised takes
+25.9 s inside `chdb_query_arrow_n`, which is long enough to still be running at exit — and it is
+the only statement on that route that reads data rather than metadata (`CHECK TABLE` on a
+30 M-row `MergeTree` is 87 ms, `EXPLAIN PLAN` and `EXPLAIN ESTIMATE` are 1–5 ms):
+
+| driver | hook | `front()` on an empty vector |
+|---|---|---|
+| #16 merged, before #22 | on | **6 / 40** |
+| #16 merged, before #22 | off | 0 / 20 |
+| with #22 | on | 0 / 80 |
+
+So the abort is a property of closing the connection, not of which entry point started the
+statement. The driver's gate is taken before the route is decided, which is what covers all
+three of `chdb_query_arrow_n`, the streaming open and `chdb_query_n` at once.
+
 The first row is the hook causing the very assertion it exists to prevent. The runs that
 survived it were not free either — the hook held the JVM open for the length of the query:
 34.5 / 33.9 / 33.9 s for four threads on five billion rows, 79 s for a longer one, against

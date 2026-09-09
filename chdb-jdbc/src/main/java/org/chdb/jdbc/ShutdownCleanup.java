@@ -71,14 +71,22 @@ import org.chdb.internal.ChdbNative;
  * <strong>A connection whose statement is executing is left alone.</strong> Closing one is not
  * something the engine tolerates, and this hook used to do it — which made the hook the cause
  * of the very assertion quoted at the top of this class. Measured on engine 26.7.2-rc.2, macOS
- * arm64, two threads on a two-billion-row aggregate with {@code main} returning while they are
- * in flight:
+ * arm64, two threads with {@code main} returning while they are in flight, counting the
+ * {@code front()} assertion above:
  *
  * <pre>
- *   hook on, closing them (what it did)   21 aborts in 60  (front() on an empty vector)
- *   hook off                               0 aborts in 60
- *   hook on, skipping them (what it does)  0 aborts in 80
+ *   route          hook on, closing   hook off   hook on, skipping
+ *   streaming        21 in 60          0 in 60      0 in 80
+ *   materialized      6 in 40          0 in 20      0 in 80
  * </pre>
+ *
+ * "Closing" is what this hook did before; "skipping" is what it does now. Both of {@code
+ * ChdbStatement}'s result-set routes are covered because both start with a native call on the
+ * connection, and the abort does not care which — the streaming figures come from a
+ * two-billion-row aggregate, the materialized ones from a {@code DESC} over a 1.9 GB
+ * {@code JSONEachRow} file with the schema-inference row limit raised, which is the one
+ * materialized statement that reads data rather than metadata (25.9 s, against 87 ms for
+ * {@code CHECK TABLE} on a 30 M-row {@code MergeTree} and 1–5 ms for {@code EXPLAIN}).
  *
  * <p>The runs that did not abort were not free either: {@code chdb_close_conn()} on a
  * connection with a query running <em>blocks</em> until the query finishes, so the hook held

@@ -44,6 +44,14 @@ import org.chdb.internal.ChdbNativeException;
  * to cancel yet: the call that opens the result set. {@link
  * #checkDeadlineSurvivedTheOpen(String)} is what keeps that window from turning a timeout into
  * a late success.
+ *
+ * <h2>At JVM shutdown</h2>
+ * All three routes start with the same native call into a connection the shutdown hook may be
+ * about to close, and closing a connection mid-statement aborts the engine. So execution takes
+ * {@link ExecutionGate} first, before the route is decided, and a statement that arrives after
+ * the hook has claimed the connection is refused with SQLSTATE {@code 08003} rather than
+ * started. See {@link ShutdownCleanup} for the measurement and {@code docs/unsupported.md} for
+ * what a caller should do about it.
  */
 public class ChdbStatement implements Statement {
 

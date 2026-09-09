@@ -636,6 +636,30 @@ class ProcessLifecycleIT extends NativeTestBase {
                         "08003",
                         again.getSQLState(),
                         "the slot was not released by the refusal: " + again.getMessage());
+
+                // All three routes, because each reaches the engine through a different native
+                // statement-start call -- the streaming open, chdb_query_arrow_n for a
+                // materialized result set, and chdb_query_n for one with no result set -- and
+                // the abort does not care which. The gate is taken before the route is even
+                // decided, which is what makes one refusal cover all three; this is the test
+                // that would go red if it were ever moved inside a branch.
+                SQLException materialized =
+                        assertThrows(
+                                SQLException.class, () -> statement.executeQuery("SHOW TABLES"));
+                assertEquals(
+                        "08003",
+                        materialized.getSQLState(),
+                        "the materialized route must be refused too: " + materialized.getMessage());
+
+                SQLException noResultSet =
+                        assertThrows(
+                                SQLException.class,
+                                () -> statement.execute("DROP TABLE IF EXISTS chdb_it_absent"));
+                assertEquals(
+                        "08003",
+                        noResultSet.getSQLState(),
+                        "the no-result-set route must be refused too: "
+                                + noResultSet.getMessage());
             }
         }
         // assertNoLeakedHandles() runs after this and is the check that the refusal left no
