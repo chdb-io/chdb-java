@@ -79,9 +79,14 @@ Three things about it that are decisions rather than mechanics, recorded at leng
 workflow's own header and summarised here:
 
 - **The version lives in git, not in the workflow.** A release is a commit that carries the
-  release version in its POMs plus a tag on that commit; the workflow refuses to run if the tag
-  and the POMs disagree. `versions:set` in CI would publish bytes that correspond to no commit,
-  so `git show <tag>` could not tell you what went out.
+  release version in its POMs plus a tag on that commit. `versions:set` in CI would publish
+  bytes that correspond to no commit, so `git show <tag>` could not tell you what went out.
+  The workflow enforces this on **both** trigger paths: before anything is staged it looks up
+  `v<POM version>` and refuses unless that tag exists and points at the commit being built. So
+  `workflow_dispatch` with `channel=release` needs the tag as much as a tag push does — an
+  earlier version of this workflow checked only the tag name in `github.ref_name`, which is a
+  branch on a manual run, and a manual release could therefore deploy an untagged commit. A
+  guarantee with a manual bypass is not one.
 - **The same workflow publishes snapshots**, and that is the default for a manual run. It is
   the only way to move issue #10, and running the release path for every snapshot is what makes
   it already-tested when a release depends on it. The publishing plugin routes a `-SNAPSHOT`

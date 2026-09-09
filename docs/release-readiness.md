@@ -101,10 +101,14 @@ git push origin main                        # let build.yml go green on the comm
 git push origin v<release version>
 ```
 
-`release.yml` then stages each platform on its own runner, refuses to continue if the tag and
-the POMs disagree or if `build` was not green for that commit, reassembles the four in one
-deploy job, signs, and uploads a bundle that **waits in the portal**. Confirm it by hand at
+`release.yml` then stages each platform on its own runner, reassembles the four in one deploy
+job, signs, and uploads a bundle that **waits in the portal**. Confirm it by hand at
 <https://central.sonatype.com/publishing/deployments>: a release cannot be unpublished.
+
+Before it stages anything it refuses to continue unless the POMs are at a non-`SNAPSHOT`
+version, a tag named `v<that version>` exists and points at the commit being built, and
+`build` concluded successfully for that same commit. The tag check applies to a manual
+`channel=release` run too, so there is no path that publishes an untagged commit.
 
 Afterwards, the ordinary "back to development" commit returns the POMs to a `-SNAPSHOT`.
 

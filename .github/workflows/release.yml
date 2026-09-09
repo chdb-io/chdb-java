@@ -12,11 +12,17 @@ name: release
 #
 # 1. WHERE THE VERSION BUMP LIVES -- in git, not here.
 #    This workflow never runs `versions:set`. A release is cut by committing the release
-#    version to the POMs and tagging that commit; the `preflight` job then refuses to run if
-#    the tag and the POM disagree. Rationale: `versions:set` in CI means the bytes on Central
-#    correspond to no commit in this repository, so `git show <tag>` cannot tell you what was
-#    published and a re-run of the same tag can produce different POMs. A `-SNAPSHOT` in the
-#    POM after the tag is the ordinary "back to development" commit.
+#    version to the POMs and tagging that commit. Rationale: `versions:set` in CI means the
+#    bytes on Central correspond to no commit in this repository, so `git show <tag>` cannot
+#    tell you what was published and a re-run of the same tag can produce different POMs. A
+#    `-SNAPSHOT` in the POM after the tag is the ordinary "back to development" commit.
+#
+#    Enforced on both paths, not just the one that has a tag in its ref. `preflight` refuses a
+#    release unless a tag named v<POM version> exists and points at the commit being built --
+#    so `workflow_dispatch` with channel=release needs the tag too. Without that step the rule
+#    held only for tag pushes and a manual run could publish an untagged commit, which is the
+#    same "bytes that name no commit" outcome by a different route. The guarantee is worth
+#    having only if it has no bypass.
 #
 # 2. SNAPSHOTS FROM THE SAME WORKFLOW -- yes, and that is the default for workflow_dispatch.
 #    Issue #10 is blocked on nothing ever having consumed this as a published artifact, and a
@@ -148,6 +154,44 @@ jobs:
             echo "channel=$INPUT_CHANNEL"
             echo "dry_run=$INPUT_DRY_RUN"
           } >> "$GITHUB_OUTPUT"
+
+      - name: A release must be a commit that a matching tag points at
+        # The step that makes decision 1 true rather than merely documented.
+        #
+        # The version check above compares the tag name to the POMs, but only on the push
+        # path -- `github.ref_name` is a branch on a workflow_dispatch. So a manual run with
+        # channel=release and dry_run=false used to deploy any non-SNAPSHOT POM with no tag
+        # anywhere, which is exactly the "bytes that correspond to no commit" case the design
+        # claims to prevent. A documented guarantee with a manual bypass is not a guarantee.
+        #
+        # Resolved through the API rather than git, because actions/checkout fetches the
+        # triggering ref and not the tag namespace, and because an annotated tag has to be
+        # dereferenced to the commit it wraps -- `git describe` on a shallow clone would
+        # report neither reliably.
+        if: steps.resolve.outputs.channel == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          if ! REF=$(gh api "repos/${{ github.repository }}/git/ref/tags/${TAG}" 2>/dev/null); then
+            echo "::error::no tag ${TAG} in this repository. A release is a commit carrying the release version in its POMs plus a tag on that commit; create the tag first, then run this. See the header of this workflow."
+            exit 1
+          fi
+          TYPE=$(printf '%s' "$REF" | jq -r '.object.type')
+          SHA=$(printf '%s' "$REF" | jq -r '.object.sha')
+          if [ "$TYPE" = "tag" ]; then
+            # Annotated: .object.sha is the tag object, and the commit is one level in.
+            SHA=$(gh api "repos/${{ github.repository }}/git/tags/${SHA}" --jq '.object.sha')
+          fi
+          echo "${TAG} -> ${SHA}"
+          echo "this run  -> ${{ github.sha }}"
+          if [ "$SHA" != "${{ github.sha }}" ]; then
+            echo "::error::${TAG} points at ${SHA}, but this run is on ${{ github.sha }}. Release ${VERSION} from the commit its tag names, or move the tag."
+            exit 1
+          fi
+          echo "${TAG} names this commit" >> "$GITHUB_STEP_SUMMARY"
 
       - name: The engine version this release carries
         # Read, never written: scripts/engine.properties is the pin, and hard-coding a version
@@ -426,8 +470,18 @@ jobs:
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
+          # ${DRY_RUN:+...} tests for non-empty, not for true, so it also expanded on the
+          # string "false" -- a real release printed "dry run: false" in its own heading. The
+          # person this summary is written for is about to decide whether to confirm an
+          # irreversible upload, so the heading has to say which of the two things happened
+          # and nothing else.
+          if [ "$DRY_RUN" = "true" ]; then
+            HEADING="### $VERSION ($CHANNEL, dry run -- nothing was uploaded)"
+          else
+            HEADING="### $VERSION ($CHANNEL)"
+          fi
           {
-            echo "### $VERSION ($CHANNEL${DRY_RUN:+, dry run: $DRY_RUN})"
+            echo "$HEADING"
             echo '```'
             find . -path ./target -prune -o -name '*.jar' -print -o -name '*.asc' -print \
               | sort | while read -r f; do printf '%9s  %s\n' "$(du -h "$f" | cut -f1)" "$f"; done
