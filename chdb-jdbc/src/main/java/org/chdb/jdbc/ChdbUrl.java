@@ -152,12 +152,14 @@ public final class ChdbUrl {
      * one path, cannot be done.
      */
     private static String localeHint(String pathPart) {
-        String encoding = System.getProperty("sun.jnu.encoding");
-        if (encoding == null) {
-            return "";
-        }
+        String encoding;
         try {
-            if (Charset.forName(encoding).newEncoder().canEncode(pathPart)) {
+            // Inside the guard, not before it. This runs from a catch block that is on its way
+            // to throwing a SQLException, and a security manager denying the property read
+            // would replace that with an unchecked SecurityException -- losing the real parse
+            // failure to a line that only exists to make the message nicer.
+            encoding = System.getProperty("sun.jnu.encoding");
+            if (encoding == null || Charset.forName(encoding).newEncoder().canEncode(pathPart)) {
                 return "";
             }
         } catch (RuntimeException e) {

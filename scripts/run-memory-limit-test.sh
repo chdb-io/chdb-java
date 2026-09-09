@@ -44,15 +44,22 @@ public class MemoryLimitProbe {
     public static void main(String[] args) {
         String settings = args.length > 0 ? args[0] : "";
         String url = "jdbc:chdb::memory:" + (settings.isEmpty() ? "" : "?" + settings);
+        // Connecting is setup, not the thing under test, and its exceptions are reported
+        // separately. A library that will not load throws SQLException from getConnection just
+        // as a rejected query does, and a single catch around both would let the gate pass
+        // without ever running the query it exists to run.
         try (Connection connection = DriverManager.getConnection(url);
-                Statement statement = connection.createStatement();
-                ResultSet rs = statement.executeQuery(
-                        "SELECT length(groupArray(number)) FROM numbers(200000000)")) {
-            rs.next();
-            System.out.println("VERDICT=completed rows=" + rs.getLong(1));
+                Statement statement = connection.createStatement()) {
+            try (ResultSet rs = statement.executeQuery(
+                    "SELECT length(groupArray(number)) FROM numbers(200000000)")) {
+                rs.next();
+                System.out.println("VERDICT=completed rows=" + rs.getLong(1));
+            } catch (SQLException e) {
+                System.out.println("VERDICT=exception type=" + e.getClass().getSimpleName()
+                        + " code=" + e.getErrorCode() + " state=" + e.getSQLState());
+            }
         } catch (SQLException e) {
-            System.out.println("VERDICT=exception type=" + e.getClass().getSimpleName()
-                    + " code=" + e.getErrorCode() + " state=" + e.getSQLState());
+            System.out.println("VERDICT=setup-failed at=connect " + e);
         }
     }
 }
@@ -80,8 +87,16 @@ probe() {
       ' 2>&1)" || true
   printf '%s\n' "$out" | grep -E 'VERDICT|JVM_EXIT|Low memory' | sed 's/^/  /'
 
-  if printf '%s' "$out" | grep -q 'VERDICT=exception'; then
-    printf '  -> a catchable exception, which is the gate\n'
+  # code=241 rather than any exception: the gate is that the engine refuses the query when it
+  # runs out of memory, and an exception with some other code means something else went wrong.
+  if printf '%s' "$out" | grep -q 'VERDICT=exception .*code=241'; then
+    printf '  -> a catchable MEMORY_LIMIT_EXCEEDED, which is the gate\n'
+  elif printf '%s' "$out" | grep -q 'VERDICT=exception'; then
+    printf '  -> an exception, but not the memory limit. Something else failed.\n'
+    failures=$((failures + 1))
+  elif printf '%s' "$out" | grep -q 'VERDICT=setup-failed'; then
+    printf '  -> the probe never got as far as the query, so nothing was tested.\n'
+    failures=$((failures + 1))
   elif printf '%s' "$out" | grep -q 'VERDICT=completed'; then
     printf '  -> completed; the query was not heavy enough to test anything\n'
     failures=$((failures + 1))
@@ -99,5 +114,5 @@ probe "max_memory_usage=200MB, cgroup 2GB" "max_memory_usage=200000000"
 probe "no max_memory_usage, cgroup 2GB" ""
 
 printf '\n'
-[ "$failures" -eq 0 ] || die "$failures of 2 cases did not produce a catchable exception"
-printf 'run-memory-limit-test: both cases returned a catchable exception\n'
+[ "$failures" -eq 0 ] || die "$failures of 2 cases did not reject the query with code 241"
+printf 'run-memory-limit-test: both cases returned a catchable code 241\n'
