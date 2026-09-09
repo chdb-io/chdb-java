@@ -565,13 +565,33 @@ path: under `SET max_memory_usage`, an oversized materialization fails in millis
 
 Two smaller observations from measuring it:
 
-- **No setting passed in the connect argument vector reaches the session.** Given as
-  `--max_memory_usage=…`, `--max_threads=…`, `--max_result_rows=…` or `--max_block_size=…`,
-  `getSetting()` reports the default in every case; the same values via `SET` all take effect.
-  This is not specific to the Arrow routes and predates them, but it means a memory cap cannot
-  currently be set from a JDBC URL, only with `SET`. Related to finding 5 above, and the reason
-  `ChdbUrl.toConnectArguments`'s promise that "every ClickHouse query setting [is] reachable
-  from a JDBC URL" does not hold today.
+- **No setting passed in the connect argument vector reaches the session on the pinned
+  v26.7.0 engine — fixed upstream in v26.7.2-rc.2.** Given as `--max_memory_usage=…`,
+  `--max_threads=…`, `--max_result_rows=…` or `--max_block_size=…`, `getSetting()` reports the
+  default in every case on v26.7.0; the same values via `SET` all take effect. Not specific to
+  the Arrow routes and predates them.
+
+  The cause is upstream's, not this driver's argument vector, which has the same
+  `--key=value` shape chdb-core's own Python binding builds in `LocalChdb.cpp`
+  (`build_clickhouse_args`). `EmbeddedServer` is a process-wide singleton that reads argv only
+  when the first connection boots it, so per-connection settings were swallowed into its config
+  layer without ever reaching a session context — chdb-core issue #191. Fixed by chdb-core
+  commit `3231c03afca` (2026-08-24), which added `ChdbClient::applyCmdSettings`; that is 12 days
+  after the v26.7.0 tag, which is why this repository sees it and bindings built on a later
+  engine do not.
+
+  Measured through JDBC on macOS arm64, same code and URL against both engines,
+  `jdbc:chdb::memory:?max_threads=7&max_result_rows=13&max_block_size=4096`:
+
+  | setting | v26.7.0 | v26.7.2-rc.2 |
+  |---|---|---|
+  | `max_threads` | `auto(18)` — ignored | `7` |
+  | `max_result_rows` | `0` — ignored | `13` |
+  | `max_block_size` | `65409` — ignored | `4096` |
+
+  So `ChdbUrl.toConnectArguments`'s promise that "every ClickHouse query setting [is] reachable
+  from a JDBC URL" holds from v26.7.2-rc.2 onwards, and did not hold on v26.7.0. Nothing for us
+  to fix; it resolves with the engine bump in issue #8. Related to finding 5 above.
 - **Errors on this path arrive wrapped two or three times**: `Code: 241. DB::Exception: Code:
   241. DB::Exception: Code: 241. DB::Exception: Query memory limit exceeded: …`, with the
   nesting depth varying between runs. Cosmetic — `ChdbExceptions` still extracts 241 from the
