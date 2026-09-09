@@ -44,6 +44,13 @@ import org.junit.jupiter.api.Timeout;
  * URL to satisfy the parser would make the text after it the storage path, so the driver would
  * open a database in a directory named after a host that is not there.
  *
+ * <p>Nor is there a configuration that avoids it, which {@link #noConfigurationRouteAroundIt()}
+ * establishes for both entry points. A chDB-specific {@code DatabaseType} plus a tolerant
+ * {@code ConnectionPropertiesParser}, registered through the two {@code ServiceLoader} SPIs
+ * ahead of ShardingSphere's ClickHouse pair, would get past the parse -- but that is a
+ * ShardingSphere plugin to ship and version against SPIs that move between minor releases, and
+ * a test of that plugin rather than of this driver, so it is out of scope here.
+ *
  * <p>What is therefore not covered, and would be if this were fixed: ShardingSphere's own
  * connection management against the one-storage-path-per-JVM rule. The nearest thing that is
  * covered is {@code HikariPoolIT} -- ShardingSphere's pools are HikariCP, and the registry

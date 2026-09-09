@@ -12,16 +12,22 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.jooq.Configuration;
 import org.jooq.DSLContext;
 import org.jooq.Field;
 import org.jooq.Record;
 import org.jooq.Result;
 import org.jooq.SQLDialect;
 import org.jooq.Table;
+import org.jooq.TransactionContext;
+import org.jooq.TransactionProvider;
 import org.jooq.conf.ParamType;
 import org.jooq.conf.Settings;
 import org.jooq.exception.DataAccessException;
 import org.jooq.impl.DSL;
+import org.jooq.impl.DefaultConfiguration;
+import org.jooq.impl.DefaultTransactionProvider;
+import org.jooq.impl.NoTransactionProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -43,8 +49,11 @@ import org.junit.jupiter.api.Timeout;
  * gives an engine whose {@code getDatabaseProductName()} it does not recognise, and "chDB" is
  * not recognised by any jOOQ version.
  *
- * <p>Two findings came out of this and are in {@code docs/unsupported.md}:
- * {@link #limitAsABindValueIsRefusedByTheEngine()} and {@link #transactionsAreRefused()}.
+ * <p>The findings that came out of this are in {@code docs/unsupported.md}:
+ * {@link #limitAsABindValueIsRefusedByTheEngine()}, {@link #transactionsAreRefused()} with the
+ * partial way out in {@link #aNoOpTransactionProviderRunsTheBlockWithoutAtomicity()}, the
+ * {@link #jooqsNoTransactionProviderIsIgnored()} trap on the way to it, and
+ * {@link #jooqCannotInferColumnTypes()}.
  */
 class JooqIT extends NativeTestBase {
 
@@ -257,15 +266,18 @@ class JooqIT extends NativeTestBase {
     }
 
     @Test
-    @DisplayName("jOOQ's transaction() is refused, because the driver has no transactions")
+    @DisplayName("jOOQ's transaction() is refused under the default TransactionProvider")
     @Timeout(value = 2, unit = TimeUnit.MINUTES)
     void transactionsAreRefused() throws SQLException {
         try (Connection connection = openMemory()) {
             DSLContext ctx = context(connection);
             // DefaultTransactionProvider.begin() calls setAutoCommit(false) before it runs the
-            // block. The driver refuses rather than pretending, so the block never runs -- which
-            // is the right failure and not one jOOQ can be configured out of. A jOOQ
-            // application against chDB has to not use transaction(), so it is documented.
+            // block. The driver refuses rather than pretending, so the block never runs. That is
+            // the right failure: chDB has no transaction manager, and a block that appeared to
+            // be a unit of work and was not is worse than one that will not start.
+            //
+            // NoTransactionProvider is the way to run the block anyway; see
+            // noTransactionProviderRunsTheBlockWithoutAtomicity() for what it costs.
             DataAccessException e =
                     assertThrows(
                             DataAccessException.class,
@@ -276,6 +288,114 @@ class JooqIT extends NativeTestBase {
             // And the connection survives the refusal, so the application can carry on.
             assertEquals(1, ctx.fetch("SELECT 1").size());
         }
+    }
+
+    @Test
+    @DisplayName("jOOQ's own NoTransactionProvider does not disable transactions")
+    @Timeout(value = 2, unit = TimeUnit.MINUTES)
+    void jooqsNoTransactionProviderIsIgnored() throws SQLException {
+        try (Connection connection = openMemory()) {
+            // A trap worth a test, because it is the obvious thing to reach for and it silently
+            // does nothing. jOOQ ships org.jooq.impl.NoTransactionProvider, whose begin, commit
+            // and rollback are all empty -- but DefaultConfiguration.transactionProvider()
+            // treats it as a sentinel for "unset" and hands back a DefaultTransactionProvider
+            // instead:
+            //
+            //   return transactionProvider == null || transactionProvider instanceof NoTransactionProvider
+            //        ? new DefaultTransactionProvider(connectionProvider) : transactionProvider;
+            //
+            // So configuring it changes nothing at all. Read out of jooq-3.16.23's
+            // DefaultConfiguration, and asserted here rather than trusted.
+            Configuration configuration =
+                    baseConfiguration(connection).set(new NoTransactionProvider());
+            assertTrue(
+                    configuration.transactionProvider() instanceof DefaultTransactionProvider,
+                    "jOOQ 3.16 substitutes DefaultTransactionProvider; got "
+                            + configuration.transactionProvider());
+
+            // And therefore transaction() is still refused, exactly as with no provider set.
+            DataAccessException e =
+                    assertThrows(
+                            DataAccessException.class,
+                            () -> DSL.using(configuration).transaction(c -> c.dsl().fetch("SELECT 1")));
+            assertTrue(
+                    rootCause(e) instanceof SQLFeatureNotSupportedException,
+                    "expected the driver's refusal, got " + rootCause(e));
+        }
+    }
+
+    @Test
+    @DisplayName("a no-op TransactionProvider runs the block, and gives up atomicity to do it")
+    @Timeout(value = 3, unit = TimeUnit.MINUTES)
+    void aNoOpTransactionProviderRunsTheBlockWithoutAtomicity() throws SQLException {
+        try (Connection connection = openMemory()) {
+            // What does work: TransactionProvider is a three-method SPI, and an implementation
+            // of it that is not jOOQ's own NoTransactionProvider is honoured. begin never
+            // reaches setAutoCommit(false), so the block runs.
+            Configuration configuration =
+                    baseConfiguration(connection).set(new NoOpTransactionProvider());
+            DSLContext ctx = DSL.using(configuration);
+
+            String value =
+                    ctx.transactionResult(c -> c.dsl().fetchOne("SELECT 42 AS v").get(0, String.class));
+            assertEquals("42", value, "the block has to actually run");
+
+            // What it costs, which matters more than the workaround itself. The statements
+            // inside the block execute one at a time exactly as they would outside it, and
+            // nothing undoes them when the block fails -- because there is nothing that could.
+            // chDB has no transaction manager, so jOOQ's transaction abstraction can only
+            // degrade to a no-op here. It is not being emulated badly; it is absent.
+            ctx.execute("DROP TABLE IF EXISTS jooq_no_tx");
+            ctx.execute("CREATE TABLE jooq_no_tx (id UInt64) ENGINE = Memory");
+
+            IllegalStateException thrown =
+                    assertThrows(
+                            IllegalStateException.class,
+                            () ->
+                                    ctx.transaction(
+                                            c -> {
+                                                c.dsl().execute("INSERT INTO jooq_no_tx VALUES (1)");
+                                                throw new IllegalStateException("abandon the block");
+                                            }));
+            assertEquals("abandon the block", thrown.getMessage());
+
+            // The row written before the failure is still there. An application that installs a
+            // no-op provider and keeps writing transaction() blocks has no unit of work, and
+            // this is the assertion that says so out loud rather than leaving it to be inferred.
+            assertEquals(
+                    Integer.valueOf(1),
+                    ctx.fetchOne("SELECT count() AS c FROM jooq_no_tx").get(0, Integer.class),
+                    "a no-op provider does not roll back, by construction");
+
+            ctx.execute("DROP TABLE IF EXISTS jooq_no_tx");
+        }
+    }
+
+    /** The settings every test here shares, without a transaction provider. */
+    private static Configuration baseConfiguration(Connection connection) {
+        return new DefaultConfiguration()
+                .set(connection)
+                .set(SQLDialect.DEFAULT)
+                .set(new Settings().withRenderSchema(false).withRenderCatalog(false));
+    }
+
+    /**
+     * A {@link TransactionProvider} that does nothing, which is all chDB can honour.
+     *
+     * <p>Deliberately not extending {@link NoTransactionProvider}: a subclass would still be
+     * {@code instanceof} it and be substituted away by the check in
+     * {@link #jooqsNoTransactionProviderIsIgnored()}.
+     */
+    private static final class NoOpTransactionProvider implements TransactionProvider {
+
+        @Override
+        public void begin(TransactionContext ctx) {}
+
+        @Override
+        public void commit(TransactionContext ctx) {}
+
+        @Override
+        public void rollback(TransactionContext ctx) {}
     }
 
     @Test

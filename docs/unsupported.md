@@ -303,11 +303,43 @@ the first thing a jOOQ user hits.
 **Instead:** `new Settings().withStatementType(StatementType.STATIC_STATEMENT)`, which has jOOQ
 render its values inline. jOOQ escapes them itself, so this is not a return to concatenated SQL.
 
-**`transaction()` is refused**, for the same reason as everything else in
+**`transaction()` is refused out of the box**, for the same reason as everything else in
 [Transactions](#transactions): jOOQ's `DefaultTransactionProvider` calls `setAutoCommit(false)`
-before running the block, so the block never runs. There is no setting for it. A jOOQ
-application against chDB does its work outside `transaction()`. The connection survives the
-refusal and stays usable.
+before running the block, so the block never runs. The connection survives the refusal and stays
+usable.
+
+`TransactionProvider` is a jOOQ SPI with three methods, so the block *can* be made to run — but
+read the next paragraph before doing it, and note that jOOQ's own `NoTransactionProvider` is not
+the way:
+
+```java
+// Honoured. Not NoTransactionProvider: DefaultConfiguration.transactionProvider() treats that
+// class as a sentinel for "unset" and substitutes DefaultTransactionProvider, so configuring
+// it changes nothing. Subclassing it does not help either — the check is an instanceof.
+final class NoOpTransactionProvider implements TransactionProvider {
+    public void begin(TransactionContext ctx) {}
+    public void commit(TransactionContext ctx) {}
+    public void rollback(TransactionContext ctx) {}
+}
+
+DSLContext ctx = DSL.using(new DefaultConfiguration()
+        .set(connection)
+        .set(SQLDialect.DEFAULT)
+        .set(new NoOpTransactionProvider()));
+```
+
+**What that costs is the whole transaction.** The statements inside the block run one at a time
+exactly as they would outside it, and a failure part-way through leaves the earlier ones
+applied — `JooqIT` asserts precisely that, by throwing out of a block after an `INSERT` and
+finding the row still there. So this buys nothing except the ability to keep `transaction()` in
+the source; it is not a weak transaction, it is no transaction, and code that reads as though it
+had a unit of work would not have one.
+
+That is not a gap in the driver. chDB has no transaction manager, so a framework's transaction
+abstraction can only degrade to a no-op on it — the choice is between a refusal at the call site
+and a block that silently is not atomic. The driver refuses; if you install the no-op provider
+you are choosing the second, and the honest thing is then to stop writing `transaction()` at all
+and let each statement stand on its own, as [Transactions](#transactions) suggests.
 
 One thing that is not a driver limitation but will look like one: **jOOQ types every chDB column
 as `Object`.** jOOQ resolves a field's Java type from the type *name* against its dialect
@@ -337,9 +369,10 @@ and its use of `Connection.setAutoCommit(false)` when the user turns off auto-co
 toolbar. The first is engine SQL rather than driver surface; the other two are refused, and
 [Result sets](#result-sets) and [Transactions](#transactions) say so.
 
-### Apache ShardingSphere 5.5.3 — cannot be wired up
+### Apache ShardingSphere 5.5.3 — cannot be wired up by configuration
 
-Not a driver limitation, and not fixable from here.
+Not a driver limitation: nothing the driver can change makes this work, and the fix belongs
+upstream.
 
 ShardingSphere already knows about chDB: its `ClickHouseDatabaseType` lists `jdbc:chdb` among
 its JDBC URL prefixes alongside `jdbc:clickhouse:` and `jdbc:ch:`, so a chDB URL is routed to
@@ -351,11 +384,19 @@ all fail identically, with `UnrecognizedDatabaseURLException`.
 
 Both entry points fail in the same place: the `jdbc:shardingsphere:` driver with a YAML
 configuration, and `ShardingSphereDataSourceFactory` handed an already-built HikariCP pool and
-no rules at all. There is no configuration route around it.
+no rules at all. So there is no *configuration* route around it — no YAML key and no factory
+argument avoids the URL parse.
 
-Inventing a `//localhost/` to satisfy the parser is not a workaround: the driver reads the text
-after the prefix as the storage path, so it would open a database in a directory named after a
-host that is not there.
+There is a code route, and it is a large one: `DatabaseType` and `ConnectionPropertiesParser`
+are both `ServiceLoader` SPIs, so a chDB-specific `DatabaseType` registered ahead of
+`ClickHouseDatabaseType`, with a parser that tolerates an authority-less URL, would get past
+this. That means shipping and versioning a ShardingSphere plugin against internal-ish SPIs
+whose signatures move between minor releases, and it would be testing that plugin rather than
+this driver, so it is not done here and is not recommended over waiting for the upstream fix.
+
+Inventing a `//localhost/` to satisfy the parser is not a workaround either: the driver reads
+the text after the prefix as the storage path, so it would open a database in a directory named
+after a host that is not there.
 
 `ShardingSphereIT` pins this rather than skipping it, so that the test starts failing when
 ShardingSphere learns to parse an embedded URL.
