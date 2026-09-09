@@ -17,7 +17,9 @@ import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.chdb.internal.ChdbNative;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -699,6 +701,223 @@ class NonStreamableResultsIT extends NativeTestBase {
                 assertEquals("d", rs.getString(1));
             }
         }
+    }
+
+    /**
+     * A failed open on the materialized route leaks nothing, over enough repetitions to see it.
+     *
+     * <p>The engine writes the exported Arrow stream into a struct the handle owns, and it does
+     * that before it can report whether the call succeeded -- so a failure partway is the one
+     * path where the handle can be destroyed holding something that still needs releasing.
+     * {@code StreamHandle::closeNow()} therefore releases on the callback being set rather than
+     * on a flag the success path assigns.
+     *
+     * <p>ASan cannot run against the released engine (findings §8), so this asserts on the
+     * handle counters and on RSS not growing across a thousand failures. A syntax error is
+     * enough to make {@code chdb_query_arrow_n} fail after the handle exists.
+     */
+    @Test
+    @DisplayName("a failed materialized open leaks no handle and no memory")
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void failedMaterializedOpenLeaksNothing() throws Exception {
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement()) {
+            // EXPLAIN is a materialized keyword, so this reaches chdb_query_arrow_n and fails
+            // inside it rather than being refused by the driver first.
+            String broken = "EXPLAIN SELECT FROM WHERE ###";
+
+            for (int i = 0; i < 50; i++) {
+                assertThrows(SQLException.class, () -> statement.executeQuery(broken));
+            }
+            assertEquals(
+                    0,
+                    ChdbNative.openHandleCount(ChdbNative.KIND_STREAM),
+                    "a failed materialized open leaked a stream handle");
+
+            long baseline = residentKb();
+            for (int i = 0; i < 1000; i++) {
+                assertThrows(SQLException.class, () -> statement.executeQuery(broken));
+            }
+            long afterFailures = residentKb();
+
+            assertEquals(
+                    0,
+                    ChdbNative.openHandleCount(ChdbNative.KIND_STREAM),
+                    "a failed materialized open leaked a stream handle");
+            assertEquals(
+                    0,
+                    ChdbNative.openHandleCount(ChdbNative.KIND_RESULT),
+                    "a failed materialized open leaked a result handle");
+
+            // A leaked ArrowArrayStream from the engine's Arrow converter is not a few bytes;
+            // a thousand of them would be plainly visible. The allowance is for allocator and
+            // JIT noise, not for a per-failure leak.
+            long growthKb = afterFailures - baseline;
+            assertTrue(
+                    growthKb < 64 * 1024,
+                    () -> "RSS grew " + growthKb + " KB over 1000 failed materialized opens");
+
+            // And the connection still works afterwards.
+            try (ResultSet rs = statement.executeQuery("SHOW DATABASES")) {
+                assertTrue(rs.next());
+            }
+        }
+    }
+
+    /** Resident set size in KB, from ps. Coarse, but enough to tell a leak from noise. */
+    private static long residentKb() throws Exception {
+        long pid = ProcessHandle.current().pid();
+        Process process =
+                new ProcessBuilder("ps", "-o", "rss=", "-p", Long.toString(pid))
+                        .redirectErrorStream(true)
+                        .start();
+        try (java.io.BufferedReader reader =
+                new java.io.BufferedReader(
+                        new java.io.InputStreamReader(process.getInputStream()))) {
+            String line = reader.readLine();
+            return line == null ? -1 : Long.parseLong(line.trim());
+        }
+    }
+
+    /**
+     * A nested block comment must not push a streamable SELECT onto the materialized route.
+     *
+     * <p>ClickHouse nests block comments, and a scan that stopped at the first {@code *}{@code /}
+     * read the text after the inner close as the keyword. With the classifier reporting the
+     * statement {@code READ_ONLY}, that routed it to {@code chdb_query_arrow_n}, which buffers
+     * the whole result: measured at +496 MB of RSS for this query against +2 MB behind a
+     * non-nested comment. So this asserts the memory, not just the rows -- the rows were always
+     * right.
+     */
+    @Test
+    @DisplayName("a SELECT behind a nested block comment still streams")
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void nestedCommentDoesNotForceMaterialization() throws Exception {
+        String body = "SELECT number, repeat('x', 100) AS pad FROM numbers(4000000)";
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement()) {
+            // Warm up, so the measurement is not the engine's first-query setup.
+            drain(statement, "SELECT number FROM numbers(1000)");
+
+            for (String prefix :
+                    new String[] {
+                        "/* /* */ */ ",
+                        "/* a /* b */ c */ ",
+                        "/*/**/*/ ",
+                        "-- banner\n/* /* */ */ "
+                    }) {
+                long baseline = residentKb();
+                assertEquals(4_000_000L, drain(statement, prefix + body), prefix);
+                long growthKb = residentKb() - baseline;
+                // The streamed path grew by kilobytes on every shape measured; the materialized
+                // one by ~500 MB. Anything under 128 MB can only be the streaming route.
+                assertTrue(
+                        growthKb < 128 * 1024,
+                        () -> "RSS grew " + growthKb + " KB reading a 4M-row result behind "
+                                + prefix.replace("\n", "\\n")
+                                + "-- it was materialized rather than streamed");
+            }
+        }
+    }
+
+    private static long drain(Statement statement, String sql) throws SQLException {
+        long rows = 0;
+        try (ResultSet rs = statement.executeQuery(sql)) {
+            while (rs.next()) {
+                rows++;
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * Cancelling and closing concurrently, hard, on both routes.
+     *
+     * <p>{@code streamCancel} and the fetch path both read {@code ConnHandle::conn} and now take
+     * the connection's lock to do it, inside the stream's -- so this is the shape that would
+     * deadlock if that order were ever inverted, and the {@link Timeout} is what turns a
+     * deadlock into a failure instead of a hung build. It is also the shape that would
+     * segfault on the old code, which tested {@code conn} for null and then dereferenced it
+     * with no lock holding the connection open in between.
+     *
+     * <p>A race is not provable by running it, so this is a smoke test, not a proof: what it
+     * demonstrates is that the new lock order does not deadlock and that the handle counters
+     * come back to zero after several hundred interleavings.
+     */
+    @Test
+    @DisplayName("concurrent cancel and close on both routes neither deadlocks nor leaks")
+    @Timeout(value = 3, unit = TimeUnit.MINUTES)
+    void concurrentCancelAndClose() throws Exception {
+        String[] statements = {
+            // Streamed: long enough that a cancel lands mid-flight.
+            "SELECT number, sipHash64(number) FROM numbers(100000000)",
+            // Materialized: the route where cancel only marks the flag.
+            "EXPLAIN QUERY TREE SELECT 1",
+            "SHOW DATABASES",
+        };
+
+        for (int round = 0; round < 200; round++) {
+            String sql = statements[round % statements.length];
+            Connection connection = openMemory();
+            Statement statement = connection.createStatement();
+            ResultSet rs = statement.executeQuery(sql);
+            assertTrue(rs.next() || true);
+
+            CountDownLatch go = new CountDownLatch(1);
+            // One thread cancels, one closes the connection underneath it. Whichever wins,
+            // neither may hang and neither may take the JVM down.
+            Thread canceller =
+                    new Thread(
+                            () -> {
+                                try {
+                                    go.await(30, TimeUnit.SECONDS);
+                                    statement.cancel();
+                                } catch (Exception ignored) {
+                                    // Cancel is best-effort; the assertions are below.
+                                }
+                            },
+                            "chdb-it-cancel-" + round);
+            Thread closer =
+                    new Thread(
+                            () -> {
+                                try {
+                                    go.await(30, TimeUnit.SECONDS);
+                                    connection.close();
+                                } catch (Exception ignored) {
+                                    // Closing a connection with a query in flight is allowed to
+                                    // fail; it must not hang or crash.
+                                }
+                            },
+                            "chdb-it-close-" + round);
+            canceller.start();
+            closer.start();
+            go.countDown();
+            canceller.join(TimeUnit.SECONDS.toMillis(30));
+            closer.join(TimeUnit.SECONDS.toMillis(30));
+            assertFalse(canceller.isAlive(), "the cancelling thread did not finish");
+            assertFalse(closer.isAlive(), "the closing thread did not finish");
+
+            try {
+                rs.close();
+            } catch (SQLException ignored) {
+                // The connection may already be gone underneath it.
+            }
+            try {
+                statement.close();
+            } catch (SQLException ignored) {
+                // As above.
+            }
+            connection.close();
+        }
+
+        // NativeTestBase asserts the counters after the test; this makes the round count part
+        // of the failure message if they are not zero.
+        assertEquals(
+                0, ChdbNative.openHandleCount(ChdbNative.KIND_STREAM), "leaked a stream handle");
+        assertEquals(
+                0,
+                ChdbNative.openHandleCount(ChdbNative.KIND_CONNECTION),
+                "leaked a connection handle");
     }
 
     @Test

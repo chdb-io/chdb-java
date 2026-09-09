@@ -286,9 +286,12 @@ public class ChdbStatement implements Statement {
                             + " entry point that accepts it (chdb_query_arrow_with_params_n is"
                             + " not exported by engine "
                             + ChdbNative.engineVersion()
-                            + "). Use a Statement with the value written into the SQL, or a"
-                            + " query over system.tables / system.columns, which is a SELECT and"
-                            + " does take parameters.",
+                            + "). Ask the system tables instead -- system.tables,"
+                            + " system.columns, system.databases and system.settings answer the"
+                            + " same questions with a SELECT, which does take parameters. Do not"
+                            + " paste the value into the SQL of a plain Statement: a LIKE"
+                            + " pattern that closes the literal can inject clauses, up to and"
+                            + " including INTO OUTFILE. See docs/unsupported.md.",
                     "0A000");
         }
 

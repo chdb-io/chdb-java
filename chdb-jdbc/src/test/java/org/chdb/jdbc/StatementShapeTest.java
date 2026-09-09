@@ -104,10 +104,13 @@ class StatementShapeTest {
     @DisplayName("the engine classifier wins on whether there is a result set")
     void classifierIsAuthoritative() {
         // Classifier says READ_ONLY for text the keyword scan would call a write. It settles
-        // that there is a result set; the keyword scan still picks the door, and an
-        // unrecognized keyword takes the materialized one because it accepts everything.
+        // that there is a result set; the keyword scan still picks the door, and a keyword that
+        // is not in the materialized set takes the streaming one -- which for this synthetic
+        // case is also the safe answer, because the streaming door refuses an INSERT before
+        // executing it while the materialized door would write the row and *then* report
+        // "Missing result header for Arrow output".
         assertEquals(
-                StatementShape.Route.MATERIALIZED_RESULT_SET,
+                StatementShape.Route.STREAMED_RESULT_SET,
                 StatementShape.route(
                         new int[] {StatementShape.CLASS_READ_ONLY, 1, 0}, "INSERT INTO t VALUES (1)"));
         // A READ_ONLY statement that is a SELECT still streams.
@@ -177,5 +180,71 @@ class StatementShapeTest {
         assertNull(StatementShape.leadingKeyword("   "));
         assertNull(StatementShape.leadingKeyword(null));
         assertNull(StatementShape.leadingKeyword("/* never closed"));
+    }
+
+    /**
+     * Block comments nest in ClickHouse, and each of these was checked against the engine's own
+     * parser on v26.7.2-rc.2: where the scan reads a keyword the engine produces a result set,
+     * and where it reads none the engine either swallows the statement into the still-open
+     * comment (accepted, no result set) or rejects it outright. The two agree on all nine.
+     *
+     * <p>Before the depth counting, the first three read {@code null}, {@code STILL} and {@code
+     * null}, which with a {@code READ_ONLY} classifier answer sent a streamable {@code SELECT}
+     * down the materialized route -- measured at +496 MB of RSS for a four-million-row result.
+     */
+    @Test
+    @DisplayName("block comments nest, and the scan counts depth")
+    void nestedBlockComments() {
+        // Balanced: the keyword is behind the outermost close.
+        assertEquals("SELECT", StatementShape.leadingKeyword("/* /* */ */ SELECT 1"));
+        assertEquals("SELECT", StatementShape.leadingKeyword("/* a /* b */ c */ SELECT 1"));
+        assertEquals("SELECT", StatementShape.leadingKeyword("/*/**/*/ SELECT 1"));
+        assertEquals("SELECT", StatementShape.leadingKeyword("/* a /* b /* c */ d */ e */ SELECT 1"));
+        assertEquals("SELECT", StatementShape.leadingKeyword("/* /* /* */ */ */ SELECT 1"));
+        assertEquals("SELECT", StatementShape.leadingKeyword("/* one */ /* /* two */ */ SELECT 1"));
+        assertEquals("SELECT", StatementShape.leadingKeyword("-- banner\n/* /* */ */ SELECT 1"));
+
+        // Unbalanced: still inside a comment at end of input, so there is no keyword. The
+        // engine agrees -- it accepts these and produces no result set, having swallowed the
+        // SELECT into the comment.
+        assertNull(StatementShape.leadingKeyword("/* /* */ SELECT 1"));
+        assertNull(StatementShape.leadingKeyword("/* /* /* */ */ SELECT 1"));
+        assertNull(StatementShape.leadingKeyword("/* never closed SELECT 1"));
+
+        // A stray close is not a comment at all; the engine rejects these with a syntax error.
+        assertNull(StatementShape.leadingKeyword("*/ SELECT 1"));
+        assertNull(StatementShape.leadingKeyword("/* a */ */ SELECT 1"));
+
+        // And the routing consequence, which is the point of the above.
+        assertEquals(
+                StatementShape.Route.STREAMED_RESULT_SET,
+                StatementShape.route(null, "/* /* */ */ SELECT 1"));
+        assertEquals(
+                StatementShape.Route.MATERIALIZED_RESULT_SET,
+                StatementShape.route(null, "/* /* */ */ SHOW TABLES"));
+    }
+
+    /**
+     * A prefix the scan cannot read errs toward streaming when the classifier has said there is
+     * a result set, and toward no-result-set when nothing has.
+     *
+     * <p>Not arbitrary: the materialized door executes what it is given before checking that
+     * there is a result header to export, so it is the one guess that can write. The streaming
+     * door refuses anything that is not a SELECT pipeline before executing it, and its mistake
+     * costs an error rather than an unbounded buffer.
+     */
+    @Test
+    @DisplayName("an unreadable prefix errs toward streaming, not toward materializing")
+    void unreadablePrefixErrsTowardStreaming() {
+        for (String sql :
+                new String[] {
+                    "/* /* */ SELECT 1", "/* never closed", "*/ SELECT 1", "   ", "42 + 1"
+                }) {
+            assertEquals(
+                    StatementShape.Route.STREAMED_RESULT_SET,
+                    StatementShape.route(new int[] {StatementShape.CLASS_READ_ONLY, 1, 0}, sql),
+                    sql);
+            assertEquals(StatementShape.Route.NO_RESULT_SET, StatementShape.route(null, sql), sql);
+        }
     }
 }

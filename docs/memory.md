@@ -113,7 +113,12 @@ are live before the call returns.
 `setMaxRows`, closing the `ResultSet` after one row, and any row cap the driver could impose all
 run after the memory has been spent. There is nothing left to save.
 
-**What does bound it is the engine's own per-query accounting**, which covers this path:
+**What does bound it is the engine's own per-query accounting**, which covers this path. Set it
+the same way as anywhere else — in the URL, or with `SET` on a connection you already have:
+
+```
+jdbc:chdb:/data?max_memory_usage=2000000000
+```
 
 ```java
 statement.execute("SET max_memory_usage = 2000000000");
@@ -121,12 +126,9 @@ statement.execute("SET max_memory_usage = 2000000000");
 
 An oversized materialization then fails in milliseconds with ClickHouse error 241, which the
 driver maps to `SQLTransientException` (SQLSTATE `53200`) — not an OOM, and not a dead process.
-Measured: 15 out of 15 clean refusals under a 100 MB cap.
-
-**Set it with `SET`, not in the JDBC URL.** Measured on v26.7.0, no setting passed in the
-connect argument vector reaches the session — `max_memory_usage`, `max_threads`,
-`max_result_rows` and `max_block_size` all keep their defaults when given as URL properties, and
-all take effect via `SET`. See [engine findings](upstream-findings.md).
+Measured: 15 out of 15 clean refusals under a 100 MB cap. Both forms take effect on the pinned
+baseline; only on engines before v26.7.2-rc.2 was the URL form inert, as described
+[above](#what-to-set) and in [findings §10](upstream-findings.md).
 
 **In practice the exposure is small, because the row count of each of these statements is a
 catalog or schema quantity rather than a data quantity.** `SHOW TABLES` over a 20,001-table

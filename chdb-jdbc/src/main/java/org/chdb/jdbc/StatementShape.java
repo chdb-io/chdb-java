@@ -93,6 +93,30 @@ import java.util.Set;
  * authoritative about -- whether there is a result set at all -- {@link #route(int[], String)}
  * already defers to it. The rest is the keyword scan's for as long as the ABI has no
  * "streamable" bit; {@code docs/upstream-findings.md} §10 carries the upstream ask.
+ *
+ * <h2>Which way an unreadable prefix errs</h2>
+ * {@link #leadingKeyword(String)} returns null for an unterminated block comment, a comment
+ * with no statement behind it, or a prefix that does not start with a letter. When that
+ * happens and the classifier has said {@code READ_ONLY}, the statement goes to the
+ * <em>streaming</em> door. Two reasons, both measured:
+ *
+ * <ul>
+ *   <li>The streaming door's refusal costs an error; the materialized door's mistakes cost
+ *       memory. A statement wrongly materialized buffers its whole result before the caller
+ *       sees a row -- +496 MB of RSS for a four-million-row result, against +2 MB streamed --
+ *       and the driver's bounded-memory guarantee is the more expensive thing to lose
+ *       silently.
+ *   <li>The materialized door <em>executes</em> what it is given before it checks that there
+ *       is a result header to export. Handed a write it reports {@code Missing result header
+ *       for Arrow output} <em>and leaves the row in the table</em> (findings §10). So guessing
+ *       "materialize" for a statement the driver could not read is the one guess that can
+ *       change data; guessing "stream" cannot, because the streaming door refuses anything
+ *       that is not a SELECT pipeline before executing it.
+ * </ul>
+ *
+ * <p>With no classifier answer at all, an unreadable prefix stays {@link
+ * Route#NO_RESULT_SET}: nothing has said there is a result set, {@code chdb_query_n} accepts
+ * every statement, and {@code execute()} still runs it.
  */
 final class StatementShape {
 
@@ -158,13 +182,12 @@ final class StatementShape {
         if (analysis != null && analysis.length >= 1) {
             int queryClass = analysis[0];
             if (queryClass == CLASS_READ_ONLY) {
-                // The classifier settles that there is a result set but not how to read it,
-                // so the keyword scan picks the door. An unrecognized keyword lands on the
-                // materialized one: it accepts everything the streaming one does, so the
-                // worst case is a bounded loss of streaming rather than a failure -- and a
-                // read-only statement whose keyword is not SELECT is a metadata query, which
-                // is what makes that trade safe.
-                return isStreamable(sql) ? Route.STREAMED_RESULT_SET : Route.MATERIALIZED_RESULT_SET;
+                // The classifier settles that there is a result set but not how to read it, so
+                // the keyword scan picks the door -- and a prefix the scan cannot read goes to
+                // the streaming one. See "Which way an unreadable prefix errs" on this class.
+                return isMaterializedKeyword(sql)
+                        ? Route.MATERIALIZED_RESULT_SET
+                        : Route.STREAMED_RESULT_SET;
             }
             if (queryClass != CLASS_UNKNOWN) {
                 return Route.NO_RESULT_SET;
@@ -187,10 +210,16 @@ final class StatementShape {
         return Route.NO_RESULT_SET;
     }
 
-    /** Whether the first keyword of {@code sql} introduces a result set the engine streams. */
-    private static boolean isStreamable(String sql) {
+    /**
+     * Whether the first keyword of {@code sql} names a statement the engine will not stream.
+     *
+     * <p>Deliberately the positive test for the materialized set rather than the negative test
+     * for the streamable one, so that a keyword the scan cannot read does not land on the
+     * materialized route by default.
+     */
+    private static boolean isMaterializedKeyword(String sql) {
         String keyword = leadingKeyword(sql);
-        return keyword != null && STREAMABLE_RESULT_SET_KEYWORDS.contains(keyword);
+        return keyword != null && MATERIALIZED_RESULT_SET_KEYWORDS.contains(keyword);
     }
 
     /**
@@ -199,6 +228,22 @@ final class StatementShape {
      * <p>Comments have to be skipped, not just whitespace: a query prefixed by a {@code --}
      * banner or a {@code /* ... *}{@code /} hint is common, and reading its first word as the
      * keyword would misclassify every such statement.
+     *
+     * <p><strong>Block comments nest.</strong> ClickHouse is not standard SQL here, and it
+     * matters: measured on v26.7.2-rc.2, {@code /* /*}{@code  *}{@code / *}{@code / SELECT 1}
+     * returns 1, as do {@code /* outer /* inner *}{@code / still outer *}{@code / SELECT 1} and
+     * {@code /*}{@code /*}{@code *}{@code /}{@code *}{@code / SELECT 1}. So the scan counts
+     * depth instead of stopping at the first close marker. Stopping early read the text after
+     * the inner {@code *}{@code /} as the keyword -- {@code null} for the first of those,
+     * {@code STILL} for the second -- and with the classifier reporting the statement
+     * {@code READ_ONLY}, that sent a perfectly streamable {@code SELECT} down the materialized
+     * route: measured at +496 MB of RSS for a four-million-row result against +2 MB for the
+     * same query behind a non-nested comment.
+     *
+     * @return the keyword, or null when there is no keyword to read -- an unterminated block
+     *     comment, a comment with no statement after it, or a statement starting with something
+     *     that is not a letter. {@link #route(int[], String)} documents which way an
+     *     unreadable prefix errs.
      */
     static String leadingKeyword(String sql) {
         if (sql == null) {
@@ -224,11 +269,27 @@ final class StatementShape {
                 continue;
             }
             if (c == '/' && i + 1 < length && sql.charAt(i + 1) == '*') {
-                int close = sql.indexOf("*/", i + 2);
-                if (close < 0) {
+                // Depth-counted, because ClickHouse nests these. An unterminated comment ends
+                // the scan with depth > 0 and no keyword, which is the honest answer: the
+                // engine will not parse it either.
+                int depth = 0;
+                while (i + 1 < length) {
+                    if (sql.charAt(i) == '/' && sql.charAt(i + 1) == '*') {
+                        depth++;
+                        i += 2;
+                    } else if (sql.charAt(i) == '*' && sql.charAt(i + 1) == '/') {
+                        depth--;
+                        i += 2;
+                        if (depth == 0) {
+                            break;
+                        }
+                    } else {
+                        i++;
+                    }
+                }
+                if (depth != 0) {
                     return null;
                 }
-                i = close + 2;
                 continue;
             }
             break;

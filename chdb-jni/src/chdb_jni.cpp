@@ -173,11 +173,15 @@ struct StreamHandle : HandleBase
         // Released after the batches above, which is what frees the engine buffers behind a
         // materialized result: the batches are independently owned per the Arrow C ABI, but
         // releasing the producer first would leave them reading from a retired allocator.
-        if (has_array_stream)
+        //
+        // Keyed on the release callback itself rather than on a flag the open path sets. The
+        // engine writes into this struct before it can tell us whether the call succeeded, so
+        // a flag set afterwards is a flag that is false on exactly the paths that need to
+        // clean up. Zeroed at construction, so "release is non-null" means "there is
+        // something to release" and nothing else has to stay in sync with it.
+        if (array_stream.release != nullptr)
         {
-            has_array_stream = false;
-            if (array_stream.release != nullptr)
-                array_stream.release(&array_stream);
+            array_stream.release(&array_stream);
             std::memset(&array_stream, 0, sizeof(array_stream));
         }
 
@@ -193,7 +197,8 @@ struct StreamHandle : HandleBase
     // lifetimes.
     bool hasProducer() const
     {
-        return source == BatchSource::kEngineStream ? stream != nullptr : has_array_stream;
+        return source == BatchSource::kEngineStream ? stream != nullptr
+                                                     : array_stream.release != nullptr;
     }
 
     BatchSource source = BatchSource::kEngineStream;
@@ -202,9 +207,9 @@ struct StreamHandle : HandleBase
     std::shared_ptr<ConnHandle> owner;
 
     // kMaterializedArrow only: the stream chdb_query_arrow_n exported into. Owned here, and
-    // released by closeNow().
+    // released by closeNow() whenever its release callback is set -- there is no separate
+    // "is it valid" flag, deliberately: see closeNow().
     ArrowArrayStream array_stream{};
-    bool has_array_stream = false;
 
     ArrowSchema schema{};
     bool has_schema = false;
@@ -394,7 +399,7 @@ std::string arrowStreamError(ArrowArrayStream & stream)
 // Fetches one batch from a materialized Arrow stream. Same contract as fetchBatch below.
 bool fetchMaterializedBatch(JNIEnv * env, StreamHandle & handle, ArrowArray * out, bool want_schema)
 {
-    if (!handle.has_array_stream)
+    if (handle.array_stream.release == nullptr)
     {
         throwNative(env, "this result has no Arrow stream to read from");
         return false;
@@ -444,13 +449,32 @@ bool fetchBatch(JNIEnv * env, StreamHandle & handle, ArrowArray * out, bool want
     ArrowArrayStream one_batch;
     std::memset(&one_batch, 0, sizeof(one_batch));
 
-    chdb_connection conn = *handle.owner->conn;
-    if (chdb_stream_fetch_arrow(conn, handle.stream, reinterpret_cast<chdb_arrow_stream>(&one_batch))
-        != CHDBSuccess)
+    // The connection lock is taken here, inside the stream's, and held across the fetch:
+    // chdb_close_conn() frees what `conn` points at, so reading the pointer and then using it
+    // without the lock is a use-after-free, not merely a data race. See the lock order in
+    // chdb_jni_handles.h -- StreamHandle::mutex before ConnHandle::mutex, never the reverse.
+    //
+    // Callers must not already hold the connection lock: std::mutex is not recursive.
     {
-        std::string error = resultError(handle.stream);
-        throwNative(env, error.empty() ? "chdb_stream_fetch_arrow failed" : error);
-        return false;
+        if (!handle.owner)
+        {
+            throwNative(env, "the stream has no connection to fetch from");
+            return false;
+        }
+        std::lock_guard<std::mutex> connection_lock(handle.owner->mutex);
+        if (handle.owner->conn == nullptr)
+        {
+            throwNative(env, "the connection was closed while the query was still being read");
+            return false;
+        }
+        if (chdb_stream_fetch_arrow(
+                *handle.owner->conn, handle.stream, reinterpret_cast<chdb_arrow_stream>(&one_batch))
+            != CHDBSuccess)
+        {
+            std::string error = resultError(handle.stream);
+            throwNative(env, error.empty() ? "chdb_stream_fetch_arrow failed" : error);
+            return false;
+        }
     }
 
     // The schema is stable for the life of the stream, so it is captured once, from the
@@ -545,11 +569,11 @@ bool captureColumns(JNIEnv * env, StreamHandle & handle)
 // first batch is fetched here and kept as the pending batch rather than discarded.
 jlong primeAndRegister(JNIEnv * env, const std::shared_ptr<StreamHandle> & handle)
 {
-    {
-        std::lock_guard<std::mutex> lock(handle->owner->mutex);
-        if (!fetchBatch(env, *handle, &handle->pending, /*want_schema=*/true))
-            return 0;  // handle's destructor tears down whatever it already owns.
-    }
+    // No connection lock here: fetchBatch takes it itself, and std::mutex is not recursive.
+    // The handle is not in the registry yet, so no other thread can be driving it and there
+    // is nothing to take its own mutex for either.
+    if (!fetchBatch(env, *handle, &handle->pending, /*want_schema=*/true))
+        return 0;  // handle's destructor tears down whatever it already owns.
 
     if (handle->pending.release == nullptr)
     {
@@ -1184,7 +1208,6 @@ Java_org_chdb_internal_ChdbNative_streamOpenMaterialized(
                              "statement; the engine's Arrow output is inconsistent");
             return 0;
         }
-        handle->has_array_stream = true;
 
         return primeAndRegister(env, handle);
     }
@@ -1488,8 +1511,7 @@ Java_org_chdb_internal_ChdbNative_streamCancel(JNIEnv * env, jclass, jlong conne
         }
 
         std::lock_guard<std::mutex> lock(handle->mutex);
-        if (handle->closed || !handle->hasProducer() || !handle->owner
-            || handle->owner->conn == nullptr)
+        if (handle->closed || !handle->hasProducer() || !handle->owner)
             return;  // Already finished or torn down: cancel is a no-op, not an error.
 
         if (handle->cancelled)
@@ -1509,6 +1531,18 @@ Java_org_chdb_internal_ChdbNative_streamCancel(JNIEnv * env, jclass, jlong conne
             handle->cancelled = true;
             return;
         }
+
+        // The connection lock, inside the stream's, held across the engine call -- the same
+        // reason as in fetchBatch: chdb_close_conn() frees what handle->owner->conn points at,
+        // so testing it and then dereferencing it without the lock is a use-after-free rather
+        // than only a data race on a non-atomic member. Lock order is in chdb_jni_handles.h.
+        //
+        // Taking it here does not make cancel wait for the query it is meant to interrupt:
+        // the open paths hold the connection lock only for the call that starts the query, and
+        // fetchBatch holds it only for one batch.
+        std::lock_guard<std::mutex> connection_lock(handle->owner->mutex);
+        if (handle->owner->conn == nullptr)
+            return;  // Closed underneath us: nothing to cancel, and not an error.
 
         chdb_stream_cancel_query(*handle->owner->conn, handle->stream);
         handle->cancelled = true;

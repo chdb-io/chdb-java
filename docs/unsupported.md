@@ -131,9 +131,39 @@ with their full result set, but cannot carry server-side bindings; a `PreparedSt
 `?` in one is refused rather than having its values interpolated into the SQL, which is the
 injection server-side binding exists to avoid.
 
-**Instead:** put the value in the SQL of a plain `Statement`, or ask `system.tables` /
-`system.columns` / `system.settings` the same question — those are `SELECT`s and do take
-parameters. `DatabaseMetaData` already does exactly that.
+**Instead: ask the `system` tables.** They answer every one of these questions, they are
+`SELECT`s, so they take parameters, and `DatabaseMetaData` already works this way:
+
+| instead of | use |
+|---|---|
+| `SHOW TABLES [FROM d] LIKE ?` | `SELECT name FROM system.tables WHERE database = ? AND name LIKE ?` |
+| `SHOW DATABASES LIKE ?` | `SELECT name FROM system.databases WHERE name LIKE ?` |
+| `DESCRIBE TABLE t` | `SELECT name, type FROM system.columns WHERE database = ? AND table = ? ORDER BY position` |
+| `SHOW COLUMNS FROM t LIKE ?` | the same, plus `AND name LIKE ?` |
+| `SHOW CREATE TABLE t` | `SELECT create_table_query FROM system.tables WHERE database = ? AND name = ?` |
+| `EXISTS TABLE t` | `SELECT count() > 0 FROM system.tables WHERE database = ? AND name = ?` |
+| `SHOW SETTINGS LIKE ?` | `SELECT name, value FROM system.settings WHERE name LIKE ?` |
+
+**Do not build the statement by pasting the value into the SQL of a plain `Statement`.** This
+document used to suggest that, and it was wrong: a `LIKE` pattern that closes the literal and
+comments out the rest injects whole clauses into a statement the caller did not write. Measured
+on v26.7.2-rc.2, with the pattern interpolated into `SHOW TABLES FROM d LIKE '<pattern>'`:
+
+| pattern | result |
+|---|---|
+| `%' LIMIT 1 -- ` | accepted; the result silently drops from 3 rows to 1 |
+| `%' FORMAT JSON -- ` | accepted |
+| `%' INTO OUTFILE '/tmp/x.tsv' TRUNCATE -- ` | accepted through `execute()`, **and it writes the file** |
+
+That last one is an arbitrary file write from a metadata query, which is the whole reason
+server-side binding exists. Escaping it correctly by hand is possible and is not advice this
+document is going to give, because the `system` table above is both safer and shorter.
+
+`EXPLAIN` is the one form with no `system` equivalent, since there is no table of query plans.
+Write the literal into the SQL there — but note what that means: an `EXPLAIN` is something a
+developer runs against a query they are debugging, with a value they chose. It is not a place to
+put input that came from somewhere else. If the value is not yours, there is nothing to explain
+that a parameterized `SELECT` cannot answer.
 
 ## Accepted but inert
 
