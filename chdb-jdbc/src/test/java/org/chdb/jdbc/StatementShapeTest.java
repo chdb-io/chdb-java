@@ -11,9 +11,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * The keyword scan is the fallback used on the pinned v26.7.0 engine, which does not export
- * chdb_classify_query_n. Getting it wrong sends a statement down the wrong execution path, so
- * both directions are covered.
+ * The keyword scan is the fallback for an engine that does not export chdb_classify_query_n.
+ * The pinned v26.7.2-rc.2 baseline does export it, so the scan is no longer what decides in
+ * practice -- but it still decides whenever the classifier is absent or refuses the text, and
+ * getting it wrong sends a statement down the wrong execution path, so both directions stay
+ * covered.
  */
 class StatementShapeTest {
 

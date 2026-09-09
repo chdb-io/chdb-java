@@ -1,16 +1,19 @@
-// chDB C API entry points that the pinned baseline engine does not have.
+// chDB C API entry points the shim resolves at runtime rather than linking.
 //
-// The V1 baseline is chdb-core v26.7.0 (work plan section 2.1). Two calls the shim would
-// like to use landed after it:
+// The baseline is chdb-core v26.7.2-rc.2 (work plan section 2.1), which is the release both
+// of these arrived in -- neither is in v26.7.0 or v26.7.1-rc.1, whose export lists and
+// headers have neither name:
 //
-//   chdb_classify_query_n   v26.7.1-rc.1  says whether a statement has a result set,
+//   chdb_classify_query_n   v26.7.2-rc.2  says whether a statement has a result set,
 //                                         using the engine's own parser
-//   chdb_shutdown           v26.7.1-rc.1  joins every engine thread before host teardown
+//   chdb_shutdown           v26.7.2-rc.2  joins every engine thread before host teardown
 //
-// Work plan section 5.1 asks for the C API to be split into required and optional symbols.
-// These are the optional half: resolved with dlsym at load time, and absent-but-fine. The
-// required half is everything chdb_jni.cpp calls directly, which the linker checks at
-// build time and the loader re-checks at startup.
+// They stay here, resolved with dlsym and absent-but-fine, rather than moving to the linked
+// set now that the baseline has them. Work plan section 5.1 asks for the C API to be split
+// into required and optional symbols, and what makes these optional is not the baseline: a
+// user can point the loader at another libchdb of the same version, and an absent symbol has
+// to degrade rather than fail the load. The required half is everything chdb_jni.cpp calls
+// directly, which the linker checks at build time and the loader re-checks at startup.
 //
 // Resolution uses RTLD_DEFAULT rather than a dlopen handle. By the time any of this runs
 // the Java loader has already System.load()-ed libchdb into the process, so its symbols
@@ -28,10 +31,10 @@ extern "C" {
 namespace chdb_jni
 {
 
-// Mirrors chdb_query_analysis_v1 from a post-baseline chdb.h. Declared here because the
-// pinned header does not have it. The struct is size-versioned by its own first field, so
-// a newer engine fills only the fields this definition has room for -- which is what makes
-// declaring it on this side safe rather than a guess about the engine's layout.
+// Mirrors chdb_query_analysis_v1. Declared here rather than used from chdb.h, which does now
+// carry it, because this side has to keep working against an engine whose header it was not
+// built from: the struct is size-versioned by its own first field, so a newer engine fills
+// only the fields this definition has room for. Keep the two in step.
 struct QueryAnalysisV1
 {
     uint32_t struct_size;
@@ -40,7 +43,7 @@ struct QueryAnalysisV1
     uint32_t query_class;
 };
 
-// chdb_query_class values, as of v26.7.1-rc.1. Kept in sync with ChdbNative.classifyQuery's
+// chdb_query_class values, as of v26.7.2-rc.2. Kept in sync with ChdbNative.classifyQuery's
 // documented return contract.
 enum QueryClass : uint32_t
 {

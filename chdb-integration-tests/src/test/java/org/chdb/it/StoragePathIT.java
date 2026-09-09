@@ -134,7 +134,7 @@ class StoragePathIT extends NativeTestBase {
         // were not released, every later connect to a different path would be refused on behalf
         // of a connection that does not exist -- and one bad connect would strand the JVM.
         //
-        // Not an invalid setting value: engine 26.7.0 accepts --max_threads=not-a-number and
+        // Not an invalid setting value: engine 26.7.2-rc.2 accepts --max_threads=not-a-number and
         // connects anyway, despite what chdb.h says about invalid values failing the
         // connection, so that would not exercise this path.
         Path file = temp.resolve("a-file-not-a-directory");
