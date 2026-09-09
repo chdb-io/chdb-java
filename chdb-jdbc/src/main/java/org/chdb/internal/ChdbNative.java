@@ -70,11 +70,21 @@ public final class ChdbNative {
     /**
      * Opts out of chDB's process-wide signal handlers while preserving the host JVM's.
      *
-     * <p>Idempotent, and called before the first connect. {@code
-     * chdb_set_signal_handlers_enabled(0)} resets the incumbent handlers for SIGSEGV,
-     * SIGBUS, SIGILL, SIGFPE and four others to {@code SIG_DFL} as a side effect, which
-     * would leave the JVM unable to service its own implicit null checks; the shim brackets
-     * the call and puts the host dispositions back.
+     * <p>Idempotent, and called exactly once per process, from {@link
+     * NativeLibraryLoader#load()}. {@code chdb_set_signal_handlers_enabled(0)} resets the
+     * incumbent handlers for SIGSEGV, SIGBUS, SIGILL, SIGFPE and four others to {@code
+     * SIG_DFL} as a side effect, which would leave the JVM unable to service its own
+     * implicit null checks; the shim brackets the call and puts the host dispositions back.
+     *
+     * <p>The bracket is not atomic and cannot be: dispositions are process-wide, so between
+     * chDB's reset and the shim's restore there is a window -- microseconds -- in which the
+     * JVM has no crash handlers, and another thread taking a SIGSEGV in it dies immediately
+     * with no {@code hs_err_pid} report, because HotSpot's crash reporter is the handler that
+     * was removed. That is why this is called once rather than per connection, and why the
+     * opt-out is still worth making: leaving the flag clear lets the engine install its own
+     * handlers for the whole duration of every {@code chdb_connect()} instead, which is the
+     * same hazard over a window three orders of magnitude wider. The residual window belongs
+     * upstream; see issue #14.
      *
      * @return names of the signals whose disposition chDB changed and the shim restored,
      *     empty once upstream stops resetting host handlers
