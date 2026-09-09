@@ -14,8 +14,10 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -278,6 +280,13 @@ public final class NativeLibraryLoader {
             System.loadLibrary("chdb");
             System.loadLibrary("chdb_java_jni");
         } catch (UnsatisfiedLinkError e) {
+            // Naming the packages that *are* on the classpath, when they are for some other
+            // machine. Without it this message reads the same whether a consumer declared no
+            // platform package at all or declared the wrong one, and the second is the more
+            // likely mistake and the more confusing to read: they can see the dependency in
+            // their POM and are being told to add it. Measured by scripts/verify-consumer.sh,
+            // which reproduces both cases from a Maven repository.
+            String foreign = describeForeignPackages(platform);
             throw new ChdbNativeException(
                     "No chDB native runtime for "
                             + platform
@@ -286,6 +295,7 @@ public final class NativeLibraryLoader {
                             + "  1. -D" + PROP_LIBRARY_PATH + " (not set)\n"
                             + "  2. a chdb-native-" + platform.id() + " JAR on the classpath (not found)\n"
                             + "  3. java.library.path (" + System.getProperty("java.library.path") + ")\n"
+                            + foreign
                             + "\nAdd the platform package for this machine:\n"
                             + "  <dependency>\n"
                             + "    <groupId>org.chdb</groupId>\n"
@@ -297,6 +307,33 @@ public final class NativeLibraryLoader {
                     e);
         }
         return verify(platform, null, null, "java.library.path", new LinkedHashMap<String, String>());
+    }
+
+    /**
+     * A sentence naming the platform packages on the classpath that are for another machine, or
+     * the empty string if there are none.
+     *
+     * <p>Never throws: this runs while building an error message, and a diagnostic that can
+     * fail turns a clear failure into an obscure one.
+     */
+    private static String describeForeignPackages(Platform platform) {
+        try {
+            List<String> foreign = new ArrayList<>();
+            for (String id : NativePackage.foreignPackages(platform)) {
+                foreign.add("chdb-native-" + id);
+            }
+            if (foreign.isEmpty()) {
+                return "";
+            }
+            return "\nThe classpath does carry "
+                    + String.join(" and ", foreign)
+                    + ", which "
+                    + (foreign.size() == 1 ? "is" : "are")
+                    + " for a different machine. A platform package is not interchangeable: it"
+                    + " holds a shim linked for one architecture.\n";
+        } catch (RuntimeException | LinkageError ignored) {
+            return "";
+        }
     }
 
     private static LoadedRuntime loadPair(

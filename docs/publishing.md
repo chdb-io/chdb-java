@@ -16,7 +16,8 @@ needs one DNS record, and one licence question needs somebody with authority to 
 | Publishing plugin | **done** — `central-publishing-maven-plugin`, `autoPublish=false` |
 | Third-party licence inventory | **done** — generated from the engine, shipped in the package, drift-tested |
 | `org.chdb` namespace | **not started** — needs a DNS TXT record, and there is no fallback |
-| A way to stage all four platforms for one release | **not started** — issue #15 |
+| A way to stage all four platforms for one release | **done** — `.github/workflows/release.yml`, issue #15 |
+| Proof that the artifacts work when consumed from a repository | **done, locally** — `scripts/verify-consumer.sh`, issue #10 |
 | GPG key for the project | **not started** — needs a decision about whose key |
 | Position on the LGPL components | **not started** — needs chdb-io |
 
@@ -42,6 +43,12 @@ mvn versions:set -DnewVersion=26.7.0.1     # a release, not the -SNAPSHOT in the
 mvn -Prelease deploy
 ```
 
+**In practice, do not do this by hand.** `.github/workflows/release.yml` does all of it, one
+platform per runner, and is the only way to get macOS x86_64 without an Intel Mac. The manual
+sequence above is kept because it is what the workflow runs, and because reading it is how you
+understand what the workflow is for. Section 6 is the running order; `docs/release-readiness.md`
+is the checklist.
+
 **Staging is not optional and Maven does not do it.** The two shared libraries are put into
 `target/native/` by `scripts/build-native.sh`, and the native modules pick them up as a resource
 directory. Run `mvn -Prelease deploy` on a clean checkout and each native module packages an
@@ -63,10 +70,38 @@ release profile rejects.
 purpose: a shim linked for another architecture fails at `System.load()` in a user's JVM rather
 than at build time. Linux is covered from either host by the container helper — given a Linux
 JDK to point `JAVA_HOME` at, which a macOS machine does not have lying around — but macOS
-x86_64 needs an Intel Mac. CI already builds all four on their own runners and does not currently
-upload the packaged jars, so assembling a release means either four machines or a release
-workflow. That gap is issue #15 and should be closed before the first release rather than
-worked around by hand.
+x86_64 needs an Intel Mac. So assembling a release means either four machines or a release
+workflow, and it is a workflow: `.github/workflows/release.yml` stages each platform on its own
+runner, uploads `target/native/` as an artifact, and downloads all four into one deploy job
+that runs `mvn -Prelease deploy`. That was issue #15.
+
+Three things about it that are decisions rather than mechanics, recorded at length in the
+workflow's own header and summarised here:
+
+- **The version lives in git, not in the workflow.** A release is a commit that carries the
+  release version in its POMs plus a tag on that commit. `versions:set` in CI would publish
+  bytes that correspond to no commit, so `git show <tag>` could not tell you what went out.
+  The workflow enforces this on **both** trigger paths: before anything is staged it looks up
+  `v<POM version>` and refuses unless that tag exists and points at the commit being built. So
+  `workflow_dispatch` with `channel=release` needs the tag as much as a tag push does — an
+  earlier version of this workflow checked only the tag name in `github.ref_name`, which is a
+  branch on a manual run, and a manual release could therefore deploy an untagged commit. A
+  guarantee with a manual bypass is not one.
+- **The same workflow publishes snapshots**, and that is the default for a manual run. It is
+  the only way to move issue #10, and running the release path for every snapshot is what makes
+  it already-tested when a release depends on it. The publishing plugin routes a `-SNAPSHOT`
+  deploy to Central's snapshot repository rather than building a portal bundle, so
+  `autoPublish` does not apply there.
+- **The builds are not bit-identical, and the gap was measured rather than left open.** Two
+  clean builds of the macos-aarch64 shim from the same source on the same machine differ in
+  116 bytes of the same-length file: 16 bytes of `LC_UUID`, four bytes holding the per-object
+  `N_OSO` debug-map timestamps, and ~96 bytes of ad-hoc code signature covering those. `__text`,
+  `__cstring`, `__const` and `__data` are byte-identical, so the shim's content reproduces and
+  only build metadata does not. Since the shim is ~130 KB of a ~326 MB package and the engine
+  half *is* reproducible — pinned by SHA-256 in `scripts/engine.properties` and verified by
+  `fetch-libchdb.sh` — chasing the remaining bytes would buy nothing a consumer can act on.
+  What the workflow does instead is record what it shipped: every staged library's SHA-256 goes
+  into the job summary and into `manifest.properties` inside the JAR.
 
 The version matters too: `deploy` on the `26.7.0.1-SNAPSHOT` currently in the POM publishes a
 snapshot, which goes to a different place and is never validated or promoted. A Central release
@@ -315,12 +350,25 @@ Each step can invalidate the next, so:
    </repository>
    ```
 
-   With both in place this is the cheap step that finds everything the reactor build cannot:
-   whether the POMs resolve from a repository, whether the BOM behaves, whether declaring one
-   platform package yields a working driver, whether a 166 MB artifact uploads. Tracked as
+   This used to be described as the step that finds everything the reactor build cannot. Most
+   of it can now be found locally, without publishing anything:
+
+   ```bash
+   scripts/verify-consumer.sh
+   ```
+
+   That deploys to a throwaway `file://` repository and resolves from it in a project outside
+   this checkout, with its own empty local repository — so the POMs, the BOM import, the
+   transitive `chdb-jdbc` dependency, the unpack-from-JAR path and both "wrong platform
+   package" error messages are all exercised against a repository rather than a reactor. What
+   it cannot exercise is a network transfer: a `file://` deploy is a copy. **So the only thing
+   left for a real snapshot to prove is that a 98–166 MB artifact uploads and downloads
+   intact** — which is worth knowing, and is the cheapest possible way to know it. Tracked as
    issue #10.
 4. Then the first real release, with `autoPublish=false` so the bundle is reviewed in the portal
-   before it becomes permanent.
+   before it becomes permanent. `.github/workflows/release.yml` does the assembly; the tag has
+   to be on a commit whose POMs already carry the release version, and whose `build` run was
+   green.
 
 ## 7. Who can do what
 

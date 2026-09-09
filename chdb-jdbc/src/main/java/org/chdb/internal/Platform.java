@@ -25,6 +25,13 @@ public final class Platform {
     public static final String LINUX_X86_64_GNU = "linux-x86_64-gnu";
     public static final String LINUX_AARCH64_GNU = "linux-aarch64-gnu";
 
+    /**
+     * Every platform id V1 ships. Only used for diagnostics -- {@link #current()} answers the
+     * question that matters -- but a message that can say "the package you declared is for
+     * another machine" needs to know what the other machines are called.
+     */
+    static final String[] ALL_IDS = {MACOS_AARCH64, MACOS_X86_64, LINUX_X86_64_GNU, LINUX_AARCH64_GNU};
+
     private final String id;
     private final String os;
     private final String arch;
@@ -83,6 +90,31 @@ public final class Platform {
     /** Resource path prefix inside a {@code chdb-native-*} JAR (work plan section 4.2). */
     public String resourcePrefix() {
         return "META-INF/chdb/native/" + os + "/" + arch;
+    }
+
+    /**
+     * The same prefix, for a platform this JVM is not running on.
+     *
+     * <p>There is no {@code Platform} instance for another machine, on purpose: one exists only
+     * for the detected triple, so nothing can accidentally load a package for the wrong
+     * architecture. Diagnostics still need to look for those packages on the classpath, which
+     * is what this is for.
+     *
+     * @throws IllegalArgumentException if the id is not one of {@link #ALL_IDS}
+     */
+    static String resourcePrefixFor(String platformId) {
+        switch (platformId) {
+            case MACOS_AARCH64:
+                return "META-INF/chdb/native/macos/aarch64";
+            case MACOS_X86_64:
+                return "META-INF/chdb/native/macos/x86_64";
+            case LINUX_X86_64_GNU:
+                return "META-INF/chdb/native/linux/x86_64";
+            case LINUX_AARCH64_GNU:
+                return "META-INF/chdb/native/linux/aarch64";
+            default:
+                throw new IllegalArgumentException("not a V1 platform id: " + platformId);
+        }
     }
 
     @Override

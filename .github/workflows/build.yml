@@ -249,6 +249,18 @@ jobs:
             -Dchdb.cache.dir="$PWD/target/ci-cache" \
             org.chdb.examples.QuickStart
 
+      - name: Consume the driver as a repository artifact
+        # Issue #10: nothing had ever depended on this as a published artifact, and a reactor
+        # build cannot find the things a consumer hits -- the POMs come from target/, the BOM is
+        # never imported, and the native libraries are read from a directory rather than
+        # unpacked from a JAR in a local repository.
+        #
+        # The script deploys to a throwaway file:// repository and resolves from it in a project
+        # outside this checkout with its own empty local repository. Run here, on every platform,
+        # so that the answer does not go stale between releases; the one thing it cannot cover is
+        # a real network transfer, which only Central can.
+        run: scripts/verify-consumer.sh ${{ matrix.platform }}
+
       - name: Archive debug symbols
         # Kept out of the runtime JAR (they are several times its size) but needed to read a
         # crash report, so they are archived per build.
