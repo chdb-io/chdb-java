@@ -25,10 +25,11 @@ final class StoragePathRegistry {
 
     private static final Object LOCK = new Object();
 
-    // The path currently bound, or null when no connection is open.
+    // The path currently bound, or null when no connection is open: the absolute normalized
+    // storage path, or ":memory:". Also the form messages print, which is why there is no
+    // second display field -- reading one off ChdbUrl.storagePath() would NPE for a path this
+    // JVM's sun.jnu.encoding cannot hold, which has no Path but does have a key.
     private static String boundKey;
-    // Human-readable form of boundKey, for messages: the URL path as the caller wrote it.
-    private static String boundDisplay;
     private static int openConnections;
     // URLs of the connections holding the binding, for the conflict message. A set because
     // a pool opens many connections from one URL and listing it once is what is useful.
@@ -50,10 +51,9 @@ final class StoragePathRegistry {
         String key = url.registryKey();
         synchronized (LOCK) {
             if (openConnections > 0 && !key.equals(boundKey)) {
-                throw new SQLException(conflictMessage(url, key), "08004");
+                throw new SQLException(conflictMessage(key), "08004");
             }
             boundKey = key;
-            boundDisplay = url.isMemory() ? ChdbUrl.MEMORY : url.storagePath().toString();
             openConnections++;
             boundUrls.add(url.url());
         }
@@ -71,7 +71,6 @@ final class StoragePathRegistry {
             openConnections--;
             if (openConnections == 0) {
                 boundKey = null;
-                boundDisplay = null;
                 boundUrls.clear();
             }
         }
@@ -87,18 +86,18 @@ final class StoragePathRegistry {
     /** The bound storage path, or null if none. */
     static String boundPath() {
         synchronized (LOCK) {
-            return boundDisplay;
+            return boundKey;
         }
     }
 
-    private static String conflictMessage(ChdbUrl requested, String requestedKey) {
+    private static String conflictMessage(String requestedKey) {
         StringBuilder message = new StringBuilder();
         message.append("chDB is already using a different storage path in this JVM.\n\n")
                 .append("  currently bound : ")
-                .append(boundDisplay)
+                .append(boundKey)
                 .append('\n')
                 .append("  requested       : ")
-                .append(requested.isMemory() ? ChdbUrl.MEMORY : requested.storagePath().toString())
+                .append(requestedKey)
                 .append('\n')
                 .append("  open connections: ")
                 .append(openConnections)

@@ -159,16 +159,22 @@ aborts whether the hook runs or not, because the JVM stops waiting once the hook
 the thread is inside the engine. Measured on 26.7.0. The fix for that is `chdb_shutdown()` in a
 later engine; until then, shut your executor down before returning from `main`.
 
-**A non-ASCII storage path needs the JVM to be under a UTF-8 locale.** The driver resolves the
-path with `java.nio.file` to decide whether two URLs name the same directory, and that encodes
-with `sun.jnu.encoding` — which follows the OS locale and is ASCII on a container started with
-no `LANG`, the default for most base images. The connection is then refused with SQLSTATE
-`08001` and a message naming the encoding.
+**A non-ASCII storage path works whatever the JVM's locale is**, including a container started
+with no `LANG` — the default for most base images, which gives the JVM an ASCII
+`sun.jnu.encoding` and makes `java.nio.file` refuse the name outright. The driver only needs
+the path in order to decide whether two URLs name the same directory, so where `Paths.get`
+cannot encode it the driver absolutises and normalises the path as text instead. `normalize()`
+is a text operation anyway: it collapses `.` and `..` without touching the filesystem. The
+engine is handed the path as UTF-8 bytes and creates the directory itself.
 
-This is the JVM's limit rather than chDB's: the driver hands the engine UTF-8 bytes and the
-engine creates the directory correctly, so the same URL works in the same container under
-`LANG=C.UTF-8`. Set a UTF-8 locale, or use an ASCII path. Spaces, and names up to the
-filesystem's own length limit, work regardless.
+What still needs a UTF-8 locale is *your own* `java.nio.file` code: on such a JVM the
+application cannot open, list or delete that directory through `File`/`Path`, even though the
+driver and the engine are using it. If you inspect the storage directory from Java, set
+`LANG=C.UTF-8` or `LC_ALL=C.UTF-8`. Note that `-Dfile.encoding=UTF-8` will not do it — JEP 400
+changed `file.encoding` and deliberately left `sun.jnu.encoding` following the OS locale.
+
+Spaces, and names up to the filesystem's own length limit, work regardless. A path containing a
+NUL is refused (SQLSTATE `08001`): it would truncate the string handed to the engine's C ABI.
 
 **`PreparedStatement.getMetaData()` before execution** throws. chDB's C ABI cannot describe a
 statement without running it, and running the caller's query as a side effect of asking about it

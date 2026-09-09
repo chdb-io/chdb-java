@@ -9,7 +9,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.File;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,6 +21,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -41,6 +41,20 @@ class ProcessLifecycleIT extends NativeTestBase {
     /** Runs a class in a fresh JVM with the same classpath and library path. */
     private static ForkResult fork(String mainClass, List<String> jvmArgs, String... args)
             throws IOException, InterruptedException {
+        return fork(mainClass, jvmArgs, Map.of(), args);
+    }
+
+    /**
+     * The same, with environment variables added to the inherited environment.
+     *
+     * <p>Used to start a JVM under a chosen locale, which is the only way to reach a
+     * non-Unicode {@code sun.jnu.encoding}: it is read from the OS locale at startup and no
+     * system property overrides it (JEP 400 changed {@code file.encoding} and deliberately
+     * left this one alone).
+     */
+    private static ForkResult fork(
+            String mainClass, List<String> jvmArgs, Map<String, String> environment, String... args)
+            throws IOException, InterruptedException {
         List<String> command = new ArrayList<>();
         command.add(Paths.get(System.getProperty("java.home"), "bin", "java").toString());
         command.addAll(jvmArgs);
@@ -52,7 +66,9 @@ class ProcessLifecycleIT extends NativeTestBase {
             command.add(arg);
         }
 
-        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
+        builder.environment().putAll(environment);
+        Process process = builder.start();
         String output;
         try (InputStream in = process.getInputStream()) {
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -177,9 +193,9 @@ class ProcessLifecycleIT extends NativeTestBase {
                     System.out.println("sum=" + rs.getLong(1));
                 }
             } catch (SQLException e) {
-                // Printed rather than thrown, because whether a refusal is the right answer
-                // depends on the platform and the parent is what knows. A stack trace through
-                // an ASCII stdout would be unreadable anyway.
+                // Printed rather than thrown so the parent's failure message carries the
+                // driver's own diagnostic. A stack trace through an ASCII stdout, which is what
+                // a JVM with no locale gives you, would be unreadable anyway.
                 System.out.println(
                         "refused sqlstate=" + e.getSQLState() + " message=" + e.getMessage());
             }
@@ -213,41 +229,51 @@ class ProcessLifecycleIT extends NativeTestBase {
                                     .encodeToString(path.getBytes(StandardCharsets.UTF_8)));
             assertEquals(0, result.exitCode, "path " + name + " -> " + result.output);
 
-            if (representableOnThisPlatform(path)) {
-                assertTrue(result.output.contains("sum=7"), "path " + name + " -> " + result.output);
-                continue;
-            }
-
-            // A container started with no LANG gives the JVM an ASCII filesystem encoding, and
-            // then no Java program can create this file -- Paths.get refuses it. The driver
-            // has to refuse it too, since the path it resolves for the storage-path registry
-            // goes through java.nio.file. What is being asserted is that the refusal names the
-            // real cause, because the failure otherwise reads as a chDB problem: the engine
-            // itself takes UTF-8 bytes and handles the name, and the same URL works in the
-            // same container under LANG=C.UTF-8.
-            assertTrue(
-                    result.output.contains("refused sqlstate=08001"),
-                    "an unrepresentable path should be refused, not crashed on:\n" + result.output);
-            assertTrue(
-                    result.output.contains("sun.jnu.encoding="),
-                    "the refusal should name the encoding that cannot hold the path:\n"
-                            + result.output);
-            assertTrue(
-                    result.output.contains("LANG=C.UTF-8"),
-                    "the refusal should say how to fix it:\n" + result.output);
+            // Unconditionally, including on a JVM whose sun.jnu.encoding cannot hold the name.
+            // That case used to be a refusal, on the grounds that Paths.get could not resolve
+            // the path the storage-path registry compares by; the driver now resolves it as
+            // text instead (issue #7). Nothing else about the path went through java.nio.file:
+            // the engine is handed UTF-8 bytes and does its own mkdir.
+            assertTrue(result.output.contains("sum=7"), "path " + name + " -> " + result.output);
         }
     }
 
-    /** Whether this JVM's filesystem encoding can express the name at all. */
-    private static boolean representableOnThisPlatform(String path) {
-        String encoding = System.getProperty("sun.jnu.encoding");
-        if (encoding == null) {
-            return true;
-        }
-        try {
-            return Charset.forName(encoding).newEncoder().canEncode(path);
-        } catch (RuntimeException e) {
-            return true;
+    @Test
+    @DisplayName("a Unicode storage path works with no UTF-8 locale, where java.nio.file cannot hold it")
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void unicodeStoragePathWithoutAUtf8Locale() throws Exception {
+        // The case issue #7 is about, forced rather than waited for: a JVM started with LANG=C
+        // reads its filesystem encoding off the OS locale and gets ASCII, so Paths.get cannot
+        // encode this name. -Dfile.encoding does not help -- JEP 400 deliberately left
+        // sun.jnu.encoding following the locale.
+        //
+        // What the locale actually buys varies by platform: measured on macOS 26, the JVM
+        // reports sun.jnu.encoding=UTF-8 under LANG=C LC_ALL=C and even under
+        // -Dsun.jnu.encoding=US-ASCII, so there this degrades to re-running the case above and
+        // the note below says so. On glibc it is ANSI_X3.4-1968 and the fallback is what makes
+        // this pass. The resolution itself is asserted directly, and differentially against
+        // java.nio.file, in ChdbUrlTest, which needs no particular locale.
+        Path base = Files.createTempDirectory("chdb no locale");
+        String path = base + File.separator + "unicode-数据库-δεδομένα-🎉";
+
+        ForkResult result =
+                fork(
+                        QueriesAwkwardPath.class.getName(),
+                        List.of(),
+                        Map.of("LANG", "C", "LC_ALL", "C"),
+                        Base64.getEncoder().encodeToString(path.getBytes(StandardCharsets.UTF_8)));
+
+        assertEquals(0, result.exitCode, result.output);
+        assertTrue(
+                result.output.contains("sum=7"),
+                "a Unicode storage path must work whether or not the JVM's locale can express"
+                        + " it -- the engine takes the path as UTF-8 bytes and creates the"
+                        + " directory itself:\n"
+                        + result.output);
+        if (result.output.contains("sun.jnu.encoding=UTF-8")) {
+            System.out.println(
+                    "this platform reports sun.jnu.encoding=UTF-8 even under LANG=C, so the"
+                            + " textual fallback was not the thing under test here");
         }
     }
 

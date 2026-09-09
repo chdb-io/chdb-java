@@ -1,13 +1,16 @@
 package org.chdb.jdbc;
 
+import java.io.File;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.SQLException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -34,7 +37,10 @@ import java.util.Properties;
  * The engine uses one storage path per process, so the path in the URL is a process-wide
  * commitment, not a per-connection one -- see {@link StoragePathRegistry}. File paths are
  * normalized to an absolute, {@code .}/{@code ..}-free path before they are compared, so {@code ./data} and
- * {@code /home/me/data} are recognized as the same storage rather than fighting over it.
+ * {@code /home/me/data} are recognized as the same storage rather than fighting over it. The
+ * normalization is textual on purpose: it never touches the filesystem, so it works for a
+ * directory that does not exist yet, and it works on a JVM whose {@code sun.jnu.encoding}
+ * cannot even hold the name.
  *
  * <p>{@code :memory:} is one shared in-process database, not a private one per Connection.
  * Two {@code jdbc:chdb::memory:} connections in a JVM see each other's tables, and the data
@@ -65,14 +71,21 @@ public final class ChdbUrl {
     private final String url;
     private final String rawPath;
     private final boolean memory;
+    private final String resolvedPath;
     private final Path storagePath;
     private final Map<String, String> properties;
 
     private ChdbUrl(
-            String url, String rawPath, boolean memory, Path storagePath, Map<String, String> properties) {
+            String url,
+            String rawPath,
+            boolean memory,
+            String resolvedPath,
+            Path storagePath,
+            Map<String, String> properties) {
         this.url = url;
         this.rawPath = rawPath;
         this.memory = memory;
+        this.resolvedPath = resolvedPath;
         this.storagePath = storagePath;
         this.properties = Collections.unmodifiableMap(properties);
     }
@@ -117,28 +130,110 @@ public final class ChdbUrl {
 
         pathPart = pathPart.trim();
         if (pathPart.isEmpty() || MEMORY.equals(pathPart)) {
-            return new ChdbUrl(url, MEMORY, true, null, properties);
+            return new ChdbUrl(url, MEMORY, true, MEMORY, null, properties);
         }
 
-        Path resolved;
+        String resolvedPath;
+        Path resolved = null;
         try {
             // Absolute + normalized, but deliberately not toRealPath(): the directory may not
             // exist yet, and the engine is what creates it. normalize() collapses ".." and
             // "." textually, which is enough to make two spellings of one path compare equal.
             resolved = Paths.get(pathPart).toAbsolutePath().normalize();
+            resolvedPath = resolved.toString();
         } catch (RuntimeException e) {
-            throw new SQLException(
-                    "Cannot resolve the storage path \"" + pathPart + "\" from URL " + url + ": " + e
-                            + localeHint(pathPart),
-                    "08001",
-                    e);
+            // Paths.get encodes with sun.jnu.encoding, so a name the OS locale cannot express
+            // is refused here before anything has looked at a filesystem. That refusal used to
+            // sink the whole connection, and it did not have to: resolvedPath exists only as a
+            // comparison key for the one-storage-path-per-JVM rule, the path reaches the engine
+            // as UTF-8 bytes, and the engine does its own mkdir. Measured in almalinux:8 -- the
+            // same URL works in the same container under LANG=C.UTF-8, directory correctly
+            // named on disk. So when the only thing wrong is the encoding, do the same
+            // absolutise-and-normalise as text; normalize() is a text operation already.
+            String textual =
+                    encodingThatCannotHold(pathPart) == null ? null : resolveTextually(pathPart);
+            if (textual == null) {
+                throw new SQLException(
+                        "Cannot resolve the storage path \"" + pathPart + "\" from URL " + url
+                                + ": " + e + localeHint(pathPart),
+                        "08001",
+                        e);
+            }
+            resolvedPath = textual;
         }
-        return new ChdbUrl(url, pathPart, false, resolved, properties);
+        return new ChdbUrl(url, pathPart, false, resolvedPath, resolved, properties);
     }
 
     /**
-     * Explains the one path failure whose real cause is nowhere in the exception: a JVM whose
-     * filesystem encoding cannot represent the name.
+     * Absolutises and normalises a path as text, without {@code java.nio.file}.
+     *
+     * <p>The result must equal {@code Paths.get(path).toAbsolutePath().normalize().toString()}
+     * for every path the platform can encode -- {@code ChdbUrlTest} asserts that differentially
+     * over a sample including random ones. Getting it wrong is not a cosmetic bug: the
+     * storage-path registry would either refuse a second connection to the same directory or
+     * admit one to a different directory.
+     *
+     * <p>Returns null when it cannot answer, in which case the caller refuses the URL rather
+     * than guessing.
+     */
+    static String resolveTextually(String path) {
+        // Only for a single-separator filesystem with no drive letters or UNC prefixes. Windows
+        // path syntax is not worth hand-rolling, and does not need to be: Windows holds names
+        // as UTF-16 and Paths.get there does not fail to encode one. Note that "\" is an
+        // ordinary character in a name on such a filesystem, so Windows-style input stays a
+        // single name element -- which is exactly what Paths.get does with it on Unix.
+        if (!"/".equals(File.separator)) {
+            return null;
+        }
+        // A NUL would truncate the C string the engine is handed, so such a path stays refused.
+        // Paths.get rejects it too, but a path that is both unencodable and NUL-bearing throws
+        // for the encoding, and the caller only consults this method after an encoding failure
+        // -- so the NUL has to be caught here or not at all.
+        if (path.indexOf('\0') >= 0) {
+            return null;
+        }
+        String absolute = path;
+        if (!path.startsWith("/")) {
+            // Same source as UnixFileSystem's default directory, which is what toAbsolutePath()
+            // prepends. Duplicate separators are collapsed below, so a working directory of "/"
+            // needs no special case.
+            String workingDirectory = System.getProperty("user.dir");
+            if (workingDirectory == null || !workingDirectory.startsWith("/")) {
+                return null;
+            }
+            absolute = workingDirectory + "/" + path;
+        }
+
+        Deque<String> elements = new ArrayDeque<>();
+        for (String element : absolute.split("/")) {
+            if (element.isEmpty() || ".".equals(element)) {
+                // An empty element is a leading, repeated or trailing separator. UnixPath's
+                // parser drops all three before normalize() ever runs, and normalize() drops
+                // ".".
+                continue;
+            }
+            if ("..".equals(element)) {
+                // ".." at the root has nothing to remove and is dropped, matching the
+                // isAbsolute() branch of UnixPath.normalize()'s name/".." pass: "/a/../.."
+                // normalises to "/", not to "/..". Nothing here can leave a ".." in the deque,
+                // because absolute always starts at the root.
+                if (!elements.isEmpty()) {
+                    elements.removeLast();
+                }
+                continue;
+            }
+            elements.addLast(element);
+        }
+
+        StringBuilder resolved = new StringBuilder();
+        for (String element : elements) {
+            resolved.append('/').append(element);
+        }
+        return resolved.length() == 0 ? "/" : resolved.toString();
+    }
+
+    /**
+     * This JVM's filesystem encoding if it cannot represent the path, else null.
      *
      * <p>{@code Paths.get} encodes with {@code sun.jnu.encoding}, which follows the OS locale
      * and is ASCII on a container started with no {@code LANG} — the default for most base
@@ -146,23 +241,38 @@ public final class ChdbUrl {
      * contains unmappable characters" and, because the same encoding is used for stdout, prints
      * as question marks. Nothing in that tells the reader it is a locale problem.
      *
-     * <p>It is also not a chDB limitation. The driver hands the engine UTF-8 bytes and the
-     * engine creates the directory correctly; the same URL works in the same container with
-     * {@code LANG=C.UTF-8}. Only this resolution step, which exists to compare two spellings of
-     * one path, cannot be done.
+     * <p>Answering null when the property is missing or unknown is deliberate: the caller then
+     * refuses the URL instead of hand-rolling a path on a platform whose rules it has not
+     * confirmed.
+     */
+    private static String encodingThatCannotHold(String pathPart) {
+        try {
+            // Inside the guard, not before it. Callers reach this from a catch block that may
+            // be on its way to throwing a SQLException, and a security manager denying the
+            // property read would replace that with an unchecked SecurityException -- losing
+            // the real parse failure to a line that only exists to classify it.
+            String encoding = System.getProperty("sun.jnu.encoding");
+            if (encoding == null || Charset.forName(encoding).newEncoder().canEncode(pathPart)) {
+                return null;
+            }
+            return encoding;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Explains the one path failure whose real cause is nowhere in the exception: a JVM whose
+     * filesystem encoding cannot represent the name.
+     *
+     * <p>Only reachable now when the textual fallback declined the path as well — a filesystem
+     * whose separator is not {@code /}, or a name holding a NUL. It is also not a chDB
+     * limitation: the driver hands the engine UTF-8 bytes and the engine creates the directory
+     * correctly; the same URL works in the same container with {@code LANG=C.UTF-8}.
      */
     private static String localeHint(String pathPart) {
-        String encoding;
-        try {
-            // Inside the guard, not before it. This runs from a catch block that is on its way
-            // to throwing a SQLException, and a security manager denying the property read
-            // would replace that with an unchecked SecurityException -- losing the real parse
-            // failure to a line that only exists to make the message nicer.
-            encoding = System.getProperty("sun.jnu.encoding");
-            if (encoding == null || Charset.forName(encoding).newEncoder().canEncode(pathPart)) {
-                return "";
-            }
-        } catch (RuntimeException e) {
+        String encoding = encodingThatCannotHold(pathPart);
+        if (encoding == null) {
             return "";
         }
         return ". This JVM's filesystem encoding (sun.jnu.encoding=" + encoding + ") cannot"
@@ -217,14 +327,23 @@ public final class ChdbUrl {
         return rawPath;
     }
 
-    /** Absolute normalized storage path, or null for {@code :memory:}. */
+    /**
+     * Absolute normalized storage path, or null for {@code :memory:}.
+     *
+     * <p>Also null for a path this JVM's {@code sun.jnu.encoding} cannot encode, where no
+     * {@link Path} can be constructed at all. The connection still works — see {@link
+     * #registryKey()}, which is the form the driver compares and passes to the engine.
+     */
     public Path storagePath() {
         return storagePath;
     }
 
-    /** The key {@link StoragePathRegistry} compares connections by. */
+    /**
+     * The key {@link StoragePathRegistry} compares connections by: the absolute normalized
+     * storage path, or {@code :memory:}. Never null.
+     */
     public String registryKey() {
-        return memory ? MEMORY : storagePath.toString();
+        return resolvedPath;
     }
 
     /** All merged properties, driver and engine alike. */
@@ -259,7 +378,7 @@ public final class ChdbUrl {
         // in-memory database into an on-disk one that outlives the JVM. chdb-core's own ADBC
         // driver omits it for the same reason (chdb-adbc.cpp, "must NOT be passed as --path").
         if (!memory) {
-            arguments.add("--path=" + storagePath.toString());
+            arguments.add("--path=" + resolvedPath);
         }
         for (Map.Entry<String, String> entry : properties.entrySet()) {
             if (DRIVER_PROPERTIES.contains(entry.getKey())) {
