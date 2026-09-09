@@ -261,6 +261,11 @@ jobs:
           path: |
             chdb-jdbc/target/surefire-reports/
             chdb-integration-tests/target/failsafe-reports/
+            chdb-integration-tests/target/hs_err_pid*.log
+            chdb-integration-tests/target/replay_pid*.log
+            chdb-integration-tests/*.dump
+            chdb-integration-tests/*.dumpstream
+          if-no-files-found: ignore
           retention-days: 14
 
   # The version floor, proven rather than measured.
@@ -333,6 +338,17 @@ jobs:
               echo
               java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.7.0                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
             '
+
+      - name: A query over the memory limit returns an exception, not an OOM kill
+        # Work plan section 5.11. Needs a container because the gate is about behaviour under a
+        # cgroup limit, which cannot be imposed on the runner itself.
+        run: |
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          scripts/run-memory-limit-test.sh ${{ matrix.platform }} \
+            "$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/linux/$ARCH"
 
       - name: Report the floor this package actually needs
         if: always()

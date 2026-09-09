@@ -149,6 +149,27 @@ statement waits for the first result set to close; a second one on the *same thr
 `SQLException` (SQLSTATE `25000`) rather than deadlocking. See the
 [README](../README.md#one-statement-at-a-time-per-connection).
 
+**Stop your query threads before the JVM exits.** The driver installs a shutdown hook that
+closes connections the application forgot, which covers a leaked result set: without it, a JVM
+exiting with a streaming `ResultSet` open aborts inside the engine (SIGABRT, exit 134) rather
+than exiting. Disable it with `-Dchdb.shutdownHook=false` if the host manages its own teardown.
+
+What the hook cannot cover is a thread still *executing* a query when the process halts — that
+aborts whether the hook runs or not, because the JVM stops waiting once the hooks return and
+the thread is inside the engine. Measured on 26.7.0. The fix for that is `chdb_shutdown()` in a
+later engine; until then, shut your executor down before returning from `main`.
+
+**A non-ASCII storage path needs the JVM to be under a UTF-8 locale.** The driver resolves the
+path with `java.nio.file` to decide whether two URLs name the same directory, and that encodes
+with `sun.jnu.encoding` — which follows the OS locale and is ASCII on a container started with
+no `LANG`, the default for most base images. The connection is then refused with SQLSTATE
+`08001` and a message naming the encoding.
+
+This is the JVM's limit rather than chDB's: the driver hands the engine UTF-8 bytes and the
+engine creates the directory correctly, so the same URL works in the same container under
+`LANG=C.UTF-8`. Set a UTF-8 locale, or use an ASCII path. Spaces, and names up to the
+filesystem's own length limit, work regardless.
+
 **`PreparedStatement.getMetaData()` before execution** throws. chDB's C ABI cannot describe a
 statement without running it, and running the caller's query as a side effect of asking about it
 is not something a metadata call may do. Call it on the `ResultSet` after `executeQuery()`.

@@ -68,6 +68,34 @@
       <version>1.10.2</version>
       <scope>test</scope>
     </dependency>
+
+    <!--
+      Frameworks the driver has to work under (work plan section 5.10). Test scope only: none of
+      them is a dependency of the driver, and the point is to find out what a real pool and a
+      real template do to a Connection that runs one statement at a time.
+
+      Versions are the last ones supporting Java 11, which is the driver's floor: HikariCP 5.x
+      and Spring Framework 5.3.x. Their 6.x/6.0 successors require Java 17, so testing those
+      here would silently drop the floor from the matrix.
+    -->
+    <dependency>
+      <groupId>com.zaxxer</groupId>
+      <artifactId>HikariCP</artifactId>
+      <version>5.1.0</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-jdbc</artifactId>
+      <version>5.3.39</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId>
+      <version>2.0.13</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -91,7 +119,14 @@
           -->
           <forkCount>1</forkCount>
           <reuseForks>true</reuseForks>
-          <argLine>-Xmx512m -Dchdb.library.path=${chdb.it.library.path}</argLine>
+          <!--
+            ErrorFile points into target/ so a JVM crash leaves its report somewhere
+            predictable and archivable. By default it lands in the forked JVM's working
+            directory, which is this module, and CI's artifact step only collects target/ —
+            so the one file that explains a SIGSEGV was the one file being thrown away.
+          -->
+          <argLine>-Xmx512m -XX:ErrorFile=${project.build.directory}/hs_err_pid%p.log
+            -Dchdb.library.path=${chdb.it.library.path}</argLine>
           <systemPropertyVariables>
             <chdb.it.engine.version>${chdb.engine.version}</chdb.it.engine.version>
             <chdb.it.jni.abi.version>${chdb.jni.abi.version}</chdb.it.jni.abi.version>

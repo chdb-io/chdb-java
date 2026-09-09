@@ -56,6 +56,17 @@ public final class ChdbConnection implements Connection {
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     /**
+     * Held for the whole of {@link #close()}, so a second caller waits for the first to finish
+     * rather than returning as soon as the flag is set.
+     *
+     * <p>The caller that needs this is the shutdown hook: it closes connections that may
+     * already be closing on an application thread, and the JVM does not wait for that thread
+     * once the hooks return. Without the wait the hook can finish while a stream is still open
+     * in the engine, which is the abort {@link ShutdownCleanup} exists to prevent.
+     */
+    private final Object closeLock = new Object();
+
+    /**
      * Serializes statement execution on this connection, for as long as a statement is live.
      * Not taken by {@code cancel}: the whole point of cancel is to interrupt the holder.
      */
@@ -103,6 +114,11 @@ public final class ChdbConnection implements Connection {
                 StoragePathRegistry.release(url);
             }
         }
+
+        // A JVM that exits with a streaming result set still open aborts inside the engine.
+        // Closing connections at shutdown closes their result sets, which is the state the
+        // engine tolerates. See ShutdownCleanup.
+        ShutdownCleanup.register(this);
     }
 
     // ------------------------------------------------------------------ internals
@@ -238,6 +254,12 @@ public final class ChdbConnection implements Connection {
 
     @Override
     public void close() throws SQLException {
+        synchronized (closeLock) {
+            doClose();
+        }
+    }
+
+    private void doClose() throws SQLException {
         if (!closed.compareAndSet(false, true)) {
             return;  // JDBC requires close() to be idempotent.
         }
@@ -277,6 +299,7 @@ public final class ChdbConnection implements Connection {
             // Released even if the native close failed: the handle is gone from the registry
             // either way, so keeping the path pinned would strand the JVM.
             StoragePathRegistry.release(url);
+            ShutdownCleanup.unregister(this);
         }
 
         if (firstFailure != null) {

@@ -34,15 +34,21 @@ jdbc:chdb:/data?max_memory_usage=2000000000
 ```
 
 The arithmetic: 4 GB limit − 1 GB heap − 0.4 GB library − JVM overhead leaves the engine about
-2 GB, which is what `max_memory_usage` should say. Without it, a heavy query grows until the
-cgroup kills the process.
+2 GB, which is what `max_memory_usage` should say.
 
-With it, a query that would exceed the limit raises a `SQLException` — a `SQLTransientException`
-with ClickHouse error code 241 — and the connection stays usable. That is worth having: a
-recoverable error beats an OOM kill.
+A query that exceeds it raises a `SQLTransientException` with ClickHouse error code 241 and
+SQLSTATE `53200`, and the connection stays usable. A recoverable error beats an OOM kill.
 
-**Not in a container**, `max_memory_usage` is still the knob that turns a killed process into a
-catchable exception.
+**The engine reads the cgroup limit itself**, so this holds even if you set nothing. Measured in
+a 2 GB container: a query needing far more came back as the same code 241 exception either way,
+and the JVM exited 0. The engine logs what it found — `Low memory system detected (2.00 GiB)` —
+and sizes its own tracker from it.
+
+Setting `max_memory_usage` is still worth doing, for two reasons the automatic limit does not
+cover: it leaves headroom for the heap and everything else in the container rather than letting
+one query claim the lot, and it applies outside containers, where there is no cgroup to read.
+
+`scripts/run-memory-limit-test.sh` runs both cases and is part of CI.
 
 ## Streaming is what keeps result size out of the equation
 
