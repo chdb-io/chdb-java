@@ -14,9 +14,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.DisplayName;
@@ -116,43 +117,94 @@ class LicenseInventoryIT extends NativeTestBase {
         assertEquals(committed, live, "the inventory differs in order");
     }
 
+    /**
+     * Licence strings that name a copyleft family but offer a permissive alternative, so the
+     * permissive half is the one in force.
+     *
+     * <p>An allowlist of exact strings rather than a pattern, because "does this disjunction
+     * contain something permissive" is not a judgement a regular expression should be making on
+     * our behalf. Each entry is a decision someone took, recorded where it can be re-read.
+     */
+    private static final Set<String> DUAL_LICENSED_WITH_PERMISSIVE_ALTERNATIVE =
+            new TreeSet<>(
+                    java.util.Arrays.asList(
+                            // ittapi, ittapi-sys
+                            "GPL-2.0-only OR BSD-3-Clause",
+                            // r-efi, r-efi-alloc
+                            "MIT OR Apache-2.0 OR LGPL-2.1-or-later"));
+
+    /**
+     * Everything in the engine under a copyleft licence with no permissive alternative.
+     *
+     * <p>These are the whole of what a redistribution review has to reach a position on. LGPL
+     * carries obligations under static linking that it does not under dynamic; MPL-2.0 is
+     * weaker, file-level copyleft, but it is still copyleft and still has no alternative half.
+     */
+    private static Map<String, Set<String>> knownCopyleftOnly() {
+        Map<String, Set<String>> known = new TreeMap<>();
+        known.put(
+                "LGPL",
+                new TreeSet<>(
+                        java.util.Arrays.asList(
+                                "lemmagen-c", "libgsasl", "libssh", "mariadb-connector-c",
+                                "numactl", "xz")));
+        known.put(
+                "MPL-2.0",
+                new TreeSet<>(
+                        java.util.Arrays.asList(
+                                "cbindgen", "defer-drop", "fortanix-sgx-abi",
+                                "shuffling-allocator", "timer", "webpki-roots")));
+        return known;
+    }
+
     @Test
     @DisplayName("every component under a copyleft licence is one we have accounted for")
     @Timeout(value = 2, unit = TimeUnit.MINUTES)
     void copyleftComponentsAreTheKnownSet() throws Exception {
-        // Six components carry a copyleft licence with no permissive alternative. They are the
-        // whole of what a redistribution review has to reach a position on, so a new one
-        // appearing must not go unnoticed.
+        // Matched broadly and then filtered, rather than queried for the two licence strings we
+        // happen to know about. An earlier version asked for license_type IN ('LGPL', 'GPL'),
+        // which silently ignored the six MPL-2.0 components already in the engine and would
+        // have ignored an AGPL or EPL one arriving later -- in a test whose entire purpose is
+        // that a new copyleft component cannot ship unnoticed.
         //
-        // Deliberately not a count or a substring match on "GPL". Several components are dual
-        // licensed with the permissive half in force -- ittapi is "GPL-2.0-only OR
-        // BSD-3-Clause", r-efi is "MIT OR Apache-2.0 OR LGPL-2.1-or-later" -- and a test that
-        // flagged those would be noise that gets muted.
-        Set<String> expected =
-                new LinkedHashSet<>(
-                        java.util.Arrays.asList(
-                                "lemmagen-c", "libgsasl", "libssh", "mariadb-connector-c",
-                                "numactl", "xz"));
+        // The pattern is not exhaustive and cannot be; a licence family nobody listed here
+        // still slips through. What stops that is inventoryMatchesTheEngine, which fails on any
+        // change at all. This test is what survives regenerating the inventory, which is the
+        // step where a human is most likely to wave a diff through.
+        Map<String, Set<String>> actual = new TreeMap<>();
+        Set<String> allowlistSeen = new TreeSet<>();
 
-        Set<String> actual = new TreeSet<>();
         try (Connection connection = openMemory();
                 Statement statement = connection.createStatement();
                 ResultSet rs =
                         statement.executeQuery(
-                                "SELECT DISTINCT library_name FROM system.licenses"
-                                        + " WHERE license_type IN ('LGPL', 'GPL')"
-                                        + " ORDER BY library_name")) {
+                                "SELECT DISTINCT license_type, library_name FROM system.licenses"
+                                    + " WHERE match(upper(license_type),"
+                                    + " 'AGPL|LGPL|GPL|MPL|EPL|CDDL|CPL|OSL|SSPL|EUPL|CECILL|QPL')"
+                                    + " ORDER BY license_type, library_name")) {
             while (rs.next()) {
-                actual.add(rs.getString(1));
+                String licence = rs.getString(1);
+                if (DUAL_LICENSED_WITH_PERMISSIVE_ALTERNATIVE.contains(licence)) {
+                    allowlistSeen.add(licence);
+                    continue;
+                }
+                actual.computeIfAbsent(licence, k -> new TreeSet<>()).add(rs.getString(2));
             }
         }
 
         assertEquals(
-                new TreeSet<>(expected),
+                knownCopyleftOnly(),
                 actual,
                 "the set of copyleft-only components in the engine has changed. Anything added"
-                        + " here needs a redistribution decision before the next release; see"
+                        + " here needs a redistribution decision before the next release, and"
+                        + " anything removed means the shipped notice now overstates. See"
                         + " docs/publishing.md.");
-        assertFalse(actual.isEmpty(), "the query returned nothing, so it is not testing anything");
+
+        // A stale allowlist entry is a decision that no longer applies to anything, and leaving
+        // it would quietly excuse a future component that happens to reuse the string.
+        assertEquals(
+                DUAL_LICENSED_WITH_PERMISSIVE_ALTERNATIVE,
+                allowlistSeen,
+                "the dual-licensed allowlist no longer matches what the engine contains");
     }
 }

@@ -24,8 +24,13 @@ needs one DNS record, and one licence question needs somebody with authority to 
 ## 1. The release profile
 
 ```bash
+mvn versions:set -DnewVersion=26.7.0.1     # a release, not the -SNAPSHOT in the POM
 mvn -Prelease deploy
 ```
+
+The version matters: `deploy` on the `26.7.0.1-SNAPSHOT` currently in the POM publishes a
+snapshot, which goes to a different place and is never validated or promoted. A Central release
+bundle needs a non-`SNAPSHOT` version.
 
 Nothing in the profile runs during an ordinary build, because signing prompts for a passphrase
 and the publishing plugin talks to Sonatype. What it adds:
@@ -103,43 +108,58 @@ changing it later is a breaking change for consumers.
 
 ## 4. Publishing limits — check before the first release
 
-Central enforces organisation-level monthly limits from **1 October 2026**, compared against a
-rolling three-month average. The published percentiles:
+Central enforces organisation-level limits from **1 October 2026**. The measurement window is
+the calendar month, and Sonatype is explicit that it is not smoothed:
+
+> Each metric resets at the start of the month, and usage is compared directly against that
+> month's threshold, not averaged across multiple months.
+
+The published percentiles:
 
 | Percentile | Files | Release size | Releases |
 |---|---|---|---|
 | 90th | 1,167 | 78 MB | 7 |
+| 93rd | 1,852 | 150 MB | 9 |
 | 95th | 2,805 | 247 MB | 13 |
+| 96th | 3,824 | 349 MB | 15 |
 | 97th | 5,188 | 522 MB | 19 |
+| 98th | 8,030 | 877 MB | 27 |
 | 99th | 17,724 | 1,808 MB | 50 |
 
 Ours, measured rather than estimated:
 
-- **Release size ≈ 510 MB.** The four native packages are 98 + 114 + 129 + 166 MB (each jar
-  tracks its engine tarball almost exactly), plus ~6 MB of driver javadoc and ~1 MB of
-  everything else.
+- **Release size ≈ 510 MB** in any month we release. The four native packages are
+  98 + 114 + 129 + 166 MB — each jar tracks its engine tarball almost exactly — plus ~6 MB of
+  driver javadoc and ~1 MB of everything else.
 - **File count ≈ 100.** Six artifacts × (jar, sources, javadoc, pom) × (file + `.asc` + `.sha1`
   + `.md5`). Below even the 90th percentile of 1,167.
-- **Release count** = the cadence.
+- **Release count: 1.**
 
-Release size is the only metric in play, and cadence decides it:
+So in a release month we are at roughly the 97th percentile on size, and near the floor on the
+other two. **Cadence does not reduce that number** — publishing every three months does not
+make a release month cheaper, it makes the other two months empty. Anyone reasoning from a
+three-month average will get this wrong.
 
-| Cadence | 3-month average | Roughly |
-|---|---|---|
-| Monthly | 510 MB | just under the 97th |
-| **Every 2 months** | **255 MB** | **just above the 95th** |
-| **Every 3 months** | **170 MB** | **between the 93rd and 94th** |
+What cadence does change is the thing enforcement actually looks at. Sonatype's own words:
 
-At the two-to-three-month cadence the other chDB bindings use, we sit around the 93rd–95th
-percentile on one metric of three and near the median on the other two. Probably fine — but
-Sonatype has not published where the line is, so "probably" is doing work.
+> enforcement targets organizations that remain over the free thresholds repeatedly or on a
+> sustained basis
 
-**Cheap insurance:** once the namespace exists, read the real numbers at
-<https://central.sonatype.com/publishing/usage>. If they look tight, mail
-`central-support@sonatype.com` *before* the first release rather than after a rejection,
-describing the pattern: four platform packages of an embedded database engine, published every
-two to three months. Sonatype grants these as a permanent adjustment once the pattern is
-understood.
+and the exception form asks specifically "whether usage is sustained, occasional, or
+event-driven". A ~510 MB release every two to three months, with nothing in between, is the
+textbook occasional pattern rather than a sustained one. That is the case to make, and it is a
+much better case than a smoothed average would have been.
+
+**Do this before the first release, not after a rejection.** Once the namespace exists, read the
+real numbers at <https://central.sonatype.com/publishing/usage>, then mail
+`central-support@sonatype.com` with what the exception form asks for:
+
+- organisation and namespace (`org.chdb`)
+- what it is: four per-platform packages of an embedded analytical database engine, where the
+  size is a ~326 MB prebuilt native library per platform and cannot meaningfully be reduced
+- the publishing pattern: event-driven, one release every two to three months, tracking chDB
+  engine releases
+- what we are asking for: a release-size threshold that accommodates ~510 MB in a release month
 
 **Confirm rather than assume:** from 1 October 2026 artifacts of a *commercial nature* require
 Publisher Pro regardless of volume. Whether chDB counts is for whoever owns the relationship.
@@ -179,20 +199,26 @@ Reading the inventory rather than guessing at it: most components are permissive
 that a filename scan calls GPL are dual licensed with the permissive half in force — `zstd` is
 BSD-3, `rocksdb` is Apache-2.0, `liburing` is MIT, `ittapi` is `GPL-2.0-only OR BSD-3-Clause`.
 
-Six carry a copyleft licence with no permissive alternative:
+Twelve carry a copyleft licence with no permissive alternative, in two families:
 
 ```
-lemmagen-c   libgsasl   libssh   mariadb-connector-c   numactl   xz     (LGPL)
+lemmagen-c   libgsasl   libssh   mariadb-connector-c   numactl   xz          (LGPL)
+cbindgen   defer-drop   fortanix-sgx-abi   shuffling-allocator   timer   webpki-roots
+                                                                            (MPL-2.0)
 ```
 
 LGPL carries obligations under **static** linking that it does not under dynamic, and
 `libchdb.so` links everything statically — its only shared dependencies are `libc`, `libm`,
-`libdl`, `librt`, `libpthread` and the loader.
+`libdl`, `librt`, `libpthread` and the loader. MPL-2.0 is weaker: file-level copyleft, with no
+relinking requirement, so the obligation is to offer the source of any modified MPL file.
 
-Whether any of the six is actually *in* the binary cannot be settled from the binary: it is
-stripped to 582 dynamic symbols, and static linking leaves nothing to inspect. `nm` finds no
-`ssh_`, `mysql_`, `numa_`, `lzma_` or `gsasl_` symbols, which proves nothing either way. That
-question belongs to the engine build configuration.
+Several of the MPL components are plainly build-time Rust tooling — `cbindgen` generates
+headers, `fortanix-sgx-abi` is for SGX enclaves — and are unlikely to be in a chDB build at
+all. But *unlikely* is not *established*, which is the same problem as with the LGPL six:
+whether any of the twelve is actually in the binary cannot be settled from the binary. It is
+stripped to 582 dynamic symbols and links statically. `nm` finds no `ssh_`, `mysql_`, `numa_`,
+`lzma_` or `gsasl_` symbols, which proves nothing either way. That question belongs to the
+engine build configuration.
 
 **And it is not a new question.** The identical `libchdb.so` is already redistributed on PyPI
 and npm by chdb-io. Whatever notice and offer-of-source obligations attach, attach there too.
@@ -203,8 +229,13 @@ So the task is to **inherit and verify**, not to derive an answer here:
 2. If there is not, that is a finding about all three distributions, and should be raised as
    such rather than solved inside this repository.
 
-`LicenseInventoryIT.copyleftComponentsAreTheKnownSet` pins the set to exactly those six, so a
-seventh appearing in a future engine fails CI rather than shipping unnoticed.
+`LicenseInventoryIT.copyleftComponentsAreTheKnownSet` pins the set to exactly those twelve, so a
+thirteenth appearing in a future engine fails CI rather than shipping unnoticed. It matches a
+copyleft *family* pattern — AGPL, GPL, LGPL, MPL, EPL, CDDL, CPL, OSL, SSPL, EUPL, CeCILL, QPL —
+and then subtracts an explicit allowlist of dual-licensed strings, so a new component under a
+licence nobody here anticipated is caught rather than ignored. An earlier version asked only for
+`license_type IN ('LGPL', 'GPL')` and silently missed the six MPL-2.0 components that were
+already there.
 
 ## 6. Order of operations
 
@@ -213,10 +244,23 @@ Each step can invalidate the next, so:
 1. **Claim the namespace and read the Usage Center.** Arrange an exception if the numbers look
    tight. Enforcement starts 1 October 2026.
 2. **Get the licence position on the engine** from whoever owns it.
-3. **Publish a snapshot and have somebody consume it.** This is the cheap step that finds
-   everything the reactor build cannot: whether the POMs resolve from a repository, whether the
-   BOM behaves, whether declaring one platform package yields a working driver, whether a
-   166 MB artifact uploads. Tracked as issue #10.
+3. **Enable SNAPSHOTs, publish a snapshot, and have somebody consume it.** Snapshot publishing
+   is opt-in per namespace: select **Enable SNAPSHOTs** in the portal first, or the upload is
+   rejected. The consuming project then needs the snapshot repository declared, because Central's
+   snapshots are not served from the release repository:
+
+   ```xml
+   <repository>
+     <id>central-snapshots</id>
+     <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+     <snapshots><enabled>true</enabled></snapshots>
+   </repository>
+   ```
+
+   With both in place this is the cheap step that finds everything the reactor build cannot:
+   whether the POMs resolve from a repository, whether the BOM behaves, whether declaring one
+   platform package yields a working driver, whether a 166 MB artifact uploads. Tracked as
+   issue #10.
 4. Then the first real release, with `autoPublish=false` so the bundle is reviewed in the portal
    before it becomes permanent.
 
@@ -230,5 +274,5 @@ Each step can invalidate the next, so:
 | `org.chdb` namespace claim | whoever runs `chdb.org` DNS | automatic once the TXT record is up |
 | Sonatype account and portal token | any maintainer | no |
 | A publishing-limit exception | Sonatype support | yes, if the numbers need it |
-| **Position on the six LGPL components** | **chdb-io / ClickHouse legal** | **yes — the only real gate** |
+| **Position on the twelve copyleft components** | **chdb-io / ClickHouse legal** | **yes — the only real gate** |
 | Whether chDB is "commercial" for Central | whoever owns the Sonatype relationship | yes |

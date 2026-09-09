@@ -358,14 +358,21 @@ This package redistributes two shared libraries:
 
       Most of those components are permissively licensed, and several that a filename scan
       would call GPL are dual licensed with the permissive half in force: zstd is BSD-3,
-      rocksdb is Apache-2.0, liburing is MIT, ittapi is BSD-3-Clause. Six carry a copyleft
-      licence with no permissive alternative:
+      rocksdb is Apache-2.0, liburing is MIT, ittapi is BSD-3-Clause. Twelve carry a
+      copyleft licence with no permissive alternative:
 
-          lemmagen-c, libgsasl, libssh, mariadb-connector-c, numactl, xz    (LGPL)
+          lemmagen-c, libgsasl, libssh, mariadb-connector-c,
+          numactl, xz                                                      (LGPL)
 
-      Whether any of the six is actually linked into this binary cannot be determined from
-      the binary: it is stripped, and static linking leaves no dynamic symbols to inspect.
-      That question belongs to the engine build.
+          cbindgen, defer-drop, fortanix-sgx-abi, shuffling-allocator,
+          timer, webpki-roots                                              (MPL-2.0)
+
+      MPL-2.0 is file-level copyleft and its obligations are lighter than LGPL's, which
+      attach differently under static linking than under dynamic.
+
+      Whether any of the twelve is actually linked into this binary cannot be determined
+      from the binary: it is stripped, and static linking leaves no dynamic symbols to
+      inspect. That question belongs to the engine build.
 
       Authoritative notices are the ones shipped with the engine release:
       https://github.com/chdb-io/chdb-core/releases/tag/$(prop engine.tag)
