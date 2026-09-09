@@ -331,38 +331,46 @@ cp "${ROOT}/LICENSE" "${STAGE}/META-INF/licenses/LICENSE-chdb-java.txt"
 # engine version and committed under licenses/. LicenseInventoryIT fails if it drifts, so an
 # engine bump cannot quietly change what this package redistributes.
 INVENTORY="${ROOT}/licenses/engine-third-party-${ENGINE_VERSION}.tsv"
-if [ -f "$INVENTORY" ]; then
+if [ "$ENGINE_SOURCE" != "release" ]; then
+  # The inventory is keyed by the pinned engine version, but --local-engine installs a binary
+  # this repository has never seen and cannot describe. Shipping the pinned inventory beside it
+  # would be a licence notice for a different artifact, so it is left out and said plainly.
+  # manifest.properties already carries engine.source=local, and the release profile refuses to
+  # package a module stamped that way.
+  INVENTORY_COUNT="unknown"
+  ENGINE_PROVENANCE="a LOCAL build installed with --local-engine.
+
+      THIS PACKAGE MUST NOT BE PUBLISHED. Nothing here verifies which engine it is: the
+      --local-engine path skips the pinned checksum by design. No third-party licence
+      inventory is shipped with it either, because the one this repository holds
+      describes release ${ENGINE_VERSION} and would be a notice for a different binary.
+
+      For the licences of a released engine, build without --local-engine, or see
+      https://github.com/chdb-io/chdb-core/releases"
+  ENGINE_CLOSING="Built from a local engine on $(date -u +%Y-%m-%dT%H:%M:%SZ). Not for distribution."
+else
+  if [ ! -f "$INVENTORY" ]; then
+    printf 'build-native: no licence inventory at %s\n' "$INVENTORY" >&2
+    exit 1
+  fi
   cp "$INVENTORY" "${STAGE}/META-INF/licenses/engine-third-party.tsv"
   INVENTORY_COUNT=$(wc -l < "$INVENTORY" | tr -d ' ')
-else
-  printf 'build-native: no licence inventory at %s\n' "$INVENTORY" >&2
-  exit 1
-fi
-
-cat > "${STAGE}/META-INF/licenses/README.txt" <<EOF
-This package redistributes two shared libraries:
-
-  ${JNINAME}
-      The chdb-java JNI shim, built from this repository. Apache-2.0; see
-      LICENSE-chdb-java.txt.
-
-  ${LIBNAME}
-      The chDB engine, redistributed verbatim from the chdb-io/chdb-core release
+  ENGINE_PROVENANCE="redistributed verbatim from the chdb-io/chdb-core release
       ${ENGINE_VERSION}, which is itself Apache-2.0. It statically links ClickHouse
       (Apache-2.0).
 
       engine-third-party.tsv in this directory is the engine's own component and licence
-      inventory: ${INVENTORY_COUNT} entries. It is not an assertion that all of them are
-      linked into this binary -- it includes build-time tooling and components for other
-      platforms -- but it is the complete set from which the linked subset is drawn.
-      It is generated from the engine's own system.licenses table -- that is, from the
-      binary shipped here rather than from a source checkout -- and a test fails if it
-      stops matching.
+      inventory: ${INVENTORY_COUNT} entries. It is generated from that engine's
+      system.licenses table -- from the binary shipped here rather than from a source
+      checkout -- and a test fails if it stops matching. It is not an assertion that all
+      of those entries are linked into this binary: it includes build-time tooling and
+      components for other platforms, and is the set from which the linked subset is
+      drawn.
 
-      Most of those components are permissively licensed, and several that a filename scan
-      would call GPL are dual licensed with the permissive half in force: zstd is BSD-3,
-      rocksdb is Apache-2.0, liburing is MIT, ittapi is BSD-3-Clause. Twelve carry a
-      copyleft licence with no permissive alternative:
+      Most entries are permissively licensed, and several that a filename scan would call
+      GPL are dual licensed with the permissive half in force: zstd is BSD-3, rocksdb is
+      Apache-2.0, liburing is MIT, ittapi is BSD-3-Clause. Twelve carry a copyleft licence
+      with no permissive alternative:
 
           lemmagen-c, libgsasl, libssh, mariadb-connector-c,
           numactl, xz                                                      (LGPL)
@@ -378,11 +386,23 @@ This package redistributes two shared libraries:
       inspect. That question belongs to the engine build.
 
       Authoritative notices are the ones shipped with the engine release:
-      https://github.com/chdb-io/chdb-core/releases/tag/$(prop engine.tag)
-
-The same libchdb.so is redistributed by chDB's PyPI and npm packages, so the redistribution
+      https://github.com/chdb-io/chdb-core/releases/tag/$(prop engine.tag)"
+  ENGINE_CLOSING="The same libchdb.so is redistributed by chDB's PyPI and npm packages, so the redistribution
 position on the components above is not specific to the Java packaging. docs/publishing.md
-records what still needs confirming before a non-snapshot release.
+records what still needs confirming before a non-snapshot release."
+fi
+
+cat > "${STAGE}/META-INF/licenses/README.txt" <<EOF
+This package redistributes two shared libraries:
+
+  ${JNINAME}
+      The chdb-java JNI shim, built from this repository. Apache-2.0; see
+      LICENSE-chdb-java.txt.
+
+  ${LIBNAME}
+      The chDB engine, ${ENGINE_PROVENANCE}
+
+${ENGINE_CLOSING}
 EOF
 
 # CycloneDX 1.5, minimal but valid: enough for a consumer to see what is inside and to

@@ -25,11 +25,18 @@ needs one DNS record, and one licence question needs somebody with authority to 
 ## 1. The release profile
 
 ```bash
+# Once, before any of the below: the shim compiles against javac -h output, and
+# build-native.sh refuses to run without it.
+mvn -pl chdb-jdbc compile
+
 # On each platform's own machine, in one shared checkout:
 scripts/build-native.sh macos-aarch64                     # on an Apple Silicon Mac
 scripts/build-native.sh macos-x86_64                      # on an Intel Mac
-scripts/build-native-in-container.sh linux-x86_64-gnu     # manylinux_2_28
-scripts/build-native-in-container.sh linux-aarch64-gnu
+
+# Linux, from either host. JAVA_HOME must be a *Linux* JDK: jni.h includes jni_md.h from an
+# OS-named subdirectory, so a macOS JDK has include/darwin and the helper rejects it.
+JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-x86_64-gnu
+JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-aarch64-gnu
 
 mvn versions:set -DnewVersion=26.7.0.1     # a release, not the -SNAPSHOT in the POM
 mvn -Prelease deploy
@@ -46,10 +53,17 @@ chdb-native-macos-x86_64 has not been staged: no .../macos/x86_64/libchdb.so.
 Run scripts/build-native.sh macos-x86_64 on a macos-x86_64 machine first
 ```
 
+It also refuses a package staged with `--local-engine`. That path skips the pinned checksum on
+purpose, so nothing knows which engine it is, and the licence inventory this repository holds
+describes the pinned release rather than that binary — `build-native.sh` therefore ships no
+inventory for a local engine and stamps `engine.source=local` in the manifest, which the
+release profile rejects.
+
 **And no single machine can stage all four.** `build-native.sh` refuses to cross-build, on
 purpose: a shim linked for another architecture fails at `System.load()` in a user's JVM rather
-than at build time. Linux is covered from either host by the container helper, but macOS x86_64
-needs an Intel Mac. CI already builds all four on their own runners and does not currently
+than at build time. Linux is covered from either host by the container helper — given a Linux
+JDK to point `JAVA_HOME` at, which a macOS machine does not have lying around — but macOS
+x86_64 needs an Intel Mac. CI already builds all four on their own runners and does not currently
 upload the packaged jars, so assembling a release means either four machines or a release
 workflow. That gap is issue #15 and should be closed before the first release rather than
 worked around by hand.

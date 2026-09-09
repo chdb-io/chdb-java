@@ -108,6 +108,19 @@
                         </not>
                       </condition>
                     </fail>
+                    <!--
+                      And it must not be an engine built with —local-engine. That path skips the
+                      pinned checksum on purpose, so nothing here knows which engine it is; the
+                      shipped notice would describe the pinned release instead. fetch-libchdb.sh
+                      records the provenance and build-native.sh copies it into the manifest.
+                    -->
+                    <fail message="${project.artifactId} was staged from a LOCAL engine (engine.source=local in manifest.properties). That build skips the pinned checksum and carries no licence inventory, so it must not be released. Re-stage without —local-engine.">
+                      <condition>
+                        <resourcecontains
+                            resource="${chdb.native.staging}/META-INF/chdb/native/${chdb.platform.os}/${chdb.platform.arch}/manifest.properties"
+                            substring="engine.source=local"/>
+                      </condition>
+                    </fail>
                   </target>
                 </configuration>
               </execution>
