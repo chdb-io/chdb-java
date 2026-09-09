@@ -19,6 +19,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -729,6 +730,88 @@ class ProcessLifecycleIT extends NativeTestBase {
             assertTrue(
                     org.chdb.jdbc.ShutdownHookAccess.claim(connection),
                     "an idle connection must be claimable");
+        }
+    }
+
+    @Test
+    @DisplayName("every way a statement can end puts the shutdown gate back")
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void theGateComesBackOnEveryPath() throws Exception {
+        // A gate left raised is silent in both directions: the shutdown hook skips this
+        // connection for the rest of the process, so it stops doing its job, and nothing is
+        // refused either, so nothing reports it. The exits are in the same finally as the
+        // statement slot's release, and PR #16 rearranged that method's try structure around
+        // the query-timeout check -- so each way out of it is walked here.
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement()) {
+            assertEquals(0, org.chdb.jdbc.ShutdownHookAccess.inFlight(connection));
+
+            // Streaming route, ordinary success.
+            try (ResultSet rs = statement.executeQuery("SELECT number FROM numbers(10)")) {
+                assertTrue(rs.next());
+            }
+            assertEquals(
+                    0,
+                    org.chdb.jdbc.ShutdownHookAccess.inFlight(connection),
+                    "a successful streaming statement");
+
+            // Materialized route, ordinary success.
+            try (ResultSet rs = statement.executeQuery("SHOW TABLES")) {
+                rs.next();
+            }
+            assertEquals(
+                    0,
+                    org.chdb.jdbc.ShutdownHookAccess.inFlight(connection),
+                    "a successful materialized statement");
+
+            // No-result-set route.
+            statement.execute("DROP TABLE IF EXISTS chdb_it_gate_absent");
+            assertEquals(
+                    0,
+                    org.chdb.jdbc.ShutdownHookAccess.inFlight(connection),
+                    "a successful statement with no result set");
+
+            // The engine refusing the statement, which throws out of the open.
+            assertThrows(SQLException.class, () -> statement.executeQuery("SELECT no_such_thing"));
+            assertEquals(
+                    0,
+                    org.chdb.jdbc.ShutdownHookAccess.inFlight(connection),
+                    "a statement the engine rejected");
+
+            // The driver refusing it before the engine: executeQuery on a statement with no
+            // result set returns through the expectResultSet early exit.
+            assertThrows(
+                    SQLException.class,
+                    () -> statement.executeQuery("DROP TABLE IF EXISTS chdb_it_gate_absent"));
+            assertEquals(
+                    0,
+                    org.chdb.jdbc.ShutdownHookAccess.inFlight(connection),
+                    "a statement refused for the wrong shape");
+
+            // The path PR #16 added: a deadline that expired while the open was in flight, so
+            // checkDeadlineSurvivedTheOpen closes the result set and throws 57014 from a point
+            // where handedOff is already set. Either outcome is acceptable -- a fast enough
+            // machine beats the deadline -- but the gate has to be back regardless.
+            statement.setQueryTimeout(1);
+            try (ResultSet rs =
+                    statement.executeQuery(
+                            "SELECT max(sipHash64(number)) FROM numbers(500000000)")) {
+                assertTrue(rs.next());
+                System.out.println("the 1 s deadline was met, so 57014 was not the path taken");
+            } catch (SQLTimeoutException expected) {
+                assertEquals("57014", expected.getSQLState());
+            }
+            statement.setQueryTimeout(0);
+            assertEquals(
+                    0,
+                    org.chdb.jdbc.ShutdownHookAccess.inFlight(connection),
+                    "a statement whose deadline expired during the open");
+
+            // And the hook can still have the connection, which is the whole point of keeping
+            // the count honest.
+            assertTrue(
+                    org.chdb.jdbc.ShutdownHookAccess.claim(connection),
+                    "after all of that the gate must still be free");
         }
     }
 

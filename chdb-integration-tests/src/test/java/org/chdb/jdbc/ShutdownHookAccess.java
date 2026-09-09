@@ -45,4 +45,15 @@ public final class ShutdownHookAccess {
     public static boolean isClaimed(Connection connection) {
         return ((ChdbConnection) connection).isClaimedForShutdownClose();
     }
+
+    /**
+     * How many threads the connection thinks are inside a statement-start call.
+     *
+     * <p>Here because {@link #claim} is terminal and so can only answer "was the gate free?"
+     * once per connection, which is no use for checking that a statement that <em>failed</em>
+     * put the gate back on its way out.
+     */
+    public static int inFlight(Connection connection) {
+        return ((ChdbConnection) connection).executionsInFlight();
+    }
 }

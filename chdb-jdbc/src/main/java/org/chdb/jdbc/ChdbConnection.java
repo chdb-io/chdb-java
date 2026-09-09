@@ -211,6 +211,18 @@ public final class ChdbConnection implements Connection {
         return executionGate.isClosedToNewEntrants();
     }
 
+    /**
+     * How many threads are inside a statement-start call here. For diagnostics and tests.
+     *
+     * <p>Non-terminal, unlike {@link #claimForShutdownClose()}, which is what makes it usable
+     * for checking that a statement that failed put the gate back. A count stuck above zero
+     * would make the shutdown hook skip this connection for the rest of the process and refuse
+     * nothing, so the leak is silent both ways.
+     */
+    int executionsInFlight() {
+        return executionGate.inFlight();
+    }
+
     void register(ChdbStatement statement) {
         openStatements.add(statement);
     }

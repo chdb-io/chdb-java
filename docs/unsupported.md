@@ -224,9 +224,9 @@ abort the hook exists to prevent. Two threads on a two-billion-row aggregate, ma
 engine 26.7.2-rc.2: 21 aborts in 60 runs with the old hook, 0 in 60 with the hook off, 0 in 80
 with the hook as it now is; and the same again on the route that materializes its result set
 (`SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK`), 6 aborts in 40 against 0 in 80, because the
-abort is about closing the connection rather than about how the statement was
-started. The surviving runs held the JVM open for the length of the query —
-34 s for four threads on five billion rows — against 0.3 s now. The hook leaves those
+abort is about closing the connection rather than about how the statement was started. The
+surviving runs held the JVM open for the length of the query — 34 s for four threads on five
+billion rows — against 0.3 s now. The hook leaves those
 connections alone, which is what the process would have done with no hook at all.
 
 The cost of leaving them is that `chdb_shutdown()` declines while any connection is open, so a
