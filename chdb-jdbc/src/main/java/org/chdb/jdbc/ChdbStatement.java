@@ -182,12 +182,36 @@ public class ChdbStatement implements Statement {
         // time, and its fetches count.
         connection.statementSlot().acquire(sql);
         boolean handedOff = false;
-        // Spans every native call that starts a statement -- the classifier, the stream open
-        // and chdb_query_n -- and stops at the point a result set takes over, because from
-        // there on the thread is fetching rather than starting. The shutdown hook reads it to
-        // decide which connections it can close; see ChdbConnection.executionsInFlight.
-        connection.executionStarted();
+        boolean entered = false;
         try {
+            // Covers every native call that starts a statement on this connection -- the
+            // classifier in route(), both stream opens in openStream() (chdb_query_arrow_n on
+            // the materialized route, the streaming open on the other) and chdb_query_n in
+            // runMaterialized() -- and stops where a result set takes over, because from there
+            // on the thread is fetching rather than starting. Held by covering the whole body
+            // rather than by wrapping each call, so a fourth entry point added later is inside
+            // it by default rather than by remembering.
+            //
+            // The shutdown hook cannot close the connection while this is held, and cannot be
+            // talked into it by timing: the gate is taken by compare-and-set, not by asking and
+            // then acting. See ExecutionGate.
+            //
+            // Before the timeout is armed, deliberately. A refusal here must not leave a timer
+            // running against an execution that never happened; putting the gate first means
+            // there is no timer to disarm rather than a timer whose staleness some other
+            // mechanism has to notice. It is after the slot acquire, equally deliberately: a
+            // thread waiting for another statement's result set to close is not inside the
+            // engine, and holding the gate across that wait would block the hook for as long as
+            // the other statement lives.
+            //
+            // Refused only when the hook already owns the connection. Nothing has been
+            // allocated at this point -- no stream, no result set, no timeout armed -- so the
+            // finally below releasing the slot is the whole of the unwinding needed.
+            entered = connection.executionStarted();
+            if (!entered) {
+                throw ChdbExceptions.shuttingDown();
+            }
+
             StatementShape.Route route = route(sql);
             boolean producesResultSet = route != StatementShape.Route.NO_RESULT_SET;
             if (expectResultSet != null && expectResultSet && !producesResultSet) {
@@ -218,7 +242,9 @@ public class ChdbStatement implements Statement {
             runMaterialized(sql, parameterNames, parameterValues);
             return false;
         } finally {
-            connection.executionFinished();
+            if (entered) {
+                connection.executionFinished();
+            }
             if (!handedOff) {
                 connection.statementSlot().release();
             }

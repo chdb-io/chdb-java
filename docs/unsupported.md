@@ -221,7 +221,7 @@ What the hook cannot cover is a thread still *executing* a query when the proces
 used to try, and trying made things worse: `chdb_close_conn()` on a connection whose query is
 running blocks until the query finishes, and closing one is enough to provoke the same engine
 abort the hook exists to prevent. Two threads on a two-billion-row aggregate, macOS arm64,
-engine 26.7.2-rc.2: 12 aborts in 40 runs with the old hook, 0 in 60 with the hook off, 0 in 80
+engine 26.7.2-rc.2: 21 aborts in 60 runs with the old hook, 0 in 60 with the hook off, 0 in 80
 with the hook as it now is. The surviving runs held the JVM open for the length of the query —
 34 s for four threads on five billion rows — against 0.3 s now. The hook leaves those
 connections alone, which is what the process would have done with no hook at all.
@@ -232,6 +232,13 @@ exit code, but it is a guarantee you do not have. So **shut your executor down b
 from `main`** if you want it. The driver also has no way to interrupt such a query on your
 behalf: the C ABI's cancel applies to a stream, and a query that has not produced one yet has
 nothing to cancel.
+
+The mirror of that rule is visible to your code. Once the hook has taken a connection, a
+statement started on it is refused with `SQLException`, SQLSTATE `08003`, whose message names
+the shutdown. The hook has to refuse rather than let the statement through — starting one on a
+connection it is closing is the abort above — so a thread that queries during shutdown should
+expect this, and it means the hook declined for a reason rather than that anything is broken.
+The `Statement` is left usable and unclosed, and no stream or result set is left half-open.
 
 There is also a rarer abort in this shape that no hook reaches — the engine's C++ exit-time
 destructors racing a thread that is still inside it, `mutex lock failed: Invalid argument`, at

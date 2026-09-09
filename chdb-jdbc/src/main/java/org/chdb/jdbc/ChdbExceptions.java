@@ -113,4 +113,28 @@ final class ChdbExceptions {
     static SQLException closed(String what) {
         return new SQLNonTransientException(what + " is closed", "HY010");
     }
+
+    /**
+     * The exception for a statement that arrived while the shutdown hook was closing its
+     * connection.
+     *
+     * <p>Refusing is the only safe answer: the engine aborts if a connection is closed while a
+     * statement is starting on it, so once the hook has claimed the connection nothing may
+     * reach the engine through it. Saying so is the point — the alternative is a caller that
+     * sees a bare {@code NullPointerException}, a silently skipped statement, or the abort
+     * itself.
+     *
+     * <p>{@code 08003} rather than {@code HY010}: the connection is gone, not merely misused,
+     * and a caller retrying against a new connection is doing the right thing — although in
+     * this case there will be no new connection, because the JVM is on its way out.
+     */
+    static SQLException shuttingDown() {
+        return new SQLNonTransientException(
+                "The JVM is shutting down and the chDB driver's shutdown hook is closing this"
+                        + " Connection, so no statement can be started on it. Stop the threads"
+                        + " that query chDB before returning from main, or disable the hook with"
+                        + " -Dchdb.shutdownHook=false and manage teardown yourself. See"
+                        + " docs/unsupported.md.",
+                "08003");
+    }
 }

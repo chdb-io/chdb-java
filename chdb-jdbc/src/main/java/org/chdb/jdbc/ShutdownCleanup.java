@@ -50,8 +50,12 @@ import org.chdb.internal.ChdbNative;
  * <h2>Concurrency</h2>
  * A shutdown hook runs concurrently with application threads, which the JVM does not stop
  * first. Everything here is written for that: registration can happen while the hook is
- * draining, and a connection can be mid-{@code close()} on another thread when the hook reaches
- * it. Both cases end with the stream closed, or the hook has not done its job.
+ * draining, a connection can be mid-{@code close()} on another thread when the hook reaches
+ * it, and a thread can be starting a statement on a connection the hook is about to reach.
+ * The first two end with the stream closed, or the hook has not done its job. The third is
+ * settled by {@link ExecutionGate}, and settled rather than raced: the hook takes a connection
+ * with a compare-and-set that succeeds only while nothing is starting on it, so there is no
+ * "look, then close" window for a statement to arrive in.
  *
  * <p>The hook does not stop at the first empty registry either. A thread part-way through
  * {@code connect()} has not registered yet, so the drain counts those separately and waits
@@ -71,7 +75,7 @@ import org.chdb.internal.ChdbNative;
  * in flight:
  *
  * <pre>
- *   hook on, closing them (what it did)   12 aborts in 40  (front() on an empty vector)
+ *   hook on, closing them (what it did)   21 aborts in 60  (front() on an empty vector)
  *   hook off                               0 aborts in 60
  *   hook on, skipping them (what it does)  0 aborts in 80
  * </pre>
@@ -87,12 +91,20 @@ import org.chdb.internal.ChdbNative;
  * cleanly. It is not the leaked stream this class exists for: that thread is parked, not inside
  * the engine, so it is closed as before. The two are told apart by whether a thread is inside a
  * native call that starts a statement, not by the statement slot, which a leaked stream holds
- * as well. See {@code ChdbConnection.executionsInFlight}.
+ * as well.
+ *
+ * <p>The distinction is <em>claimed</em>, not inspected. Asking a connection whether a
+ * statement is executing and then closing it would leave the abort reachable in the window
+ * between the two, which for a hook running alongside live application threads is an ordinary
+ * interleaving rather than an exotic one. {@link ExecutionGate} makes the question and the
+ * answer one compare-and-set, and tells the loser: the hook skips the connection, or the
+ * application thread gets {@code SQLException} with SQLSTATE {@code 08003} naming the shutdown.
  *
  * <p><strong>One abort in this shape is still not the driver's to fix.</strong> Rarely, and in
  * bursts that track machine load, a JVM halting with a thread inside the engine dies in C++
- * exit-time destructors instead: {@code mutex lock failed: Invalid argument}. That appeared at
- * the same rate with the hook on (2 of 80) and off (3 of 80), so no hook reaches it, and
+ * exit-time destructors instead: {@code mutex lock failed: Invalid argument}. It appears at the
+ * same rate whether the hook runs or not — 2 of 80 against 3 of 80 on one build, and 1 of 80
+ * with the hook on after the claim went in — so no hook reaches it, and
  * {@code -Dchdb.shutdownHook=false} does not avoid it. {@code docs/upstream-findings.md} §9 has
  * it.
  *
@@ -357,7 +369,14 @@ final class ShutdownCleanup {
             synchronized (OPEN) {
                 for (Iterator<ChdbConnection> it = OPEN.keySet().iterator(); it.hasNext(); ) {
                     ChdbConnection connection = it.next();
-                    if (connection.hasExecutionInFlight()) {
+                    // Claimed, not inspected. Asking "is a statement executing?" and then
+                    // closing is check-then-act, and this thread runs alongside the
+                    // application's: a statement starting between the question and the close
+                    // would put the connection back in the state that aborts. The claim is a
+                    // compare-and-set that succeeds only from idle and, once it succeeds,
+                    // stops any further statement from starting -- so it settles the question
+                    // it asks. See ExecutionGate.
+                    if (!connection.claimForShutdownClose()) {
                         // Left registered rather than taken, which is what gives it another
                         // look on the next pass: a query that ends inside the drain's remaining
                         // time gets closed after all, and one that does not is simply left
@@ -371,8 +390,14 @@ final class ShutdownCleanup {
                 }
             }
 
-            // Outside the lock: close() reaches the engine, and holding the registry's monitor
-            // across that would block every thread still trying to register or unregister.
+            // Outside the lock, and that is not a compromise. close() reaches the engine, and
+            // chdb_close_conn() blocks until the connection's query finishes -- 79 s in the
+            // worst case measured -- so a monitor held across it would stall every thread
+            // trying to register, unregister or start a statement for that whole time, which
+            // is a worse failure than the one this class is fixing. Nothing is lost by
+            // releasing it: the claim above already stopped new statements on every connection
+            // in this batch, so the exclusion these closes need is carried by the connection's
+            // own gate rather than by any lock this thread holds.
             for (ChdbConnection connection : batch) {
                 noteActivity();
                 try {

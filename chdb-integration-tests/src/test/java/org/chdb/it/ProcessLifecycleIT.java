@@ -1,7 +1,9 @@
 package org.chdb.it;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.chdb.internal.ChdbNative;
 import org.junit.jupiter.api.DisplayName;
@@ -70,19 +73,54 @@ class ProcessLifecycleIT extends NativeTestBase {
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         builder.environment().putAll(environment);
         Process process = builder.start();
-        String output;
-        try (InputStream in = process.getInputStream()) {
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            byte[] chunk = new byte[8192];
-            int read;
-            while ((read = in.read(chunk)) > 0) {
-                buffer.write(chunk, 0, read);
-            }
-            output = new String(buffer.toByteArray(), StandardCharsets.UTF_8);
+
+        // Drained on its own thread rather than in line, so the timeout below is reachable.
+        // Reading to EOF on this thread cannot be bounded: a child that stalls while holding
+        // its stdout open blocks the read, and the waitFor after it never runs. That is not
+        // hypothetical -- a stalled child once turned one of these tests into an 87-minute
+        // one, where a bounded harness would have failed it in three minutes with the child's
+        // output in hand. ByteArrayOutputStream is internally synchronized, so reading it here
+        // after the join is safe even when the join times out.
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        Thread drain =
+                new Thread(
+                        () -> {
+                            try (InputStream in = process.getInputStream()) {
+                                byte[] chunk = new byte[8192];
+                                int read;
+                                while ((read = in.read(chunk)) > 0) {
+                                    buffer.write(chunk, 0, read);
+                                }
+                            } catch (IOException ignored) {
+                                // The process died mid-read, which waitFor below reports.
+                            }
+                        },
+                        "chdb-it-fork-drain");
+        drain.setDaemon(true);
+        drain.start();
+
+        boolean exited = process.waitFor(FORK_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        if (!exited) {
+            // Killed rather than left behind: a surviving child holds the engine's storage
+            // path and would break every test after this one.
+            process.destroyForcibly();
+            process.waitFor(30, TimeUnit.SECONDS);
         }
-        assertTrue(process.waitFor(3, TimeUnit.MINUTES), "the forked JVM did not exit");
+        drain.join(TimeUnit.SECONDS.toMillis(30));
+        String output = new String(buffer.toByteArray(), StandardCharsets.UTF_8);
+
+        assertTrue(
+                exited,
+                "the forked JVM did not exit within " + FORK_TIMEOUT_MINUTES + " minutes and was"
+                        + " killed. Its output so far:\n" + output);
         return new ForkResult(process.exitValue(), output);
     }
+
+    /**
+     * How long any forked JVM here gets. Every one of them either exits in about a second or is
+     * wedged; the margin is for a cold CI runner loading a 342 MB engine, not for slow work.
+     */
+    private static final int FORK_TIMEOUT_MINUTES = 3;
 
     private static final class ForkResult {
         final int exitCode;
@@ -212,7 +250,7 @@ class ProcessLifecycleIT extends NativeTestBase {
     void exitWithQueriesInFlightIsPrompt() throws Exception {
         // Issue #22 defect 1. The hook used to close every registered connection, including
         // ones whose query was executing, and that did two things. It aborted the process
-        // with the engine assertion this whole class exists to prevent -- 12 runs in 40 on
+        // with the engine assertion this whole class exists to prevent -- 21 runs in 60 on
         // macOS arm64, engine 26.7.2-rc.2, against 0 in 60 with the hook off. And, when it
         // did not, it held the JVM open for the length of the query, because
         // chdb_close_conn() on a connection with a query running blocks until the query
@@ -221,13 +259,7 @@ class ProcessLifecycleIT extends NativeTestBase {
         // cannot bound that, because the budget is checked between passes and a close already
         // under way is not interruptible.
         ForkResult result = fork(ExitsWithQueriesInFlight.class.getName(), List.of());
-
-        // Otherwise the test is vacuous: a query that finished on its own leaves an idle
-        // connection, which the hook closes as it always did.
-        assertTrue(
-                !result.output.contains("a query finished before the exit"),
-                "the queries were meant to still be running at exit; make them longer.\n"
-                        + result.output);
+        boolean aQueryFinished = result.output.contains("a query finished before the exit");
 
         // The abort the hook was causing, named rather than inferred from the exit code.
         // Asserted this way round because there is a second, rarer abort in this shape that
@@ -251,16 +283,42 @@ class ProcessLifecycleIT extends NativeTestBase {
 
         long shutdownMillis = shutdownMillis(result);
         System.out.println("shutdown with queries in flight took " + shutdownMillis + " ms");
+
         // The query outlives this bound by a wide margin on any machine that can run it at
-        // all: two threads on two billion rows takes ~14 s here. So a shutdown that waits for
-        // it cannot come in under 8 s, and one that declines to takes ~320 ms.
+        // all: two threads on two billion rows takes ~13 s here, and the shutdown takes
+        // ~320 ms on JDK 26 and ~900 ms on JDK 21. So a shutdown that waited for the query
+        // cannot come in under 8 s.
+        //
+        // The message distinguishes the two ways this can be slow, because they need
+        // different responses and the child's own output separates them. If the hook waited
+        // on chdb_close_conn(), that call returns only once the query has finished -- so the
+        // worker will have printed that it finished, and the defect is back. If nothing
+        // finished, the hook did not wait for any query and the process stalled for some other
+        // reason; that has been seen once, at 87 minutes, on an otherwise-loaded machine, and
+        // never reproduced in 8 further runs on the same JDK.
+        if (shutdownMillis >= 8000) {
+            throw new AssertionError(
+                    "shutdown took "
+                            + shutdownMillis
+                            + " ms with queries in flight.\n"
+                            + (aQueryFinished
+                                    ? "A query finished, which is what chdb_close_conn()"
+                                            + " returning looks like: the hook closed a"
+                                            + " connection whose statement was executing and"
+                                            + " blocked on it. That is the defect."
+                                    : "No query finished, so the hook waited for none of them"
+                                            + " -- this is a stall elsewhere in the process,"
+                                            + " not the hook closing a busy connection.")
+                            + "\n"
+                            + result.output);
+        }
+
+        // Only meaningful once the shutdown was fast: a query that finished on its own leaves
+        // an idle connection, which the hook closes as it always did, so the run proved nothing
+        // about the state this test exists for.
         assertTrue(
-                shutdownMillis < 8000,
-                "the hook should not wait for a query it cannot safely interrupt, but shutdown"
-                        + " took "
-                        + shutdownMillis
-                        + " ms -- closing a connection whose statement is executing blocks"
-                        + " until the statement finishes.\n"
+                !aQueryFinished,
+                "the queries were meant to still be running at exit; make them longer.\n"
                         + result.output);
     }
 
@@ -526,6 +584,128 @@ class ProcessLifecycleIT extends NativeTestBase {
             out.append(s);
         }
         return out.toString();
+    }
+
+    @Test
+    @DisplayName("a connection the hook has claimed refuses new statements with a clear error")
+    @Timeout(value = 2, unit = TimeUnit.MINUTES)
+    void aClaimedConnectionRefusesNewStatements() throws Exception {
+        // The application-visible half of issue #22 defect 1's fix. Once the shutdown hook has
+        // claimed a connection, nothing may start a statement on it -- closing a connection
+        // with a statement starting is what aborts the engine. So a statement that arrives in
+        // that window has to be refused, and refused in a way a caller can read: not a
+        // NullPointerException from a half-torn-down connection, not a silent no-op, and not
+        // the abort.
+        //
+        // Driven through the same call the drain uses, rather than by forking a JVM and hoping
+        // to land in the window. See ShutdownHookAccess for why that is a test-only class.
+        try (Connection connection = openMemory()) {
+            try (Statement warm = connection.createStatement();
+                    ResultSet rs = warm.executeQuery("SELECT 1")) {
+                assertTrue(rs.next(), "the connection should work before it is claimed");
+            }
+
+            assertTrue(
+                    org.chdb.jdbc.ShutdownHookAccess.claim(connection),
+                    "an idle connection is exactly what the hook is allowed to take");
+            assertTrue(org.chdb.jdbc.ShutdownHookAccess.isClaimed(connection));
+
+            try (Statement statement = connection.createStatement()) {
+                SQLException refused =
+                        assertThrows(
+                                SQLException.class, () -> statement.executeQuery("SELECT 1"));
+                assertEquals("08003", refused.getSQLState(), refused.getMessage());
+                assertTrue(
+                        refused.getMessage().contains("shutting down"),
+                        "the message must say why, so a caller is not left guessing: "
+                                + refused.getMessage());
+
+                assertNull(
+                        statement.getResultSet(),
+                        "a refused statement must not leave a result set behind");
+                assertFalse(statement.isClosed(), "refusing is not closing the Statement");
+
+                // The refusal must also have released the connection's statement slot. If it
+                // had not, this second attempt would report SQLSTATE 25000 -- "a statement is
+                // already in progress on this thread" -- instead of the refusal, and a
+                // connection shared with another thread would have been wedged for good.
+                SQLException again =
+                        assertThrows(
+                                SQLException.class, () -> statement.executeQuery("SELECT 1"));
+                assertEquals(
+                        "08003",
+                        again.getSQLState(),
+                        "the slot was not released by the refusal: " + again.getMessage());
+            }
+        }
+        // assertNoLeakedHandles() runs after this and is the check that the refusal left no
+        // stream, result or connection handle open.
+    }
+
+    @Test
+    @DisplayName("the hook cannot claim a connection whose statement is still starting")
+    @Timeout(value = 3, unit = TimeUnit.MINUTES)
+    void aClaimLosesToAStatementInFlight() throws Exception {
+        // The other half, and the one the whole diagnosis turned on: the hook must lose to a
+        // thread that is inside the engine starting a statement. ExecutionGateTest pins the
+        // state machine; this pins the wiring, that executeInternal really does hold the gate
+        // across the native statement-start call rather than around something narrower.
+        //
+        // An aggregate with no result set until it finishes is what keeps the thread inside
+        // that call. It runs ~3.2 s here against the ~250 ms this test spends asserting, and
+        // the margin scales the right way -- a slower machine makes the query longer too.
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement()) {
+            AtomicBoolean finished = new AtomicBoolean(false);
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicReference<Exception> raised = new AtomicReference<>();
+
+            Thread querying =
+                    new Thread(
+                            () -> {
+                                entered.countDown();
+                                try (ResultSet rs =
+                                        statement.executeQuery(
+                                                "SELECT count() FROM numbers(500000000)"
+                                                        + " WHERE sipHash64(number) % 1000000"
+                                                        + " = 0")) {
+                                    rs.next();
+                                } catch (Exception e) {
+                                    raised.set(e);
+                                } finally {
+                                    finished.set(true);
+                                }
+                            },
+                            "chdb-it-inflight");
+            querying.setDaemon(true);
+            querying.start();
+
+            assertTrue(entered.await(30, TimeUnit.SECONDS), "the querying thread never started");
+            // Let it get past the gate and into the engine rather than racing the latch.
+            Thread.sleep(150);
+
+            int attempts = 0;
+            while (!finished.get() && attempts < 5) {
+                assertFalse(
+                        org.chdb.jdbc.ShutdownHookAccess.claim(connection),
+                        "the hook took a connection with a statement still starting on it;"
+                                + " closing it is what aborts the engine");
+                attempts++;
+                Thread.sleep(20);
+            }
+            assertTrue(
+                    attempts > 0,
+                    "the query finished before a single claim was attempted; make it longer");
+
+            querying.join(TimeUnit.MINUTES.toMillis(2));
+            assertNull(raised.get(), "the query itself should have been undisturbed");
+
+            // And the moment it is done, the hook may have it -- which is what makes the
+            // drain's next pass worth taking rather than a wasted one.
+            assertTrue(
+                    org.chdb.jdbc.ShutdownHookAccess.claim(connection),
+                    "an idle connection must be claimable");
+        }
     }
 
     @Test

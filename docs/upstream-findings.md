@@ -499,13 +499,15 @@ finding's rates looked absolute: this is a race, not a certainty.
 Two threads on a two-billion-row aggregate, `main` returning while they are in flight, engine
 26.7.2-rc.2 on macOS arm64:
 
-| driver | hook | aborts | message |
+The two abort messages are counted separately, because only the first is the driver's:
+
+| driver | hook | `front()` on an empty vector | `mutex lock failed` |
 |---|---|---|---|
-| before #22 | on | **12 / 40** | `front() called on an empty vector` |
-| before #22 | off | 0 / 60 | — |
-| after #22 | on | 0 / 80 | — |
-| after #22 | off | 3 / 80 | `mutex lock failed: Invalid argument` |
-| after #22 | on | 2 / 80 | `mutex lock failed: Invalid argument` |
+| before #22 | on | **21 / 60** | 0 / 60 |
+| before #22 | off | 0 / 60 | 0 / 60 |
+| #22, counter only | on | 0 / 80 | 2 / 80 |
+| #22, counter only | off | 0 / 80 | 3 / 80 |
+| #22, with the claim | on | 0 / 80 | 1 / 80 |
 
 The first row is the hook causing the very assertion it exists to prevent. The runs that
 survived it were not free either — the hook held the JVM open for the length of the query:
@@ -517,15 +519,26 @@ under way is not interruptible. The worker threads also die with the shim's owne
 underneath them, which is the state that aborts when nothing catches it.
 
 So the driver's hook now skips a connection with a native statement-start call in flight and
-closes everything else, and the `front()` abort is gone from this shape.
+closes everything else, and the `front()` abort is gone from this shape. It *claims* rather
+than inspects: reading a per-connection counter and then closing would leave the same abort
+reachable in the window between the two, so the hook and the application thread contend for one
+compare-and-set — the hook skips the connection, or the statement is refused with SQLSTATE
+`08003`. A lock would not do, because it would have to be held across the blocking
+`chdb_close_conn()` and would then stall every application thread for the length of the query.
 
-**The last two rows are a different abort, and not the driver's.** A JVM halting with a thread
-still inside the engine sometimes dies in C++ exit-time destructors instead. It appears at the
-same rate with the hook on and off, in bursts that track machine load — 40-run batches came
-out 2/40, 3/40, then 0/40, 0/40, 0/40 across configurations — so no shutdown hook reaches it,
-and `-Dchdb.shutdownHook=false` does not avoid it. Nothing on the driver side can: by the time
-`exit()` starts running destructors, the application's threads are beyond the reach of a hook
-that has already returned.
+**The right-hand column is a different abort, and not the driver's.** A JVM halting with a
+thread still inside the engine sometimes dies in C++ exit-time destructors instead. It appears
+whether the hook runs or not, in bursts that track machine load — 40-run batches came out 2/40,
+3/40 and 1/40 with several 0/40 batches in between, across configurations — so no shutdown hook
+reaches it, and `-Dchdb.shutdownHook=false` does not avoid it. Nothing on the driver side can:
+by the time `exit()` starts running destructors, the application's threads are beyond the reach
+of a hook that has already returned.
+
+The same load sensitivity produced one 87-minute stall of a forked test JVM, once, never
+reproduced in eight further runs on the same JDK. The child had reached the end of `main` and
+no query had finished, which rules out the hook having blocked on `chdb_close_conn()` — that
+call returns only once the query it is waiting on completes. `ProcessLifecycleIT` now bounds
+every fork it starts and says which of the two it was in the failure message.
 
 **Suggested upstream fix:** a shutdown that does not require the caller to have closed
 everything first — cancel and join whatever is running, since the process is going away
