@@ -66,4 +66,100 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      Central requires a sources and a javadoc jar even for an artifact whose entire content is
+      two shared libraries. There is no Java here to document, so these are empty by
+      construction rather than by accident — maven-source-plugin would produce nothing at all
+      and the upload would be rejected for a missing file. The sources are in this repository
+      and the POM's <scm> says where.
+    -->
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>make-empty-dir</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target>
+                    <mkdir dir="${project.build.directory}/empty-for-central"/>
+                    <!--
+                      A release must not ship an empty native package. The two libraries are
+                      staged by scripts/build-native.sh, not by Maven, so `mvn -Prelease deploy`
+                      on a clean checkout would otherwise package a jar with no engine in it and
+                      publish it to Central, where it cannot be taken back.
+                    -->
+                    <fail message="${project.artifactId} has not been staged: no ${chdb.native.staging}/META-INF/chdb/native/${chdb.platform.os}/${chdb.platform.arch}/libchdb.so. Run scripts/build-native.sh ${chdb.platform.id} on a ${chdb.platform.id} machine first; see docs/publishing.md.">
+                      <condition>
+                        <not>
+                          <and>
+                            <available file="${chdb.native.staging}/META-INF/chdb/native/${chdb.platform.os}/${chdb.platform.arch}/libchdb.so"/>
+                            <available file="${chdb.native.staging}/META-INF/chdb/native/${chdb.platform.os}/${chdb.platform.arch}/libchdb_java_jni.${chdb.jni.suffix}"/>
+                          </and>
+                        </not>
+                      </condition>
+                    </fail>
+                    <!--
+                      And it must not be an engine built with —local-engine. That path skips the
+                      pinned checksum on purpose, so nothing here knows which engine it is; the
+                      shipped notice would describe the pinned release instead. fetch-libchdb.sh
+                      records the provenance and build-native.sh copies it into the manifest.
+                    -->
+                    <fail message="${project.artifactId} was staged from a LOCAL engine (engine.source=local in manifest.properties). That build skips the pinned checksum and carries no licence inventory, so it must not be released. Re-stage without —local-engine.">
+                      <condition>
+                        <resourcecontains
+                            resource="${chdb.native.staging}/META-INF/chdb/native/${chdb.platform.os}/${chdb.platform.arch}/manifest.properties"
+                            substring="engine.source=local"/>
+                      </condition>
+                    </fail>
+                  </target>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-jar-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>empty-sources-jar</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+                <configuration>
+                  <classifier>sources</classifier>
+                  <classesDirectory>${project.build.directory}/empty-for-central</classesDirectory>
+                  <forceCreation>true</forceCreation>
+                  <skipIfEmpty>false</skipIfEmpty>
+                </configuration>
+              </execution>
+              <execution>
+                <id>empty-javadoc-jar</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+                <configuration>
+                  <classifier>javadoc</classifier>
+                  <classesDirectory>${project.build.directory}/empty-for-central</classesDirectory>
+                  <forceCreation>true</forceCreation>
+                  <skipIfEmpty>false</skipIfEmpty>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

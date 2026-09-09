@@ -22,12 +22,22 @@
     <maven.deploy.skip>true</maven.deploy.skip>
     <maven.install.skip>true</maven.install.skip>
     <!--
-      Where the two shared libraries live. Defaults to what scripts/build-native.sh stages for
-      this platform; override with -Dchdb.it.library.path to test a different pair, or leave the
-      platform native JAR on the classpath and set it empty to exercise the JAR unpack path.
+      Where the two shared libraries live: exactly where scripts/build-native.sh stages them for
+      this platform, so `mvn verify` works on a fresh checkout once the platform is staged.
+      Override with -Dchdb.it.library.path to test a different pair, or leave the platform
+      native JAR on the classpath and set it empty to exercise the JAR unpack path.
+
+      Set whole by the platform profile below rather than composed from a platform id and an
+      os/arch pair. Composing it let -Dchdb.it.platform=linux-x86_64-gnu on a Mac resolve to
+      chdb-native-linux-x86_64-gnu/.../macos/aarch64 — a path that exists nowhere, produced
+      silently. The value here is the no-profile-matched case and is meant to be unusable.
+
+      An earlier default pointed at ../target/runtime/${chdb.it.platform}, which no script
+      creates, with the platform hard-coded to macos-aarch64. It worked only on a machine where
+      that directory happened to exist, and in CI, which passes the path explicitly — so a fresh
+      clone failed everywhere and the failure was invisible to us.
     -->
-    <chdb.it.library.path>${project.basedir}/../target/runtime/${chdb.it.platform}</chdb.it.library.path>
-    <chdb.it.platform>macos-aarch64</chdb.it.platform>
+    <chdb.it.library.path>${project.basedir}/../UNSUPPORTED-PLATFORM-no-profile-matched</chdb.it.library.path>
 
     <!--
       Sanitizer support (work plan section 5.11). Empty by default; scripts/run-sanitizer-tests.sh
@@ -149,4 +159,48 @@
       </plugin>
     </plugins>
   </build>
+
+  <!--
+    The platform triple, detected rather than assumed. Only one of these can activate, and
+    every platform the project supports has one; a machine matching none gets an unresolved
+    ${chdb.it.platform} and a path that plainly does not exist, which is a better failure than
+    silently testing the wrong architecture's libraries.
+  -->
+  <!--
+    The staged library directory for this machine, detected rather than assumed. Each profile
+    sets the whole path, so there is no combination of properties that can name a directory for
+    one platform under another. A machine matching none keeps the unusable default above, which
+    fails with a path naming the reason.
+  -->
+  <profiles>
+    <profile>
+      <id>it-platform-macos-aarch64</id>
+      <activation><os><family>mac</family><arch>aarch64</arch></os></activation>
+      <properties>
+        <chdb.it.library.path>${project.basedir}/../chdb-native-macos-aarch64/target/native/META-INF/chdb/native/macos/aarch64</chdb.it.library.path>
+      </properties>
+    </profile>
+    <profile>
+      <id>it-platform-macos-x86_64</id>
+      <activation><os><family>mac</family><arch>x86_64</arch></os></activation>
+      <properties>
+        <chdb.it.library.path>${project.basedir}/../chdb-native-macos-x86_64/target/native/META-INF/chdb/native/macos/x86_64</chdb.it.library.path>
+      </properties>
+    </profile>
+    <!-- os.arch is amd64 on a Linux x86_64 JDK, not x86_64; verified in a container. -->
+    <profile>
+      <id>it-platform-linux-x86_64</id>
+      <activation><os><name>linux</name><arch>amd64</arch></os></activation>
+      <properties>
+        <chdb.it.library.path>${project.basedir}/../chdb-native-linux-x86_64-gnu/target/native/META-INF/chdb/native/linux/x86_64</chdb.it.library.path>
+      </properties>
+    </profile>
+    <profile>
+      <id>it-platform-linux-aarch64</id>
+      <activation><os><name>linux</name><arch>aarch64</arch></os></activation>
+      <properties>
+        <chdb.it.library.path>${project.basedir}/../chdb-native-linux-aarch64-gnu/target/native/META-INF/chdb/native/linux/aarch64</chdb.it.library.path>
+      </properties>
+    </profile>
+  </profiles>
 </project>

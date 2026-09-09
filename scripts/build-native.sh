@@ -326,6 +326,72 @@ EOF
 # ---------------------------------------------------------------- licences and SBOM
 
 cp "${ROOT}/LICENSE" "${STAGE}/META-INF/licenses/LICENSE-chdb-java.txt"
+
+# The engine's own inventory of what it embeds, generated from system.licenses of this exact
+# engine version and committed under licenses/. LicenseInventoryIT fails if it drifts, so an
+# engine bump cannot quietly change what this package redistributes.
+INVENTORY="${ROOT}/licenses/engine-third-party-${ENGINE_VERSION}.tsv"
+if [ "$ENGINE_SOURCE" != "release" ]; then
+  # The inventory is keyed by the pinned engine version, but --local-engine installs a binary
+  # this repository has never seen and cannot describe. Shipping the pinned inventory beside it
+  # would be a licence notice for a different artifact, so it is left out and said plainly.
+  # manifest.properties already carries engine.source=local, and the release profile refuses to
+  # package a module stamped that way.
+  INVENTORY_COUNT="unknown"
+  ENGINE_PROVENANCE="a LOCAL build installed with --local-engine.
+
+      THIS PACKAGE MUST NOT BE PUBLISHED. Nothing here verifies which engine it is: the
+      --local-engine path skips the pinned checksum by design. No third-party licence
+      inventory is shipped with it either, because the one this repository holds
+      describes release ${ENGINE_VERSION} and would be a notice for a different binary.
+
+      For the licences of a released engine, build without --local-engine, or see
+      https://github.com/chdb-io/chdb-core/releases"
+  ENGINE_CLOSING="Built from a local engine on $(date -u +%Y-%m-%dT%H:%M:%SZ). Not for distribution."
+else
+  if [ ! -f "$INVENTORY" ]; then
+    printf 'build-native: no licence inventory at %s\n' "$INVENTORY" >&2
+    exit 1
+  fi
+  cp "$INVENTORY" "${STAGE}/META-INF/licenses/engine-third-party.tsv"
+  INVENTORY_COUNT=$(wc -l < "$INVENTORY" | tr -d ' ')
+  ENGINE_PROVENANCE="redistributed verbatim from the chdb-io/chdb-core release
+      ${ENGINE_VERSION}, which is itself Apache-2.0. It statically links ClickHouse
+      (Apache-2.0).
+
+      engine-third-party.tsv in this directory is the engine's own component and licence
+      inventory: ${INVENTORY_COUNT} entries. It is generated from that engine's
+      system.licenses table -- from the binary shipped here rather than from a source
+      checkout -- and a test fails if it stops matching. It is not an assertion that all
+      of those entries are linked into this binary: it includes build-time tooling and
+      components for other platforms, and is the set from which the linked subset is
+      drawn.
+
+      Most entries are permissively licensed, and several that a filename scan would call
+      GPL are dual licensed with the permissive half in force: zstd is BSD-3, rocksdb is
+      Apache-2.0, liburing is MIT, ittapi is BSD-3-Clause. Twelve carry a copyleft licence
+      with no permissive alternative:
+
+          lemmagen-c, libgsasl, libssh, mariadb-connector-c,
+          numactl, xz                                                      (LGPL)
+
+          cbindgen, defer-drop, fortanix-sgx-abi, shuffling-allocator,
+          timer, webpki-roots                                              (MPL-2.0)
+
+      MPL-2.0 is file-level copyleft and its obligations are lighter than LGPL's, which
+      attach differently under static linking than under dynamic.
+
+      Whether any of the twelve is actually linked into this binary cannot be determined
+      from the binary: it is stripped, and static linking leaves no dynamic symbols to
+      inspect. That question belongs to the engine build.
+
+      Authoritative notices are the ones shipped with the engine release:
+      https://github.com/chdb-io/chdb-core/releases/tag/$(prop engine.tag)"
+  ENGINE_CLOSING="The same libchdb.so is redistributed by chDB's PyPI and npm packages, so the redistribution
+position on the components above is not specific to the Java packaging. docs/publishing.md
+records what still needs confirming before a non-snapshot release."
+fi
+
 cat > "${STAGE}/META-INF/licenses/README.txt" <<EOF
 This package redistributes two shared libraries:
 
@@ -334,22 +400,15 @@ This package redistributes two shared libraries:
       LICENSE-chdb-java.txt.
 
   ${LIBNAME}
-      The chDB engine, redistributed verbatim from the chdb-io/chdb-core release
-      ${ENGINE_VERSION}. Apache-2.0. chDB embeds ClickHouse, which is Apache-2.0, and a
-      number of third-party libraries under permissive licences. The authoritative notices
-      are the ones shipped with the engine release; see
-      https://github.com/chdb-io/chdb-core/releases/tag/$(prop engine.tag)
-      and the ClickHouse licence inventory at
-      https://github.com/ClickHouse/ClickHouse/blob/master/utils/list-licenses/
+      The chDB engine, ${ENGINE_PROVENANCE}
 
-Work plan section 4.4 tracks confirming the full redistribution notice set with the chDB
-maintainers before the first Maven Central release; until that is signed off this package is
-snapshot-only.
+${ENGINE_CLOSING}
 EOF
 
 # CycloneDX 1.5, minimal but valid: enough for a consumer to see what is inside and to
-# check it. The remaining task is folding in the engine's own transitive component list,
-# which chdb-core publishes with its releases.
+# check it. The engine's transitive components are not enumerated as CycloneDX components --
+# there are nearly a thousand and most are not linked -- but the inventory that lists them is
+# named here and shipped alongside.
 cat > "${STAGE}/META-INF/sbom/bom.json" <<EOF
 {
   "bomFormat": "CycloneDX",
@@ -371,7 +430,11 @@ cat > "${STAGE}/META-INF/sbom/bom.json" <<EOF
       "purl": "pkg:github/chdb-io/chdb-core@$(prop engine.tag)",
       "licenses": [{ "license": { "id": "Apache-2.0" } }],
       "hashes": [{ "alg": "SHA-256", "content": "${ENGINE_SHA}" }],
-      "properties": [{ "name": "chdb:file", "value": "${LIBNAME}" }]
+      "properties": [
+        { "name": "chdb:file", "value": "${LIBNAME}" },
+        { "name": "chdb:thirdPartyInventory", "value": "META-INF/licenses/engine-third-party.tsv" },
+        { "name": "chdb:thirdPartyCount", "value": "${INVENTORY_COUNT}" }
+      ]
     },
     {
       "type": "library",

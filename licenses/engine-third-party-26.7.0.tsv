@@ -1,0 +1,968 @@
+abseil-cpp	Apache
+addr2line	Apache-2.0 OR MIT
+adler2	0BSD OR MIT OR Apache-2.0
+aead	MIT OR Apache-2.0
+aes	MIT OR Apache-2.0
+aes-gcm	Apache-2.0 OR MIT
+ahash	MIT OR Apache-2.0
+aho-corasick	Unlicense OR MIT
+ai-sdk-cpp	Apache
+alloc-no-stdlib	BSD-3-Clause
+alloc-stdlib	BSD-3-Clause
+alloca	MIT
+allocator-api2	MIT OR Apache-2.0
+ambient-authority	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+AMQP-CPP	Apache
+android_system_properties	MIT/Apache-2.0
+anes	MIT OR Apache-2.0
+anstream	MIT OR Apache-2.0
+anstyle	MIT OR Apache-2.0
+anstyle-parse	MIT OR Apache-2.0
+anstyle-query	MIT OR Apache-2.0
+anstyle-wincon	MIT OR Apache-2.0
+antlr4-cpp-runtime	BSD 2-clause
+anyhow	MIT OR Apache-2.0
+ar_archive_writer	Apache-2.0 WITH LLVM-exception
+arbitrary	MIT OR Apache-2.0
+arboard	MIT OR Apache-2.0
+arbtest	MIT OR Apache-2.0
+ariadne	MIT
+arraydeque	MIT/Apache-2.0
+arrayref	BSD-2-Clause
+arrayvec	MIT OR Apache-2.0
+arrow	Apache
+arrow	Apache-2.0
+arrow-arith	Apache-2.0
+arrow-array	Apache-2.0
+arrow-array	Apache-2.0 AND MIT
+arrow-buffer	Apache-2.0
+arrow-cast	Apache-2.0
+arrow-csv	Apache-2.0
+arrow-data	Apache-2.0
+arrow-ipc	Apache-2.0
+arrow-json	Apache-2.0
+arrow-ord	Apache-2.0
+arrow-row	Apache-2.0
+arrow-schema	Apache-2.0
+arrow-select	Apache-2.0
+arrow-string	Apache-2.0
+ascii	Apache-2.0 OR MIT
+async-task	Apache-2.0 OR MIT
+async-trait	MIT OR Apache-2.0
+atoi	MIT
+atomic-waker	Apache-2.0 OR MIT
+autocfg	Apache-2.0 OR MIT
+avro	Apache
+aws	Apache
+aws-c-auth	Apache
+aws-c-cal	Apache
+aws-c-common	Apache
+aws-c-compression	Apache
+aws-c-event-stream	Apache
+aws-c-http	Apache
+aws-c-io	Apache
+aws-c-mqtt	Apache
+aws-c-s3	Apache
+aws-c-sdkutils	Apache
+aws-checksums	Apache
+aws-crt-cpp	Apache
+aws-lc-rs	ISC AND (Apache-2.0 OR ISC)
+aws-lc-sys	ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)
+aws-lc-sys	ISC AND (Apache-2.0 OR ISC) AND OpenSSL
+axum	MIT
+axum-core	MIT
+azure	MIT
+backtrace	MIT OR Apache-2.0
+base64	MIT OR Apache-2.0
+base64ct	Apache-2.0 OR MIT
+bech32	MIT
+beef	MIT OR Apache-2.0
+bincode	MIT
+bindgen	BSD-3-Clause
+bit-set	Apache-2.0 OR MIT
+bit-vec	Apache-2.0 OR MIT
+bitflags	MIT OR Apache-2.0
+bitflags	MIT/Apache-2.0
+blake3	CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception
+block-buffer	MIT OR Apache-2.0
+block-padding	MIT OR Apache-2.0
+boost	Boost
+brotli	BSD-3-Clause AND MIT
+brotli	MIT
+brotli-decompressor	BSD-3-Clause/MIT
+bstr	MIT OR Apache-2.0
+bumpalo	MIT OR Apache-2.0
+bytemuck	Zlib OR Apache-2.0 OR MIT
+byteorder	Unlicense OR MIT
+bytes	MIT
+bytesize	Apache-2.0
+bzip2	MIT/Apache-2.0
+bzip2	bzip2
+bzip2-sys	MIT/Apache-2.0
+c-ares	MIT
+camino	MIT OR Apache-2.0
+cap-fs-ext	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+cap-net-ext	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+cap-primitives	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+cap-std	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+cap-time-ext	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+capnproto	MIT
+capstone	MIT
+capstone-sys	MIT
+cargo-platform	MIT OR Apache-2.0
+cargo_metadata	MIT
+cassandra	Apache
+cassowary	MIT / Apache-2.0
+cast	MIT OR Apache-2.0
+castaway	MIT
+cbc	MIT OR Apache-2.0
+cbindgen	MPL-2.0
+cc	MIT OR Apache-2.0
+cctz	Apache
+cexpr	Apache-2.0/MIT
+cfg-if	MIT OR Apache-2.0
+cfg-if	MIT/Apache-2.0
+cfg_aliases	MIT
+chacha20	MIT OR Apache-2.0
+chdig	MIT
+chrono	MIT OR Apache-2.0
+chrono-tz	MIT OR Apache-2.0
+chrono-tz-build	MIT OR Apache-2.0
+chumsky	MIT
+chunked_transfer	MIT OR Apache-2.0
+ciborium	Apache-2.0
+ciborium-io	Apache-2.0
+ciborium-ll	Apache-2.0
+cipher	MIT OR Apache-2.0
+cityhash-rs	MIT OR Apache-2.0
+cityhash102	MIT
+clang-sys	Apache-2.0
+clap	MIT OR Apache-2.0
+clap_builder	MIT OR Apache-2.0
+clap_complete	MIT OR Apache-2.0
+clap_derive	MIT OR Apache-2.0
+clap_lex	MIT OR Apache-2.0
+cld2	Apache
+clickhouse	MIT OR Apache-2.0
+clickhouse-derive	MIT OR Apache-2.0
+clickhouse-rs-1.1.0	MIT
+clickhouse-rs-cityhash-sys	MIT
+clickstack	MIT
+clipboard-win	BSL-1.0
+cmake	MIT OR Apache-2.0
+cobs	MIT OR Apache-2.0
+codespan-reporting	Apache-2.0
+colorchoice	MIT OR Apache-2.0
+combine	MIT
+comfy-table	MIT
+compact_str	MIT
+console-api	MIT
+console-subscriber	MIT
+const-random	MIT OR Apache-2.0
+const-random-macro	MIT OR Apache-2.0
+constant_time_eq	CC0-1.0
+constant_time_eq	CC0-1.0 OR MIT-0 OR Apache-2.0
+convert_case	MIT
+core-foundation	MIT OR Apache-2.0
+core-foundation-sys	MIT OR Apache-2.0
+corrosion	MIT
+cpp_demangle	MIT OR Apache-2.0
+cppkafka	BSD 2-clause
+cpufeatures	MIT OR Apache-2.0
+crc	MIT OR Apache-2.0
+crc-catalog	MIT OR Apache-2.0
+crc32-s390x	Apache
+crc32-vpmsum	Apache
+crc32c	BSD 3-clause
+crc32fast	MIT OR Apache-2.0
+criterion	Apache-2.0 OR MIT
+criterion-plot	Apache-2.0 OR MIT
+criterion-plot	MIT/Apache-2.0
+croaring	Apache
+crossbeam	MIT OR Apache-2.0
+crossbeam-channel	MIT OR Apache-2.0
+crossbeam-deque	MIT OR Apache-2.0
+crossbeam-epoch	MIT OR Apache-2.0
+crossbeam-queue	MIT OR Apache-2.0
+crossbeam-utils	MIT OR Apache-2.0
+crossterm	MIT
+crossterm_winapi	MIT
+crunchy	MIT
+crypto-common	MIT OR Apache-2.0
+csv	Unlicense/MIT
+csv-core	Unlicense/MIT
+ctr	MIT OR Apache-2.0
+cty	MIT OR Apache-2.0
+cursive	MIT
+cursive-flexi-logger-view	BSD-3-Clause
+cursive-macros	MIT
+cursive-syntect	MIT
+cursive_core	MIT
+cxx	MIT OR Apache-2.0
+cxx-build	MIT OR Apache-2.0
+cxxbridge-cmd	MIT OR Apache-2.0
+cxxbridge-flags	MIT OR Apache-2.0
+cxxbridge-macro	MIT OR Apache-2.0
+cyrus-sasl	BSD 2-clause
+darling	MIT
+darling_core	MIT
+darling_macro	MIT
+datasketches-cpp	Apache
+datatest-stable	MIT OR Apache-2.0
+debugid	Apache-2.0
+defer-drop	MPL-2.0
+defmt	MIT OR Apache-2.0
+defmt-macros	MIT OR Apache-2.0
+defmt-parser	MIT OR Apache-2.0
+delta-kernel-rs	Apache
+der	Apache-2.0 OR MIT
+deranged	MIT OR Apache-2.0
+derive_arbitrary	MIT/Apache-2.0
+derive_builder	MIT OR Apache-2.0
+derive_builder_core	MIT OR Apache-2.0
+derive_builder_macro	MIT OR Apache-2.0
+derive_more	MIT
+derive_more-impl	MIT
+des	MIT OR Apache-2.0
+dhat	MIT OR Apache-2.0
+diff	MIT OR Apache-2.0
+digest	MIT OR Apache-2.0
+directories-next	MIT OR Apache-2.0
+dirs-next	MIT OR Apache-2.0
+dirs-sys-next	MIT OR Apache-2.0
+dispatch2	Zlib OR Apache-2.0 OR MIT
+displaydoc	MIT OR Apache-2.0
+dlmalloc	MIT/Apache-2.0
+dns-lookup	MIT/Apache-2.0
+document-features	MIT OR Apache-2.0
+double-conversion	BSD 3-clause
+driftsort	Apache
+dunce	CC0-1.0 OR MIT-0 OR Apache-2.0
+dyn-clone	MIT OR Apache-2.0
+easy-smt	MIT OR Apache-2.0
+egg	MIT
+either	MIT OR Apache-2.0
+embedded-io	MIT OR Apache-2.0
+encoding_rs	(Apache-2.0 OR MIT) AND BSD-3-Clause
+enum-as-inner	MIT/Apache-2.0
+enum-map	MIT OR Apache-2.0
+enum-map-derive	MIT OR Apache-2.0
+enumset	MIT/Apache-2.0
+enumset_derive	MIT/Apache-2.0
+env_filter	MIT OR Apache-2.0
+env_home	MIT OR Apache-2.0
+env_logger	MIT OR Apache-2.0
+equivalent	Apache-2.0 OR MIT
+errno	MIT OR Apache-2.0
+error-code	BSL-1.0
+escape8259	MIT
+fallible-iterator	MIT/Apache-2.0
+fancy-regex	MIT
+fast_float	MIT
+fastops	MIT
+fastrand	Apache-2.0 OR MIT
+fd-lock	MIT OR Apache-2.0
+file-per-thread-logger	Apache-2.0 WITH LLVM-exception
+filecheck	Apache-2.0 WITH LLVM-exception
+filedescriptor	MIT
+filetime	MIT/Apache-2.0
+find-msvc-tools	MIT OR Apache-2.0
+fixedbitset	MIT/Apache-2.0
+flagset	Apache-2.0
+flamelens	MIT
+flatbuffers	Apache
+flatbuffers	Apache-2.0
+flate2	MIT OR Apache-2.0
+flexi_logger	MIT OR Apache-2.0
+fmtlib	MIT
+fnv	Apache-2.0 / MIT
+foldhash	Zlib
+foreign-types	MIT/Apache-2.0
+foreign-types-shared	MIT/Apache-2.0
+form_urlencoded	MIT OR Apache-2.0
+fortanix-sgx-abi	MPL-2.0
+FP16	MIT
+fs-set-times	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+fs_extra	MIT
+fslock	MIT
+futures	MIT OR Apache-2.0
+futures-channel	MIT OR Apache-2.0
+futures-core	MIT OR Apache-2.0
+futures-executor	MIT OR Apache-2.0
+futures-io	MIT OR Apache-2.0
+futures-lite	Apache-2.0 OR MIT
+futures-macro	MIT OR Apache-2.0
+futures-sink	MIT OR Apache-2.0
+futures-task	MIT OR Apache-2.0
+futures-timer	MIT/Apache-2.0
+futures-util	MIT OR Apache-2.0
+fuzzy-matcher	MIT
+fxprof-processed-profile	MIT OR Apache-2.0
+g2gen	MIT/Apache-2.0
+g2p	MIT/Apache-2.0
+g2poly	MIT/Apache-2.0
+gdbstub	MIT OR Apache-2.0
+gdbstub_arch	MIT OR Apache-2.0
+generic-array	MIT
+gethostname	Apache-2.0
+getopts	MIT OR Apache-2.0
+getrandom	MIT OR Apache-2.0
+ghash	Apache-2.0 OR MIT
+gimli	MIT OR Apache-2.0
+glob	MIT OR Apache-2.0
+google-benchmark	Apache
+google-cloud-cpp	Apache
+google-protobuf	BSD 3-clause
+googletest	BSD 3-clause
+grpc	Apache
+gzip-header	MIT/Apache-2.0
+h2	MIT
+h3	Apache
+half	MIT OR Apache-2.0
+hashbrown	MIT OR Apache-2.0
+hdfs-native	Apache-2.0
+hdfs-native-object-store	Apache-2.0
+hdrhistogram	MIT/Apache-2.0
+heck	MIT OR Apache-2.0
+hermit-abi	MIT OR Apache-2.0
+hex	MIT OR Apache-2.0
+hive-metastore	Apache
+hmac	MIT OR Apache-2.0
+home	MIT OR Apache-2.0
+hostname	MIT
+http	MIT OR Apache-2.0
+http-body	MIT
+http-body-util	MIT
+httparse	MIT OR Apache-2.0
+httpdate	MIT OR Apache-2.0
+httpdate	MIT/Apache-2.0
+humantime	MIT OR Apache-2.0
+humantime	MIT/Apache-2.0
+hyper	MIT
+hyper-rustls	Apache-2.0 OR ISC OR MIT
+hyper-timeout	MIT OR Apache-2.0
+hyper-tls	MIT/Apache-2.0
+hyper-util	MIT
+iana-time-zone	MIT OR Apache-2.0
+iana-time-zone-haiku	MIT OR Apache-2.0
+icu	Public Domain
+icu_collections	Unicode-3.0
+icu_locale_core	Unicode-3.0
+icu_locid	Unicode-3.0
+icu_locid_transform	Unicode-3.0
+icu_locid_transform_data	Unicode-3.0
+icu_normalizer	Unicode-3.0
+icu_normalizer_data	Unicode-3.0
+icu_properties	Unicode-3.0
+icu_properties_data	Unicode-3.0
+icu_provider	Unicode-3.0
+icu_provider_macros	Unicode-3.0
+icudata	Public Domain
+id-arena	MIT/Apache-2.0
+ident_case	MIT/Apache-2.0
+idna	MIT
+idna	MIT OR Apache-2.0
+idna_adapter	Apache-2.0 OR MIT
+indexmap	Apache-2.0 OR MIT
+indoc	MIT OR Apache-2.0
+inout	MIT OR Apache-2.0
+instability	MIT
+instant	BSD-3-Clause
+integer-encoding	MIT
+io-extras	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+io-lifetimes	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+io-uring	MIT OR Apache-2.0
+ipnet	MIT OR Apache-2.0
+ipnsort	Apache
+is-terminal	MIT
+is_terminal_polyfill	MIT OR Apache-2.0
+isa-l	BSD 3-clause
+itertools	MIT OR Apache-2.0
+itertools	MIT/Apache-2.0
+itoa	MIT OR Apache-2.0
+ittapi	GPL-2.0-only OR BSD-3-Clause
+ittapi-sys	GPL-2.0-only OR BSD-3-Clause
+jemalloc	BSD 2-clause
+jiff	Unlicense OR MIT
+jiff-static	Unlicense OR MIT
+jni	MIT OR Apache-2.0
+jni-macros	MIT OR Apache-2.0
+jni-sys	MIT OR Apache-2.0
+jni-sys-macros	MIT OR Apache-2.0
+jobserver	MIT OR Apache-2.0
+js-sys	MIT OR Apache-2.0
+json-from-wast	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+jwt-cpp	MIT
+krb5	BSD
+lazy_static	MIT OR Apache-2.0
+lazy_static	MIT/Apache-2.0
+lazycell	MIT/Apache-2.0
+leb128	Apache-2.0/MIT
+leb128fmt	MIT OR Apache-2.0
+lemmagen-c	LGPL
+lexical-core	MIT/Apache-2.0
+lexical-parse-float	MIT/Apache-2.0
+lexical-parse-integer	MIT/Apache-2.0
+lexical-util	MIT/Apache-2.0
+lexical-write-float	MIT/Apache-2.0
+lexical-write-integer	MIT/Apache-2.0
+libarchive	Apache
+libbcrypt	Public Domain
+libc	MIT OR Apache-2.0
+libcotp	Apache
+libcpuid	BSD 2-clause
+libdeflate	MIT
+libdivide	Boost
+libfarmhash	MIT
+libfiu	Public Domain
+libfuzzer-sys	(MIT OR Apache-2.0) AND NCSA
+libgsasl	LGPL
+libhdfs3	Apache
+libloading	ISC
+libm	MIT
+libmetrohash	Apache
+libpqxx	BSD 3-clause
+libprotobuf-mutator	Apache
+librdkafka	Apache
+libredox	MIT
+librseq	BSD
+libssh	LGPL
+libstemmer_c	BSD 3-clause
+libtest-mimic	MIT/Apache-2.0
+liburing	MIT
+libuv	BSD
+libxml2	MIT
+link-cplusplus	MIT OR Apache-2.0
+linked-hash-map	MIT/Apache-2.0
+linux-raw-sys	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+listenfd	Apache-2.0
+litemap	Unicode-3.0
+litrs	MIT OR Apache-2.0
+llvm-project	Apache
+lock_api	MIT OR Apache-2.0
+log	MIT OR Apache-2.0
+logos	MIT OR Apache-2.0
+logos-codegen	MIT OR Apache-2.0
+logos-derive	MIT OR Apache-2.0
+lru	MIT
+lru-slab	MIT OR Apache-2.0 OR Zlib
+lz4	BSD
+lz4	MIT
+lz4-sys-1.11.1+lz4	MIT
+lz4_flex	MIT
+mach2	BSD-2-Clause OR MIT OR Apache-2.0
+macro-string	MIT OR Apache-2.0
+magic_enum	MIT
+managed	0BSD
+mapbox-geometry	ISC
+mariadb-connector-c	LGPL
+match_cfg	MIT/Apache-2.0
+matchers	MIT
+matchit	MIT AND BSD-3-Clause
+matrixmultiply	MIT/Apache-2.0
+maybe-owned	MIT OR Apache-2.0
+md-5	MIT OR Apache-2.0
+memchr	Unlicense OR MIT
+memfd	MIT OR Apache-2.0
+memmap2	MIT OR Apache-2.0
+memmap2	MIT/Apache-2.0
+mime	MIT OR Apache-2.0
+minimal-lexical	MIT/Apache-2.0
+miniselect	Boost
+miniz_oxide	MIT OR Zlib OR Apache-2.0
+minizip-ng	zLib
+mintex	Apache-2.0
+mio	MIT
+mongo-c-driver	Apache
+mongo-cxx-driver	Apache
+morton-nd	MIT
+moto-rt	MIT OR Apache-2.0
+msgpack-c	Boost
+murmurhash	Public Domain
+musl	Public Domain
+mutatis	MIT OR Apache-2.0
+mutatis-derive	MIT OR Apache-2.0
+native-tls	MIT OR Apache-2.0
+nats-io	Apache
+ndarray	MIT OR Apache-2.0
+nix	MIT
+nlohmann-json	MIT
+nom	MIT
+nu-ansi-term	MIT
+num	MIT OR Apache-2.0
+num-bigint	MIT OR Apache-2.0
+num-complex	MIT OR Apache-2.0
+num-conv	MIT OR Apache-2.0
+num-integer	MIT OR Apache-2.0
+num-iter	MIT OR Apache-2.0
+num-rational	MIT OR Apache-2.0
+num-traits	MIT OR Apache-2.0
+num_cpus	MIT OR Apache-2.0
+num_threads	MIT OR Apache-2.0
+numactl	LGPL
+NuRaft	Apache
+objc2	MIT
+objc2-app-kit	Zlib OR Apache-2.0 OR MIT
+objc2-core-foundation	Zlib OR Apache-2.0 OR MIT
+objc2-core-graphics	Zlib OR Apache-2.0 OR MIT
+objc2-encode	MIT
+objc2-foundation	MIT
+objc2-io-surface	Zlib OR Apache-2.0 OR MIT
+object	Apache-2.0 OR MIT
+object_store	MIT/Apache-2.0
+ocaml-boxroot-sys	MIT
+ocaml-interop	MIT
+ocaml-sys	ISC
+once_cell	MIT OR Apache-2.0
+once_cell_polyfill	MIT OR Apache-2.0
+onig	MIT
+onig_sys	MIT
+oorandom	MIT
+opaque-debug	MIT OR Apache-2.0
+openldap	OpenLDAP Version 2.8
+openssl	Apache
+openssl	Apache-2.0
+openssl-macros	MIT/Apache-2.0
+openssl-probe	MIT OR Apache-2.0
+openssl-probe	MIT/Apache-2.0
+openssl-sys	MIT
+openvino	Apache-2.0
+openvino-finder	Apache-2.0
+openvino-sys	Apache-2.0
+orc	Apache
+ordered-float	MIT
+ort-2.0.0	MIT OR Apache-2.0
+ort-sys-2.0.0	MIT OR Apache-2.0
+page_size	MIT/Apache-2.0
+parking	Apache-2.0 OR MIT
+parking_lot	MIT OR Apache-2.0
+parking_lot_core	MIT OR Apache-2.0
+parquet	Apache-2.0
+parse-zoneinfo	MIT
+password-hash	MIT OR Apache-2.0
+paste	MIT OR Apache-2.0
+pastey	MIT OR Apache-2.0
+pbkdf2	MIT OR Apache-2.0
+pdqsort	zLib
+pem-rfc7468	Apache-2.0 OR MIT
+percent-encoding	MIT OR Apache-2.0
+perfetto_protos	Apache-2.0
+petgraph	MIT OR Apache-2.0
+phf	MIT
+phf_codegen	MIT
+phf_generator	MIT
+phf_shared	MIT
+pin-project	Apache-2.0 OR MIT
+pin-project-internal	Apache-2.0 OR MIT
+pin-project-lite	Apache-2.0 OR MIT
+pin-utils	MIT OR Apache-2.0
+pkg-config	MIT OR Apache-2.0
+plain	MIT/Apache-2.0
+plist	MIT
+plotters	MIT
+plotters-backend	MIT
+plotters-svg	MIT
+pocketfft	BSD 3-clause
+poco	Boost
+polyglot-sql	MIT
+polyval	Apache-2.0 OR MIT
+portable-atomic	Apache-2.0 OR MIT
+portable-atomic-util	Apache-2.0 OR MIT
+postcard	MIT OR Apache-2.0
+postgres	PostgreSQL
+potential_utf	Unicode-3.0
+powerfmt	MIT OR Apache-2.0
+ppv-lite86	MIT OR Apache-2.0
+ppv-lite86	MIT/Apache-2.0
+pretty_assertions	MIT OR Apache-2.0
+prettyplease	MIT OR Apache-2.0
+proc-macro-crate	MIT OR Apache-2.0
+proc-macro2	MIT OR Apache-2.0
+prometheus-protobufs	Apache
+prometheus-protobufs-gogo	BSD 3-clause
+proptest	MIT OR Apache-2.0
+prost	Apache-2.0
+prost-derive	Apache-2.0
+prost-types	Apache-2.0
+protobuf	MIT
+protobuf-codegen	MIT
+protobuf-parse	MIT
+protobuf-support	MIT
+protoc-bin-vendored	MIT
+protoc-bin-vendored-linux-aarch_64	MIT
+protoc-bin-vendored-linux-ppcle_64	MIT
+protoc-bin-vendored-linux-s390_64	MIT
+protoc-bin-vendored-linux-x86_32	MIT
+protoc-bin-vendored-linux-x86_64	MIT
+protoc-bin-vendored-macos-aarch_64	MIT
+protoc-bin-vendored-macos-x86_64	MIT
+protoc-bin-vendored-win32	MIT
+prqlc	Apache-2.0
+prqlc-parser	Apache-2.0
+psm	MIT OR Apache-2.0
+pulldown-cmark	MIT
+pybind11	BSD 3-clause
+pybind11-upstream	BSD 3-clause
+quick-error	MIT/Apache-2.0
+quick-xml	MIT
+quinn	MIT OR Apache-2.0
+quinn-proto	MIT OR Apache-2.0
+quinn-udp	MIT OR Apache-2.0
+quote	MIT OR Apache-2.0
+r-efi	MIT OR Apache-2.0 OR LGPL-2.1-or-later
+r-efi-alloc	MIT OR Apache-2.0 OR LGPL-2.1-or-later
+rand	MIT OR Apache-2.0
+rand_chacha	MIT OR Apache-2.0
+rand_core	MIT OR Apache-2.0
+rand_xorshift	MIT OR Apache-2.0
+rapidjson	BSD
+ratatui	MIT
+raw-cpuid	MIT
+rawpointer	MIT/Apache-2.0
+rayon	MIT OR Apache-2.0
+rayon-core	MIT OR Apache-2.0
+re2	BSD 3-clause
+recursive	MIT
+recursive-proc-macro-impl	MIT
+redox_syscall	MIT
+redox_users	MIT
+ref-cast	MIT OR Apache-2.0
+ref-cast-impl	MIT OR Apache-2.0
+regalloc2	Apache-2.0 WITH LLVM-exception
+regex	MIT OR Apache-2.0
+regex-automata	MIT OR Apache-2.0
+regex-syntax	MIT OR Apache-2.0
+region	MIT
+relative-path	MIT OR Apache-2.0
+replace_with	MIT OR Apache-2.0
+replxx	BSD 3-clause
+reqwest	MIT OR Apache-2.0
+ring	Apache-2.0 AND ISC
+roaring	MIT OR Apache-2.0
+rocksdb	BSD 3-clause
+roxmltree	MIT OR Apache-2.0
+rstest	MIT OR Apache-2.0
+rstest_macros	MIT OR Apache-2.0
+rstest_reuse	MIT OR Apache-2.0
+rustc-demangle	MIT/Apache-2.0
+rustc-hash	Apache-2.0 OR MIT
+rustc-hash	Apache-2.0/MIT
+rustc-literal-escaper	Apache-2.0 OR MIT
+rustc_version	MIT OR Apache-2.0
+rustix	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+rustix-linux-procfs	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+rustls	Apache-2.0 OR ISC OR MIT
+rustls-native-certs	Apache-2.0 OR ISC OR MIT
+rustls-pemfile	Apache-2.0 OR ISC OR MIT
+rustls-pki-types	MIT OR Apache-2.0
+rustls-platform-verifier	MIT OR Apache-2.0
+rustls-platform-verifier-android	MIT OR Apache-2.0
+rustls-webpki	ISC
+rustversion	MIT OR Apache-2.0
+rusty-fork	MIT/Apache-2.0
+ryu	Apache-2.0 OR BSL-1.0
+s2geometry	Apache
+safetensors	Apache-2.0
+same-file	Unlicense/MIT
+schannel	MIT
+schemars	MIT
+schemars_derive	MIT
+scopeguard	MIT OR Apache-2.0
+scratch	MIT OR Apache-2.0
+sealed	MIT OR Apache-2.0
+security-framework	MIT OR Apache-2.0
+security-framework-sys	MIT OR Apache-2.0
+semver	MIT OR Apache-2.0
+seq-macro	MIT OR Apache-2.0
+serde	MIT OR Apache-2.0
+serde_bytes	MIT OR Apache-2.0
+serde_core	MIT OR Apache-2.0
+serde_derive	MIT OR Apache-2.0
+serde_derive_internals	MIT OR Apache-2.0
+serde_json	MIT OR Apache-2.0
+serde_spanned	MIT OR Apache-2.0
+serde_urlencoded	MIT/Apache-2.0
+serde_yaml	MIT OR Apache-2.0
+sha1	MIT OR Apache-2.0
+sha2	MIT OR Apache-2.0
+SHA3IUF	MIT
+sharded-slab	MIT
+shell-quote	Apache-2.0
+shlex	MIT OR Apache-2.0
+shuffling-allocator	MPL-2.0
+signal-hook	Apache-2.0/MIT
+signal-hook	MIT OR Apache-2.0
+signal-hook-mio	MIT OR Apache-2.0
+signal-hook-registry	Apache-2.0/MIT
+signal-hook-registry	MIT OR Apache-2.0
+silk	Apache
+simd-adler32	MIT
+simd_cesu8	Apache-2.0 OR MIT
+simdcomp	BSD 3-clause
+simdjson	MIT
+simdutf	MIT
+simdutf8	MIT OR Apache-2.0
+similar	Apache-2.0
+SimSIMD	Apache
+siphasher	MIT/Apache-2.0
+size	MIT
+skim	MIT
+skim-common	MIT
+skim-tuikit	MIT
+slab	MIT
+smallvec	MIT OR Apache-2.0
+smallvec-2.0.0	MIT OR Apache-2.0
+snap	BSD-3-Clause
+snappy	Public Domain
+socket2	MIT OR Apache-2.0
+socks	MIT/Apache-2.0
+souper-ir	MIT OR Apache-2.0
+sparsehash-c11	BSD 3-clause
+spin	MIT
+spmc	MIT OR Apache-2.0
+sqids-cpp	MIT
+sqlformat	MIT OR Apache-2.0
+sqlite-amalgamation	BSD 3-clause
+sqlparser	Apache-2.0
+stable_deref_trait	MIT OR Apache-2.0
+stable_deref_trait	MIT/Apache-2.0
+stacker	MIT OR Apache-2.0
+static_assertions	MIT OR Apache-2.0
+strfmt	MIT
+string-interner	MIT/Apache-2.0
+StringZilla	Apache
+strsim	MIT
+strum	MIT
+strum_macros	MIT
+subtle	BSD-3-Clause
+symbolic_expressions	MIT/Apache-2.0
+syn	MIT OR Apache-2.0
+sync_wrapper	Apache-2.0
+synstructure	MIT
+syntect	MIT
+system-configuration	MIT OR Apache-2.0
+system-configuration-sys	MIT OR Apache-2.0
+system-interface	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+sz3	BSD
+tar	MIT OR Apache-2.0
+target-lexicon	Apache-2.0 WITH LLVM-exception
+target-triple	MIT OR Apache-2.0
+tch	MIT/Apache-2.0
+tempfile	MIT OR Apache-2.0
+term	MIT OR Apache-2.0
+term	MIT/Apache-2.0
+termcolor	Unlicense OR MIT
+terminal_size	MIT OR Apache-2.0
+test-case	MIT
+test-case-core	MIT
+test-case-macros	MIT
+test-log	Apache-2.0 OR MIT
+test-log-core	Apache-2.0 OR MIT
+test-log-macros	Apache-2.0 OR MIT
+thiserror	MIT OR Apache-2.0
+thiserror-impl	MIT OR Apache-2.0
+thousands	MIT/Apache-2.0
+thread_local	Apache-2.0/MIT
+thread_local	MIT OR Apache-2.0
+thrift	Apache
+thrift	Apache-2.0
+time	MIT OR Apache-2.0
+time-core	MIT OR Apache-2.0
+time-macros	MIT OR Apache-2.0
+timer	MPL-2.0
+tiny-keccak	CC0-1.0
+tiny_http	MIT OR Apache-2.0
+tinystr	Unicode-3.0
+tinytemplate	Apache-2.0 OR MIT
+tinyvec	Zlib OR Apache-2.0 OR MIT
+tinyvec_macros	MIT OR Apache-2.0 OR Zlib
+tokio	MIT
+tokio-macros	MIT
+tokio-native-tls	MIT
+tokio-openssl	MIT/Apache-2.0
+tokio-rustls	MIT OR Apache-2.0
+tokio-stream	MIT
+tokio-util	MIT
+toml	MIT OR Apache-2.0
+toml-0.9.12+spec	MIT OR Apache-2.0
+toml-1.1.2+spec	MIT OR Apache-2.0
+toml_datetime	MIT OR Apache-2.0
+toml_datetime-0.7.5+spec	MIT OR Apache-2.0
+toml_datetime-1.1.1+spec	MIT OR Apache-2.0
+toml_edit-0.25.11+spec	MIT OR Apache-2.0
+toml_parser	MIT OR Apache-2.0
+toml_parser-1.1.2+spec	MIT OR Apache-2.0
+toml_writer	MIT OR Apache-2.0
+toml_writer-1.1.1+spec	MIT OR Apache-2.0
+tonic	MIT
+tonic-prost	MIT
+torch-sys	MIT/Apache-2.0
+tower	MIT
+tower-http	MIT
+tower-layer	MIT
+tower-service	MIT
+tracing	MIT
+tracing-attributes	MIT
+tracing-core	MIT
+tracing-log	MIT
+tracing-serde	MIT
+tracing-subscriber	MIT
+try-lock	MIT
+trybuild	MIT OR Apache-2.0
+tui-input	MIT
+twox-hash	MIT
+typenum	MIT OR Apache-2.0
+unarray	MIT OR Apache-2.0
+unicase	MIT OR Apache-2.0
+unicode-ident	(MIT OR Apache-2.0) AND Unicode-3.0
+unicode-segmentation	MIT OR Apache-2.0
+unicode-segmentation	MIT/Apache-2.0
+unicode-truncate	MIT OR Apache-2.0
+unicode-width	MIT OR Apache-2.0
+unicode-width	MIT/Apache-2.0
+unicode-xid	MIT OR Apache-2.0
+unicode_categories	MIT OR Apache-2.0
+universal-hash	MIT OR Apache-2.0
+unsafe-libyaml	MIT
+untrusted	ISC
+unwinding	MIT OR Apache-2.0
+ureq	MIT OR Apache-2.0
+ureq-proto	MIT OR Apache-2.0
+url	MIT OR Apache-2.0
+usearch	Apache
+utf-8	MIT OR Apache-2.0
+utf16_iter	Apache-2.0 OR MIT
+utf8-zero	MIT OR Apache-2.0
+utf8_iter	Apache-2.0 OR MIT
+utf8parse	Apache-2.0 OR MIT
+utf8proc	MIT
+uuid	Apache-2.0 OR MIT
+v8	MIT
+valuable	MIT
+vcpkg	MIT/Apache-2.0
+vectorscan	Boost
+vergen	MIT OR Apache-2.0
+vergen-gitcl	MIT OR Apache-2.0
+vergen-lib	MIT OR Apache-2.0
+version_check	MIT/Apache-2.0
+vex-sdk	MIT
+vte	Apache-2.0 OR MIT
+wagyu	Boost
+wait-timeout	MIT/Apache-2.0
+waker-fn	Apache-2.0 OR MIT
+walkdir	Unlicense/MIT
+want	MIT
+wasi-0.11.0+wasi-snapshot	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasi-0.11.1+wasi-snapshot	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasi-0.13.3+wasi	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasi-0.14.2+wasi	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasi-0.14.4+wasi	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasi-nn	Apache-2.0
+wasip1	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasip2-1.0.0+wasi	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasip2-1.0.3+wasi	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasip2-1.0.4+wasi	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasip3-0.4.0+wasi-0.3.0-rc-2026-01	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasite	Apache-2.0 OR BSL-1.0 OR MIT
+wasm-bindgen	MIT OR Apache-2.0
+wasm-bindgen-backend	MIT OR Apache-2.0
+wasm-bindgen-futures	MIT OR Apache-2.0
+wasm-bindgen-macro	MIT OR Apache-2.0
+wasm-bindgen-macro-support	MIT OR Apache-2.0
+wasm-bindgen-shared	MIT OR Apache-2.0
+wasm-compose	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasm-encoder	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasm-metadata	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasm-mutate	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasm-smith	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasm-streams	MIT OR Apache-2.0
+wasm-wave	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasmedge	Apache
+wasmi	MIT/Apache-2.0
+wasmi_collections	MIT/Apache-2.0
+wasmi_core	MIT/Apache-2.0
+wasmi_ir	MIT/Apache-2.0
+wasmparser	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasmprinter	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wasmtime	Apache
+wast	Apache-2.0 WITH LLVM-exception
+wast	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wat	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+web-sys	MIT OR Apache-2.0
+web-time	MIT OR Apache-2.0
+webpki-root-certs	CDLA-Permissive-2.0
+webpki-roots	CDLA-Permissive-2.0
+webpki-roots	MPL-2.0
+which	MIT
+whoami	Apache-2.0 OR BSL-1.0 OR MIT
+winapi	MIT/Apache-2.0
+winapi-i686-pc-windows-gnu	MIT/Apache-2.0
+winapi-util	Unlicense OR MIT
+winapi-util	Unlicense/MIT
+winapi-x86_64-pc-windows-gnu	MIT/Apache-2.0
+windows	MIT OR Apache-2.0
+windows-core	MIT OR Apache-2.0
+windows-implement	MIT OR Apache-2.0
+windows-interface	MIT OR Apache-2.0
+windows-link	MIT OR Apache-2.0
+windows-registry	MIT OR Apache-2.0
+windows-result	MIT OR Apache-2.0
+windows-strings	MIT OR Apache-2.0
+windows-sys	MIT OR Apache-2.0
+windows-targets	MIT OR Apache-2.0
+windows_aarch64_gnullvm	MIT OR Apache-2.0
+windows_aarch64_msvc	MIT OR Apache-2.0
+windows_i686_gnu	MIT OR Apache-2.0
+windows_i686_gnullvm	MIT OR Apache-2.0
+windows_i686_msvc	MIT OR Apache-2.0
+windows_x86_64_gnu	MIT OR Apache-2.0
+windows_x86_64_gnullvm	MIT OR Apache-2.0
+windows_x86_64_msvc	MIT OR Apache-2.0
+winnow	MIT
+winsafe	MIT
+winx	Apache-2.0 WITH LLVM-exception
+wit-bindgen	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wit-bindgen-core	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wit-bindgen-rt	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wit-bindgen-rust	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wit-bindgen-rust-macro	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wit-component	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+wit-parser	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+witx	Apache-2.0
+write16	Apache-2.0 OR MIT
+writeable	Unicode-3.0
+wstd	Apache-2.0 WITH LLVM-exception
+wstd-macro	Apache-2.0 WITH LLVM-exception
+wyhash	Public Domain
+x11rb	MIT OR Apache-2.0
+x11rb-protocol	MIT OR Apache-2.0
+xattr	MIT OR Apache-2.0
+xdg	Apache-2.0 OR MIT
+xi-unicode	Apache-2.0
+xsimd	BSD 3-clause
+xxHash	BSD
+xz	LGPL
+yaml-cpp	MIT
+yaml-rust	MIT/Apache-2.0
+yansi	MIT OR Apache-2.0
+yoke	Unicode-3.0
+yoke-derive	Unicode-3.0
+z85	MIT/Apache-2.0
+zerocopy	BSD-2-Clause OR Apache-2.0 OR MIT
+zerocopy-derive	BSD-2-Clause OR Apache-2.0 OR MIT
+zerofrom	Unicode-3.0
+zerofrom-derive	Unicode-3.0
+zeroize	Apache-2.0 OR MIT
+zerotrie	Unicode-3.0
+zerovec	Unicode-3.0
+zerovec-derive	Unicode-3.0
+zip	MIT
+zlib-ng	zLib
+zlib-rs	Zlib
+zmij	MIT
+zstd	BSD
+zstd	MIT
+zstd-safe	MIT OR Apache-2.0
+zstd-safe	MIT/Apache-2.0
+zstd-sys	MIT/Apache-2.0
+zxc	BSD
