@@ -42,6 +42,25 @@
 #
 # Needs network on first run: the consumer's empty local repository has to fetch Maven's own
 # plugins. Everything under org.chdb comes from the file repository, and the script asserts it.
+#
+# What is isolated, and what is not:
+#
+#   org.chdb artifacts   isolated. The consumer's project repositories are the throwaway file
+#                        repository and a disabled `central`, and every downloaded file's
+#                        recorded provenance is checked afterwards. Nothing else may serve
+#                        them, because a good copy on Central masking a bad one we just
+#                        deployed is the single failure this script exists to detect.
+#   Maven's own plugins  not isolated, on purpose. They come from the real Central through the
+#                        inherited pluginRepositories. Vendoring them would make this script
+#                        unrunnable for no gain: org.chdb is never a plugin dependency.
+#   the local repository overridden, not shared: -Dmaven.repo.local points at an empty
+#                        directory, so nothing can be satisfied from a previous build.
+#   settings.xml         not suppressed. A caller's mirrors and profiles still apply, and a
+#                        <mirrorOf>*</mirrorOf> would intercept even the file repository -- so
+#                        the provenance check fails loudly on such a machine rather than
+#                        reporting a pass it cannot justify. Its message says to re-run with
+#                        -s. Suppressing settings.xml outright would break the environments
+#                        where that mirror is the only route to Central for the plugins above.
 
 set -euo pipefail
 
@@ -210,7 +229,45 @@ cat > "${CONSUMER}/pom.xml" <<EOF
       <releases><enabled>true</enabled></releases>
       <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
     </repository>
+    <!--
+      The Super POM's \`central\`, switched off rather than merely outranked.
+
+      A repository declared here is *added* to the inherited \`central\`, not substituted for
+      it, so with only the block above there were two places an org.chdb artifact could come
+      from. That is fatal to the point of this script: once we publish, a broken artifact we
+      have just deployed to \${REPO} could be masked by a good one on Central, and the check
+      would report that consuming the driver from a repository works. The one thing it exists
+      to catch is exactly that.
+
+      Both \`releases\` and \`snapshots\` disabled means the resolver never consults it, and the
+      URL names nothing so a future change that re-enabled it would fail loudly rather than
+      reach the network. Verified by asking for a Central-only artifact and watching it fail:
+      "Could not find artifact com.zaxxer:HikariCP:jar:5.1.0 in chdb-verify".
+
+      Kept under its own id rather than renaming the block above to \`central\`, which is the
+      other way to do this. Two reasons. Provenance: Maven records the repository an artifact
+      came from by *id* in _remote.repositories, so reusing \`central\` would make our file
+      repository indistinguishable from the real one and the assertion further down could not
+      be written. And plugin repositories keep the id \`central\` pointing at the real Central
+      (see below), so an artifact fetched through that path is recorded as \`central=\` and
+      would then look available from \`central\` to project-scope resolution too, because that
+      bookkeeping is keyed by id and not by URL.
+    -->
+    <repository>
+      <id>central</id>
+      <url>file://${WORK}/there-is-no-such-repository</url>
+      <releases><enabled>false</enabled></releases>
+      <snapshots><enabled>false</enabled></snapshots>
+    </repository>
   </repositories>
+
+  <!--
+    pluginRepositories deliberately left inherited, so Maven's own plugins still come from the
+    real Central. Isolating them would mean vendoring surefire, the dependency plugin and their
+    transitive trees into \${REPO} to make this script run at all, and it would buy nothing:
+    plugin repositories are consulted for plugins and their dependencies, and org.chdb is
+    neither. The asymmetry is the point: our artifacts are isolated, Maven's are not.
+  -->
 
   <dependencyManagement>
     <dependencies>
@@ -260,6 +317,40 @@ for entry in "${CP_ENTRIES[@]}"; do
       ;;
   esac
 done
+
+# ...and out of *our* repository, which the check above cannot tell. Every path it accepts is
+# under the consumer's local repository, and an artifact served by Central or by a corporate
+# mirror lands there too. So the configuration is not trusted to be right; the result is read
+# back.
+#
+# Maven writes _remote.repositories beside each downloaded file, recording the id of the
+# repository that served it. Anything other than chdb-verify means this run did not test what
+# it claims to: most likely the `central` block above stopped being disabled, or a
+# <mirrorOf>*</mirrorOf> in the caller's settings.xml intercepted the file repository. Both are
+# reasons to stop rather than to report a pass.
+PROVENANCE_LINES=0
+while IFS= read -r record; do
+  while IFS= read -r line; do
+    case "$line" in
+      \#*|"") continue ;;
+    esac
+    PROVENANCE_LINES=$((PROVENANCE_LINES + 1))
+    case "$line" in
+      *">chdb-verify="*) ;;
+      *)
+        die "an org.chdb artifact was served by a repository other than the throwaway one:
+  ${record}
+  ${line}
+Only 'chdb-verify' proves the artifact under test is the one this run deployed. If a mirror in
+your settings.xml claims '*', run this with -s pointing at a settings file that does not."
+        ;;
+    esac
+  done < "$record"
+done < <(find "${CONSUMER_M2}/org/chdb" -name '_remote.repositories' -type f)
+[ "$PROVENANCE_LINES" -gt 0 ] \
+  || die "no _remote.repositories entries under ${CONSUMER_M2}/org/chdb: nothing was actually
+downloaded, so this run proved nothing about resolving from a repository."
+ok "all ${PROVENANCE_LINES} downloaded org.chdb files came from the throwaway repository, not from Central"
 # Located by its repository path rather than by a file name, and this matters more than it
 # looks. A snapshot exists under two names at once: the remote repository holds
 # chdb-jdbc-26.7.2-rc.2.1-20260909.081309-1.jar, and Maven's local repository ends up with
