@@ -46,9 +46,30 @@ import java.util.concurrent.TimeUnit;
  * draining, and a connection can be mid-{@code close()} on another thread when the hook reaches
  * it. Both cases end with the stream closed, or the hook has not done its job.
  *
- * <p>What draining cannot fix is a connection opened after the hook has already returned —
- * from a competing shutdown hook, say. Nothing can: the hook would have to wait for a
- * connection that may never come. The budget below bounds how long it tries.
+ * <p>The hook does not stop at the first empty registry either, because a thread part-way
+ * through {@code connect()} has not registered yet; it waits out a quiet period first. The two
+ * constants below bound how long it tries.
+ *
+ * <h2>What it cannot do</h2>
+ * A connection opened long after everything went quiet — from a competing shutdown hook, say —
+ * is unreachable. Nothing can reach it: the hook would have to wait for a connection that may
+ * never come.
+ *
+ * <p>More importantly, <strong>a JVM that exits while another thread is still executing a
+ * query aborts whether this hook runs or not.</strong> Measured on engine 26.7.0, four threads
+ * querying in a loop while the process exits:
+ *
+ * <pre>
+ *   threads parked after leaking their streams, hook on   exit 0
+ *   threads parked after leaking their streams, hook off  exit 134
+ *   threads still querying at exit, hook on               exit 134
+ *   threads still querying at exit, hook off              exit 134
+ * </pre>
+ *
+ * The hook closes connections; it cannot stop a thread that is inside the engine when the
+ * process halts, and the JVM does not wait for non-daemon threads once the hooks return. That
+ * case needs {@code chdb_shutdown()}, which joins the engine's own threads. An application that
+ * queries from background threads should stop them before exiting.
  */
 final class ShutdownCleanup {
 
@@ -81,8 +102,36 @@ final class ShutdownCleanup {
      */
     private static final long DRAIN_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(5);
 
+    /**
+     * How long the registry must stay quiet before the hook accepts that it is done.
+     *
+     * <p>An empty registry is not proof that nothing is coming. A thread part-way through
+     * {@code connect()} when shutdown began has not registered yet, and the hook can look, find
+     * nothing and return before it does — leaving that thread's stream open at exit, which is
+     * the whole failure this class exists to prevent. Nor is it enough to wait only after
+     * seeing a late registration: on a machine where closing is faster than connecting, the
+     * hook drains what it found and is gone before the first late registration happens. So any
+     * activity at all — a close or a registration — restarts this clock.
+     *
+     * <p>A clean exit pays nothing for it. Every connection is already closed, so the hook's
+     * first pass closes nothing, there is no activity to wait out, and it returns immediately.
+     * The cost falls only on a process that leaked, which is the one that would otherwise
+     * abort.
+     */
+    private static final long QUIET_PERIOD_NANOS = TimeUnit.MILLISECONDS.toNanos(400);
+
+    /** How often to re-check while waiting out the quiet period. */
+    private static final long POLL_MILLIS = 20;
+
     private static volatile boolean hookInstalled;
     private static volatile boolean shuttingDown;
+
+    /**
+     * When the hook last saw anything happen: a connection closed, or one registered during
+     * shutdown. Unset until there is something to wait for.
+     */
+    private static volatile boolean sawActivity;
+    private static volatile long lastActivityNanos;
 
     private ShutdownCleanup() {
     }
@@ -100,6 +149,11 @@ final class ShutdownCleanup {
             installHook();
             synchronized (OPEN) {
                 OPEN.put(connection, Boolean.TRUE);
+            }
+            if (shuttingDown) {
+                // Noted so the hook knows connections are still arriving and does not stop at
+                // the first empty pass.
+                noteActivity();
             }
         } catch (Throwable ignored) {
             // Registered or not, the connection itself is fine.
@@ -141,6 +195,11 @@ final class ShutdownCleanup {
         }
     }
 
+    private static void noteActivity() {
+        lastActivityNanos = System.nanoTime();
+        sawActivity = true;
+    }
+
     private static void closeAll() {
         shuttingDown = true;
 
@@ -152,16 +211,14 @@ final class ShutdownCleanup {
         while (true) {
             List<ChdbConnection> batch;
             synchronized (OPEN) {
-                if (OPEN.isEmpty()) {
-                    return;
-                }
-                batch = new ArrayList<>(OPEN.keySet());
+                batch = OPEN.isEmpty() ? Collections.emptyList() : new ArrayList<>(OPEN.keySet());
                 OPEN.clear();
             }
 
             // Outside the lock: close() reaches the engine, and holding the registry's monitor
             // across that would block every thread still trying to register or unregister.
             for (ChdbConnection connection : batch) {
+                noteActivity();
                 try {
                     // Unconditionally, rather than guarded by isClosed(). A connection whose
                     // close() is in flight on another thread already reports itself closed
@@ -178,6 +235,18 @@ final class ShutdownCleanup {
 
             if (System.nanoTime() - deadline >= 0) {
                 return;
+            }
+
+            if (batch.isEmpty()) {
+                if (!sawActivity || System.nanoTime() - lastActivityNanos >= QUIET_PERIOD_NANOS) {
+                    return;
+                }
+                try {
+                    Thread.sleep(POLL_MILLIS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
             }
         }
     }

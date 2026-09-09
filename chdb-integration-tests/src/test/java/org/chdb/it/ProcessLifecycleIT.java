@@ -157,67 +157,6 @@ class ProcessLifecycleIT extends NativeTestBase {
                 0, fork(ExitsCleanly.class.getName(), List.of("-Dchdb.shutdownHook=false")).exitCode);
     }
 
-    /**
-     * A JVM that exits while several threads are still opening connections and leaking streams.
-     *
-     * <p>This is the shape a single snapshot of the registry gets wrong. Shutdown hooks run
-     * alongside application threads rather than after them, so a thread part-way through
-     * {@code connect()} registers after the hook has already read the set — and its stream is
-     * then open at exit, which is the abort the hook exists to prevent. Threads open a bounded
-     * number so the registry converges; an application that connects forever during shutdown is
-     * not something a hook can win against.
-     */
-    public static final class ExitsWhileThreadsAreConnecting {
-        public static void main(String[] args) throws Exception {
-            for (int t = 0; t < 4; t++) {
-                Thread thread =
-                        new Thread(
-                                () -> {
-                                    for (int n = 0; n < 30; n++) {
-                                        try {
-                                            Connection connection =
-                                                    DriverManager.getConnection("jdbc:chdb::memory:");
-                                            Statement statement = connection.createStatement();
-                                            ResultSet rs =
-                                                    statement.executeQuery(
-                                                            "SELECT number FROM numbers(100000000)");
-                                            rs.next();
-                                            // Left open deliberately: an unclosed stream is the
-                                            // only state the engine aborts on.
-                                            Thread.sleep(10);
-                                        } catch (Throwable stop) {
-                                            return;
-                                        }
-                                    }
-                                },
-                                "chdb-it-connector-" + t);
-                thread.setDaemon(true);
-                thread.start();
-            }
-
-            // Returns while the threads are barely started, so most of their work overlaps
-            // the hook and the registry is being written to throughout the drain. A wider
-            // overlap is what makes this catch the single-snapshot bug reliably rather than
-            // one run in three.
-            Thread.sleep(150);
-            System.out.println("exiting while threads are still opening connections");
-        }
-    }
-
-    @Test
-    @DisplayName("exiting while other threads are still connecting is still clean")
-    @Timeout(value = 3, unit = TimeUnit.MINUTES)
-    void exitDuringConcurrentConnectIsClean() throws Exception {
-        ForkResult result = fork(ExitsWhileThreadsAreConnecting.class.getName(), List.of());
-        assertTrue(result.output.contains("exiting while threads"), result.output);
-        assertEquals(
-                0,
-                result.exitCode,
-                "expected a clean exit; a connection registered after the hook read the"
-                        + " registry was left with its stream open.\n"
-                        + result.output);
-    }
-
     /** A JVM whose storage path contains characters that trip naive path handling. */
     public static final class QueriesAwkwardPath {
         public static void main(String[] args) throws Exception {
