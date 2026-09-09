@@ -123,8 +123,14 @@ coordinate for your platform.
 **The wrong platform package.** The same message, plus a line naming the `chdb-native-*` JARs
 that *are* on the classpath. Without that line the two cases read identically, which is worst
 for the more common one: someone looking at a `chdb-native-linux-x86_64-gnu` dependency in
-their POM being told to add a platform package. Found by `scripts/verify-consumer.sh`, which
-reproduces both from a Maven repository rather than from the reactor.
+their POM being told to add a platform package.
+
+Both were found by `scripts/verify-consumer.sh`, and both are still reproduced by it on every
+push: it resolves the driver from a repository rather than from the reactor and then runs it
+twice, once with `chdb-jdbc` alone and once with a platform package for another architecture.
+It asserts on the text of each message — the coordinate the machine needs in both cases, and
+the "classpath does carry" line in the second — so neither message can quietly stop saying
+what this section says it says. `build` runs it on all four platforms.
 
 **Unsupported platform.** Names the detected `os.name`/`os.arch`/libc and the supported set.
 musl Linux is detected specifically — via `/proc/self/maps`, falling back to `ldd --version` —

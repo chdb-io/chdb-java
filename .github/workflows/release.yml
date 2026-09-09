@@ -17,12 +17,16 @@ name: release
 #    tell you what was published and a re-run of the same tag can produce different POMs. A
 #    `-SNAPSHOT` in the POM after the tag is the ordinary "back to development" commit.
 #
-#    Enforced on both paths, not just the one that has a tag in its ref. `preflight` refuses a
-#    release unless a tag named v<POM version> exists and points at the commit being built --
-#    so `workflow_dispatch` with channel=release needs the tag too. Without that step the rule
-#    held only for tag pushes and a manual run could publish an untagged commit, which is the
-#    same "bytes that name no commit" outcome by a different route. The guarantee is worth
-#    having only if it has no bypass.
+#    Enforced on both paths, not just the one that has a tag in its ref, and enforced twice.
+#    scripts/check-release-tag.sh refuses a release unless a tag named v<POM version> exists
+#    and points at the commit being built; `preflight` runs it so a mistake costs nothing, and
+#    `deploy` runs it again as the last step before Maven, because between the two there is
+#    ten-plus minutes of staging and a manual approval gate during which a tag can be moved or
+#    deleted. Neither of those is a substitute for protecting the release tags against being
+#    moved -- they shrink the window, they do not remove it -- and docs/release-readiness.md
+#    step 8 records the protection as the other half of the same guarantee. The rule is worth
+#    having only if it has no bypass: a manual run used to be one, and a long approval gate
+#    was another.
 #
 # 2. SNAPSHOTS FROM THE SAME WORKFLOW -- yes, and that is the default for workflow_dispatch.
 #    Issue #10 is blocked on nothing ever having consumed this as a published artifact, and a
@@ -164,34 +168,21 @@ jobs:
         # anywhere, which is exactly the "bytes that correspond to no commit" case the design
         # claims to prevent. A documented guarantee with a manual bypass is not a guarantee.
         #
-        # Resolved through the API rather than git, because actions/checkout fetches the
-        # triggering ref and not the tag namespace, and because an annotated tag has to be
-        # dereferenced to the commit it wraps -- `git describe` on a shallow clone would
-        # report neither reliably.
+        # This is the cheap call: it fails before anything is built. The deploy job runs the
+        # same script again immediately before publishing, because that is the one that
+        # protects the upload -- see the comment there.
         if: steps.resolve.outputs.channel == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
+          # pipefail is load-bearing: without it the pipe into tee would return tee's status
+          # and the gate could never fail.
           set -euo pipefail
-          TAG="v${VERSION}"
-          if ! REF=$(gh api "repos/${{ github.repository }}/git/ref/tags/${TAG}" 2>/dev/null); then
-            echo "::error::no tag ${TAG} in this repository. A release is a commit carrying the release version in its POMs plus a tag on that commit; create the tag first, then run this. See the header of this workflow."
-            exit 1
-          fi
-          TYPE=$(printf '%s' "$REF" | jq -r '.object.type')
-          SHA=$(printf '%s' "$REF" | jq -r '.object.sha')
-          if [ "$TYPE" = "tag" ]; then
-            # Annotated: .object.sha is the tag object, and the commit is one level in.
-            SHA=$(gh api "repos/${{ github.repository }}/git/tags/${SHA}" --jq '.object.sha')
-          fi
-          echo "${TAG} -> ${SHA}"
-          echo "this run  -> ${{ github.sha }}"
-          if [ "$SHA" != "${{ github.sha }}" ]; then
-            echo "::error::${TAG} points at ${SHA}, but this run is on ${{ github.sha }}. Release ${VERSION} from the commit its tag names, or move the tag."
-            exit 1
-          fi
-          echo "${TAG} names this commit" >> "$GITHUB_STEP_SUMMARY"
+          scripts/check-release-tag.sh \
+            "${{ github.repository }}" \
+            "${{ steps.resolve.outputs.version }}" \
+            "${{ github.sha }}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: The engine version this release carries
         # Read, never written: scripts/engine.properties is the pin, and hard-coding a version
@@ -439,6 +430,32 @@ jobs:
           # signatures. Printed rather than guessed at, because running out of disk halfway
           # through a deploy is the failure this job least wants.
           df -h .
+
+      - name: The tag still names this commit
+        # Deliberately the last thing before Maven runs, and deliberately the same check
+        # `preflight` already made.
+        #
+        # Between the two there is four-platform staging -- ten minutes and more -- and the
+        # `maven-central` environment's approval gate, which can hold a run for as long as it
+        # takes somebody to look at it. A tag can be force-moved or deleted inside that
+        # window, and nothing here would have noticed: the run would publish
+        # `github.sha` under a version whose tag now names something else, permanently,
+        # because a Central release cannot be unpublished. Checking once at the start
+        # describes the start, not the upload.
+        #
+        # This does not make the tag immutable, and is not a substitute for protecting the
+        # release tags so that it cannot move at all. It shrinks the window from "the whole
+        # run" to "the seconds between this step and the deploy". docs/release-readiness.md
+        # step 8 records the tag protection as the organisational half of the same guarantee.
+        if: needs.preflight.outputs.channel == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          scripts/check-release-tag.sh \
+            "${{ github.repository }}" \
+            "${{ needs.preflight.outputs.version }}" \
+            "${{ github.sha }}"
 
       - name: Package, sign and publish
         env:

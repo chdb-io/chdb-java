@@ -37,8 +37,15 @@ fallback.
 Enforcement of the organisation-level publishing limits starts 1 October 2026.
 `docs/publishing.md` §4 has our measured numbers and the text of the case to make.
 
-**Done when:** <https://central.sonatype.com/publishing/usage> has been read and either the
-numbers are comfortable or `central-support@sonatype.com` has replied.
+**Done when:** <https://central.sonatype.com/publishing/usage> has been read, and **either** the
+numbers there are comfortably inside the thresholds **or** Sonatype has granted an exception
+that covers the numbers we actually publish.
+
+Not "an email has been sent", and not "Sonatype replied" — a refusal is a reply, and so is a
+request for more detail. Either of those leaves the release liable to be rejected at upload
+time, which is the thing this step exists to find out about in advance. If the answer is no,
+that is a real finding and the next question is what to do about ~510 MB in a release month,
+not whether to carry on.
 
 ### 3. Decide whose GPG key signs, generate it, and load the CI secrets
 
@@ -108,7 +115,24 @@ job, signs, and uploads a bundle that **waits in the portal**. Confirm it by han
 Before it stages anything it refuses to continue unless the POMs are at a non-`SNAPSHOT`
 version, a tag named `v<that version>` exists and points at the commit being built, and
 `build` concluded successfully for that same commit. The tag check applies to a manual
-`channel=release` run too, so there is no path that publishes an untagged commit.
+`channel=release` run too, so there is no path that publishes an untagged commit, and it runs
+a second time as the last step before Maven publishes.
+
+**Protect the release tags, once, before the first release.** The second check exists because
+staging takes ten minutes and more and the `maven-central` approval gate can hold a run for
+much longer, and a tag can be force-moved or deleted inside that window — so a run could
+otherwise publish one commit under a version whose tag now names another, permanently. Checking
+twice shrinks that window to the seconds between the last check and the upload; it does not
+close it. Closing it is an organisational setting rather than a workflow one:
+
+- a tag protection rule on `v*` in the repository's rulesets, forbidding update and deletion,
+  which makes a release tag immutable once pushed;
+- and, if the plan is releases from `main` only, restricting who can create those tags.
+
+Do this as part of step 3, when the `maven-central` environment is being set up, because it is
+the same conversation with the same person. The workflow does not verify that the rule exists —
+it cannot tell a protected tag from an unprotected one — so it is on this checklist rather than
+in CI.
 
 Afterwards, the ordinary "back to development" commit returns the POMs to a `-SNAPSHOT`.
 
@@ -252,7 +276,11 @@ four platforms, so the answer cannot go stale between releases.
 - **A snapshot deploy does not write the filenames a reactor build uses.** It writes
   `chdb-jdbc-<version>-<timestamp>-1.jar` plus a `maven-metadata.xml` that maps `-SNAPSHOT` onto
   that timestamp; without the metadata a consumer gets a 404 for a version that is demonstrably
-  there. Nothing exercised that indirection before.
+  there. Nothing exercised that indirection before. The consumer's *local* repository then ends
+  up holding both names at once — the timestamped file it downloaded and a `-SNAPSHOT.jar`
+  beside it — so anything that looks for the driver by file name is depending on a resolver
+  detail. `scripts/verify-consumer.sh` locates it by coordinate, `org/chdb/chdb-jdbc/`, for
+  that reason.
 - **"Declared the wrong platform package" was indistinguishable from "declared none".** Both
   produced the same message — three locations searched, none found, here is the coordinate to
   add. The advice is right either way, but somebody looking at
@@ -387,7 +415,7 @@ Ordered by what a first release would most regret missing.
 
 ### What is already covered
 
-257 tests — 150 unit and 107 integration, counted from a run rather than estimated — across
+266 tests — 156 unit and 110 integration, counted from a run rather than estimated — across
 sixteen platform-and-JDK combinations, a 199-check native sanitizer harness, UBSan over the
 whole suite, the full suite again on AlmaLinux 8 to demonstrate the glibc floor, and a consumer
 that resolves the driver from a repository rather than from the reactor.

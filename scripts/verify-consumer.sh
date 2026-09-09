@@ -105,7 +105,24 @@ VERSION="$(cd "$ROOT" && mvn "${MVN_FLAGS[@]}" -q -DforceStdout help:evaluate -D
 # every org.chdb artifact came from the consumer's own local repository compares paths as
 # strings, and would fail on that difference alone.
 WORK="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/chdb-verify-consumer.XXXXXX")" && pwd)"
-trap 'rm -rf "$WORK"' EXIT
+
+# Kept on failure, removed on success. The interesting failures here are a Maven deploy or a
+# dependency resolution that did not work, and both write their whole output to a log under
+# $WORK -- which an unconditional `rm -rf` deleted a moment before the message telling you to
+# go and read it. On success there is nothing in there worth 200 MB of disk.
+cleanup() {
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    rm -rf "$WORK"
+  else
+    printf '\nverify-consumer: left %s in place for diagnosis:\n' "$WORK" >&2
+    for log in deploy.log resolve.log; do
+      [ -f "${WORK}/${log}" ] && printf '  %s\n' "${WORK}/${log}" >&2
+    done
+    printf '  remove it when you are done.\n' >&2
+  fi
+}
+trap cleanup EXIT
 REPO="${WORK}/repository"
 CONSUMER="${WORK}/consumer"
 CONSUMER_M2="${WORK}/consumer-m2"
@@ -243,9 +260,35 @@ for entry in "${CP_ENTRIES[@]}"; do
       ;;
   esac
 done
-printf '%s' "$CP" | tr ':' '\n' | grep -q "chdb-jdbc-${VERSION}.jar" \
-  || die "chdb-jdbc is not on the consumer's classpath; the platform package did not pull it in"
+# Located by its repository path rather than by a file name, and this matters more than it
+# looks. A snapshot exists under two names at once: the remote repository holds
+# chdb-jdbc-26.7.2-rc.2.1-20260909.081309-1.jar, and Maven's local repository ends up with
+# *both* that file and a chdb-jdbc-26.7.2-rc.2.1-SNAPSHOT.jar beside it -- measured, not
+# assumed. Which of the two `dependency:build-classpath` emits is a resolver detail that this
+# check has no business depending on, and matching "chdb-jdbc-${VERSION}.jar" quietly did:
+# it happens to be the base-version name today, and a version scheme or a Maven upgrade that
+# changed that would not fail this assertion, it would skip the two error paths below and
+# still print "all consumer checks passed".
+#
+# org/chdb/chdb-jdbc/ is the coordinate. It cannot drift.
+JDBC_ONLY=""
+for entry in "${CP_ENTRIES[@]}"; do
+  case "$entry" in
+    */org/chdb/chdb-jdbc/*.jar)
+      [ -z "$JDBC_ONLY" ] || die "two chdb-jdbc jars on the consumer's classpath:
+  ${JDBC_ONLY}
+  ${entry}"
+      JDBC_ONLY="$entry"
+      ;;
+  esac
+done
+[ -n "$JDBC_ONLY" ] \
+  || die "chdb-jdbc is not on the consumer's classpath; the platform package did not pull it in.
+Classpath was:
+$(printf '%s' "$CP" | tr ':' '\n' | sed 's/^/  /')"
+[ -s "$JDBC_ONLY" ] || die "the resolved chdb-jdbc jar is missing or empty: ${JDBC_ONLY}"
 ok "chdb-jdbc arrived transitively from ${MODULE}, from the local repository"
+printf '   as: %s\n' "$(basename "$JDBC_ONLY")"
 
 # ---------------------------------------------------------------- 3. run a query
 
@@ -324,9 +367,9 @@ ok "both libraries were unpacked from the JAR into $(dirname "$UNPACKED_ENGINE" 
 
 step "Declaring no platform package"
 
-# chdb-jdbc alone. This is the mistake a consumer makes when they copy a one-line dependency
-# snippet, so the message has to name the coordinate for the machine they are on.
-JDBC_ONLY="$(printf '%s' "$CP" | tr ':' '\n' | grep "chdb-jdbc-${VERSION}.jar" | head -n1)"
+# chdb-jdbc alone -- $JDBC_ONLY, found by coordinate above. This is the mistake a consumer
+# makes when they copy a one-line dependency snippet, so the message has to name the coordinate
+# for the machine they are on.
 set +e
 NONE_OUT="$("$JAVA" -cp "${JDBC_ONLY}:${CONSUMER}/classes" -Dchdb.cache.dir="$CACHE" Consumer 2>&1)"
 NONE_STATUS=$?

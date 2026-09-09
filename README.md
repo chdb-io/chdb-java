@@ -309,6 +309,7 @@ scripts/engine.properties       the pinned engine version and its checksums
 scripts/fetch-libchdb.sh        downloads and verifies the pinned engine
 scripts/build-native.sh         builds the shim and stages a platform package
 scripts/verify-consumer.sh      resolves the driver from a repository, outside this checkout
+scripts/check-release-tag.sh    refuses a release whose tag does not name the commit
 ```
 
 ## Reporting a problem
