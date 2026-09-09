@@ -149,6 +149,11 @@ class ProcessLifecycleIT extends NativeTestBase {
         // this JVM's connection is open. So there is still no correct exit code to pin here,
         // and pinning 134 would turn a real upstream fix into a CI failure. What matters is
         // that a host managing its own teardown can turn the hook off.
+        //
+        // Issue #22 did not change that either. It removed the hook's other hazard -- see
+        // exitWithQueriesInFlightIsPrompt -- but this shape's abort is the engine's own
+        // behaviour on an exit with a stream open, which no driver change reaches. The switch
+        // is therefore still the escape hatch and still only assertable as a switch.
         ForkResult result =
                 fork(ExitsWithOpenStream.class.getName(), List.of("-Dchdb.shutdownHook=false"));
         assertTrue(result.output.contains("leaked an open stream"), result.output);
@@ -157,6 +162,106 @@ class ProcessLifecycleIT extends NativeTestBase {
                     "with the hook off, this engine exits " + result.exitCode
                             + " -- which is what the hook exists to prevent");
         }
+    }
+
+    /**
+     * A JVM that falls off the end of {@code main} with background threads mid-query.
+     *
+     * <p>The ordinary shape of a service taking SIGTERM with requests still running. The
+     * threads are daemons, so nothing waits for them; the queries are long enough that they
+     * are certainly still inside the engine when the hook runs.
+     */
+    public static final class ExitsWithQueriesInFlight {
+        public static void main(String[] args) throws Exception {
+            int threads = 2;
+            CountDownLatch started = new CountDownLatch(threads);
+            for (int i = 0; i < threads; i++) {
+                Thread worker =
+                        new Thread(
+                                () -> {
+                                    try (Connection connection =
+                                                    DriverManager.getConnection("jdbc:chdb::memory:");
+                                            Statement statement = connection.createStatement()) {
+                                        started.countDown();
+                                        try (ResultSet rs =
+                                                statement.executeQuery(
+                                                        "SELECT count() FROM numbers(2000000000)"
+                                                                + " WHERE sipHash64(number) %"
+                                                                + " 1000000 = 0")) {
+                                            rs.next();
+                                        }
+                                        System.out.println("a query finished before the exit");
+                                    } catch (Throwable e) {
+                                        System.out.println("worker raised " + e);
+                                    }
+                                },
+                                "chdb-it-query-" + i);
+                worker.setDaemon(true);
+                worker.start();
+            }
+            assertTrue(started.await(60, TimeUnit.SECONDS), "the workers never started querying");
+            // Long enough for both to be inside the engine rather than just past the latch.
+            Thread.sleep(1000);
+            System.out.println(EXIT_MARKER + System.currentTimeMillis());
+        }
+    }
+
+    @Test
+    @DisplayName("exiting with queries in flight does not stall on the hook")
+    @Timeout(value = 3, unit = TimeUnit.MINUTES)
+    void exitWithQueriesInFlightIsPrompt() throws Exception {
+        // Issue #22 defect 1. The hook used to close every registered connection, including
+        // ones whose query was executing, and that did two things. It aborted the process
+        // with the engine assertion this whole class exists to prevent -- 12 runs in 40 on
+        // macOS arm64, engine 26.7.2-rc.2, against 0 in 60 with the hook off. And, when it
+        // did not, it held the JVM open for the length of the query, because
+        // chdb_close_conn() on a connection with a query running blocks until the query
+        // finishes: 34.5 / 33.9 / 33.9 s of shutdown for a five-billion-row aggregate,
+        // against 1.28 / 1.09 / 1.10 s of total process time now. The drain's 5 s budget
+        // cannot bound that, because the budget is checked between passes and a close already
+        // under way is not interruptible.
+        ForkResult result = fork(ExitsWithQueriesInFlight.class.getName(), List.of());
+
+        // Otherwise the test is vacuous: a query that finished on its own leaves an idle
+        // connection, which the hook closes as it always did.
+        assertTrue(
+                !result.output.contains("a query finished before the exit"),
+                "the queries were meant to still be running at exit; make them longer.\n"
+                        + result.output);
+
+        // The abort the hook was causing, named rather than inferred from the exit code.
+        // Asserted this way round because there is a second, rarer abort in this shape that
+        // the driver does not reach: C++ exit-time destructors running while a thread is
+        // still inside the engine, which surfaces as "mutex lock failed: Invalid argument"
+        // and appeared at the same rate with the hook on (2 of 80) and off (3 of 80), in
+        // bursts that track machine load. Pinning exit 0 here would make this test fail for
+        // that instead, and it is not something a shutdown hook can fix -- turning the hook
+        // off does not avoid it either. See upstream findings §9.
+        assertTrue(
+                !result.output.contains("front() called on an empty vector"),
+                "the hook must not close a connection whose statement is executing; that is"
+                        + " what provokes this assertion.\n"
+                        + result.output);
+        if (result.exitCode != 0) {
+            System.out.println(
+                    "exiting with queries in flight came out " + result.exitCode
+                            + " -- the engine's own exit-time race, not the hook's doing;"
+                            + " see upstream findings section 9");
+        }
+
+        long shutdownMillis = shutdownMillis(result);
+        System.out.println("shutdown with queries in flight took " + shutdownMillis + " ms");
+        // The query outlives this bound by a wide margin on any machine that can run it at
+        // all: two threads on two billion rows takes ~14 s here. So a shutdown that waits for
+        // it cannot come in under 8 s, and one that declines to takes ~320 ms.
+        assertTrue(
+                shutdownMillis < 8000,
+                "the hook should not wait for a query it cannot safely interrupt, but shutdown"
+                        + " took "
+                        + shutdownMillis
+                        + " ms -- closing a connection whose statement is executing blocks"
+                        + " until the statement finishes.\n"
+                        + result.output);
     }
 
     /**

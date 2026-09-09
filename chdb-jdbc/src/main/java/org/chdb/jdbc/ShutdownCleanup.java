@@ -2,6 +2,7 @@ package org.chdb.jdbc;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -62,29 +63,45 @@ import org.chdb.internal.ChdbNative;
  * is unreachable. Nothing can reach it: the hook would have to wait for a connection that may
  * never come.
  *
- * <p>More importantly, <strong>a JVM that exits while another thread is still executing a
- * query aborts, and this hook is what aborts it.</strong> Four threads, and for the first two
- * rows a leaked stream in {@code main} as well; measured on engine 26.7.2-rc.2, and the last
- * two rows measured the same way on 26.7.0:
+ * <h2>Connections it declines to close</h2>
+ * <strong>A connection whose statement is executing is left alone.</strong> Closing one is not
+ * something the engine tolerates, and this hook used to do it — which made the hook the cause
+ * of the very assertion quoted at the top of this class. Measured on engine 26.7.2-rc.2, macOS
+ * arm64, two threads on a two-billion-row aggregate with {@code main} returning while they are
+ * in flight:
  *
  * <pre>
- *   threads parked after leaking their streams, hook on   exit 0
- *   threads parked after leaking their streams, hook off  exit 134
- *   threads with a query still in flight, hook on         exit 134
- *   threads with a query still in flight, hook off        exit 0
+ *   hook on, closing them (what it did)   12 aborts in 40  (front() on an empty vector)
+ *   hook off                               0 aborts in 60
+ *   hook on, skipping them (what it does)  0 aborts in 80
  * </pre>
  *
- * The last row is the uncomfortable one: left alone, that process exits cleanly, and the
- * hook's attempt to close a connection whose query is still running is what turns it into an
- * abort. {@code close()} on such a connection is not something the engine tolerates, and the
- * hook cannot tell that case apart from the leaked stream it exists for — an open stream holds
- * the statement slot too. {@code chdb_shutdown()} does not rescue it either: it declines to
- * act while a connection is open, and that connection is the one that cannot be closed.
+ * <p>The runs that did not abort were not free either: {@code chdb_close_conn()} on a
+ * connection with a query running <em>blocks</em> until the query finishes, so the hook held
+ * the JVM open for as long as the query — 34 s for four threads on five billion rows, 79 s for
+ * a longer one — against 1.1 s now. {@link #DRAIN_BUDGET_NANOS} cannot bound that: the budget
+ * is checked between passes and a close already under way is not interruptible.
  *
- * <p>So an application that queries from background threads has to stop them before exiting.
- * If it cannot, {@code -Dchdb.shutdownHook=false} is the better trade for that shape, at the
- * cost of the leaked-stream case. Both halves are in {@code docs/unsupported.md} and
- * {@code docs/upstream-findings.md} §9, because the real fix is upstream.
+ * <p>Skipping is safe because the state it leaves behind is the one the engine is happy with —
+ * a connection open, with no stream of its own yet, which the second row above shows exits
+ * cleanly. It is not the leaked stream this class exists for: that thread is parked, not inside
+ * the engine, so it is closed as before. The two are told apart by whether a thread is inside a
+ * native call that starts a statement, not by the statement slot, which a leaked stream holds
+ * as well. See {@code ChdbConnection.executionsInFlight}.
+ *
+ * <p><strong>One abort in this shape is still not the driver's to fix.</strong> Rarely, and in
+ * bursts that track machine load, a JVM halting with a thread inside the engine dies in C++
+ * exit-time destructors instead: {@code mutex lock failed: Invalid argument}. That appeared at
+ * the same rate with the hook on (2 of 80) and off (3 of 80), so no hook reaches it, and
+ * {@code -Dchdb.shutdownHook=false} does not avoid it. {@code docs/upstream-findings.md} §9 has
+ * it.
+ *
+ * <p>What skipping costs: {@link #stopEngine()} declines while any connection is open, so a
+ * process exiting with a query in flight does not get the engine's threads joined. Measured,
+ * that changes no exit code — see {@link #stopEngine()} — and the drain does give such a
+ * connection another look on each pass, so a query that ends inside the drain's remaining time
+ * is closed after all. An application that wants the guarantee has to stop its query threads
+ * before exiting; that has not changed, and {@code docs/unsupported.md} says so.
  */
 final class ShutdownCleanup {
 
@@ -227,8 +244,11 @@ final class ShutdownCleanup {
     /**
      * Whether the JVM is shutting down and this hook is doing the closing.
      *
-     * <p>{@code ChdbConnection.close()} reads it to skip work that only matters to a process
-     * that keeps running, and to avoid waiting on anything.
+     * <p>Nothing reads it. It was added for a {@code ChdbConnection.close()} that would skip
+     * work only a surviving process cares about, and that close path was never written —
+     * noted here rather than deleted because the flag is also what {@link #register} uses to
+     * decide whether a late registration counts as activity, and because a caller that does
+     * want to ask is likely to arrive with the connection-level fix upstream (§9).
      */
     static boolean isShuttingDown() {
         return shuttingDown;
@@ -285,10 +305,10 @@ final class ShutdownCleanup {
      * <p><strong>It did not change any exit code this driver can measure.</strong> Every shape
      * tried on macOS arm64, drain-only against drain-then-{@code chdb_shutdown()}, six runs
      * each, came out identical: the leaked-stream exit was already clean from the drain alone,
-     * and the case the drain cannot reach — four threads with a query still in flight when the
-     * process halts — aborts either way, because a connection carrying a running query is one
-     * the drain cannot close, and an open connection is exactly what {@code chdb_shutdown()}
-     * refuses to act under. See "What it cannot do" above for that one.
+     * and the case the drain declines to touch — a thread with a query still in flight when
+     * the process halts — exits cleanly with this call returning {@code CHDBError}, since an
+     * open connection is exactly what it refuses to act under. See "Connections it declines to
+     * close" above for that one.
      *
      * <p>It is called anyway, because what it guarantees is an ordering an exit code cannot
      * see: no engine thread is alive when the host proceeds to its own native teardown —
@@ -333,10 +353,22 @@ final class ShutdownCleanup {
         // that race is ordinary rather than exotic.
         long deadline = System.nanoTime() + DRAIN_BUDGET_NANOS;
         while (true) {
-            List<ChdbConnection> batch;
+            List<ChdbConnection> batch = new ArrayList<>();
             synchronized (OPEN) {
-                batch = OPEN.isEmpty() ? Collections.emptyList() : new ArrayList<>(OPEN.keySet());
-                OPEN.clear();
+                for (Iterator<ChdbConnection> it = OPEN.keySet().iterator(); it.hasNext(); ) {
+                    ChdbConnection connection = it.next();
+                    if (connection.hasExecutionInFlight()) {
+                        // Left registered rather than taken, which is what gives it another
+                        // look on the next pass: a query that ends inside the drain's remaining
+                        // time gets closed after all, and one that does not is simply left
+                        // open. Not closing it is the point -- see the class javadoc for the
+                        // measurement -- and leaving it here costs nothing, because a pass that
+                        // takes nothing is a pass that sleeps, so this cannot spin.
+                        continue;
+                    }
+                    batch.add(connection);
+                    it.remove();
+                }
             }
 
             // Outside the lock: close() reaches the engine, and holding the registry's monitor

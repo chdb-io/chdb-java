@@ -182,6 +182,11 @@ public class ChdbStatement implements Statement {
         // time, and its fetches count.
         connection.statementSlot().acquire(sql);
         boolean handedOff = false;
+        // Spans every native call that starts a statement -- the classifier, the stream open
+        // and chdb_query_n -- and stops at the point a result set takes over, because from
+        // there on the thread is fetching rather than starting. The shutdown hook reads it to
+        // decide which connections it can close; see ChdbConnection.executionsInFlight.
+        connection.executionStarted();
         try {
             StatementShape.Route route = route(sql);
             boolean producesResultSet = route != StatementShape.Route.NO_RESULT_SET;
@@ -213,6 +218,7 @@ public class ChdbStatement implements Statement {
             runMaterialized(sql, parameterNames, parameterValues);
             return false;
         } finally {
+            connection.executionFinished();
             if (!handedOff) {
                 connection.statementSlot().release();
             }

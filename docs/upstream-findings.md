@@ -489,16 +489,51 @@ still executing can itself trigger the abort. Four threads each running one long
 | 26.7.2-rc.2 | off | 0 × 6 |
 
 Both engines behave the same way, so this is not something the baseline move introduced, and
-the `chdb_shutdown()` call makes no difference to it. But it means the hook can turn a clean
-exit into an abort for an application that queries from background threads — the one case
-where the safety net is the hazard. `docs/unsupported.md` says so, and
-`-Dchdb.shutdownHook=false` is the switch.
+the `chdb_shutdown()` call makes no difference to it.
+
+**And a third, from re-measuring the second for issue #22.** `chdb_close_conn()` on a
+connection whose query is executing does not fail — it *blocks* until the query finishes. That
+turns out to be the mechanism behind the second finding, and it also explains why the second
+finding's rates looked absolute: this is a race, not a certainty.
+
+Two threads on a two-billion-row aggregate, `main` returning while they are in flight, engine
+26.7.2-rc.2 on macOS arm64:
+
+| driver | hook | aborts | message |
+|---|---|---|---|
+| before #22 | on | **12 / 40** | `front() called on an empty vector` |
+| before #22 | off | 0 / 60 | — |
+| after #22 | on | 0 / 80 | — |
+| after #22 | off | 3 / 80 | `mutex lock failed: Invalid argument` |
+| after #22 | on | 2 / 80 | `mutex lock failed: Invalid argument` |
+
+The first row is the hook causing the very assertion it exists to prevent. The runs that
+survived it were not free either — the hook held the JVM open for the length of the query:
+34.5 / 33.9 / 33.9 s for four threads on five billion rows, 79 s for a longer one, against
+1.28 / 1.09 / 1.10 s of total process time once those connections are skipped. The drain's own
+5 s budget cannot bound it, because the budget is checked between passes and a close already
+under way is not interruptible. The worker threads also die with the shim's ownership guard —
+`stream handle N does not belong to connection handle M` — their connection having been freed
+underneath them, which is the state that aborts when nothing catches it.
+
+So the driver's hook now skips a connection with a native statement-start call in flight and
+closes everything else, and the `front()` abort is gone from this shape.
+
+**The last two rows are a different abort, and not the driver's.** A JVM halting with a thread
+still inside the engine sometimes dies in C++ exit-time destructors instead. It appears at the
+same rate with the hook on and off, in bursts that track machine load — 40-run batches came
+out 2/40, 3/40, then 0/40, 0/40, 0/40 across configurations — so no shutdown hook reaches it,
+and `-Dchdb.shutdownHook=false` does not avoid it. Nothing on the driver side can: by the time
+`exit()` starts running destructors, the application's threads are beyond the reach of a hook
+that has already returned.
 
 **Suggested upstream fix:** a shutdown that does not require the caller to have closed
 everything first — cancel and join whatever is running, since the process is going away
 regardless — would let a host make its own exit safe without racing its own application
-threads. Failing that, `chdb_close_conn()` on a connection with a query in flight should be
-safe, which would let the hook do its job in the one case it currently cannot.
+threads. Failing that, `chdb_close_conn()` on a connection with a query in flight should
+cancel that query and return, rather than blocking on it or leaving the connection corrupt.
+Either one would let the driver close everything, which is in turn what `chdb_shutdown()`
+requires.
 
 ---
 

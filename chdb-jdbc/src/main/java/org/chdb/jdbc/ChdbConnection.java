@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.chdb.internal.ChdbNative;
 import org.chdb.internal.ChdbNativeException;
 import org.chdb.internal.NativeLibraryLoader;
@@ -78,6 +79,27 @@ public final class ChdbConnection implements Connection {
      */
     private final Set<ChdbStatement> openStatements =
             Collections.newSetFromMap(new ConcurrentHashMap<ChdbStatement, Boolean>());
+
+    /**
+     * How many threads are inside the native call that starts a statement on this connection.
+     *
+     * <p>Read by the shutdown hook, which must not close a connection in this state: doing so
+     * aborted the process in 12 runs of 40 on engine 26.7.2-rc.2, macOS arm64, against 0 of 60
+     * with the hook off, and blocked until the query finished in the runs that survived -- 34 s
+     * for four threads on a five-billion-row aggregate, 79 s for a longer one, against 1.1 s
+     * once those connections are skipped. See {@code ShutdownCleanup}'s class javadoc for the
+     * whole table.
+     *
+     * <p>Not the same question as {@link #statementSlot}, which is held from execution until
+     * the result set closes -- so a leaked stream on a parked thread holds it too, and that is
+     * precisely the connection the hook must close. What distinguishes them is whether a
+     * thread is inside the engine right now.
+     *
+     * <p>Deliberately not counting fetches. A thread inside {@code chdb_stream_fetch_result}
+     * is also inside the engine, but closing that connection is what the hook exists to do and
+     * is measured clean: exit 0 over eight runs against 134 over four with no hook at all.
+     */
+    private final AtomicInteger executionsInFlight = new AtomicInteger();
 
     private final Map<String, String> clientInfo = new LinkedHashMap<>();
     private volatile boolean readOnly;
@@ -154,6 +176,24 @@ public final class ChdbConnection implements Connection {
 
     StatementSlot statementSlot() {
         return statementSlot;
+    }
+
+    /**
+     * Paired from {@code ChdbStatement.executeInternal}, always in a {@code finally}: a count
+     * left raised would make the shutdown hook skip this connection for the rest of the
+     * process, which is a silent leak of the thing the hook is for.
+     */
+    void executionStarted() {
+        executionsInFlight.incrementAndGet();
+    }
+
+    void executionFinished() {
+        executionsInFlight.decrementAndGet();
+    }
+
+    /** Whether a thread is inside the engine starting a statement. See the field. */
+    boolean hasExecutionInFlight() {
+        return executionsInFlight.get() > 0;
     }
 
     void register(ChdbStatement statement) {

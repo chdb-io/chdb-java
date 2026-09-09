@@ -217,15 +217,27 @@ One consequence worth knowing: `chdb_connect()` fails once the hook has run, bec
 concurrently and in no defined order, so a host that queries chDB from a shutdown hook of its
 own is racing this one. Do that work before shutdown, or turn the hook off.
 
-What the hook cannot cover is a thread still *executing* a query when the process halts, and
-here it is worse than that: the hook's attempt to close that connection is itself enough to
-abort. Four threads each running a long aggregate while `main` returns exits 134 with the hook
-on and 0 with it off, on 26.7.0 and 26.7.2-rc.2 alike. `chdb_shutdown()` does not rescue it —
-the engine declines to shut down while any connection is open, and a connection with a query
-in flight is the one the hook cannot close. So **shut your executor down before returning from
-`main`**. If you cannot, `-Dchdb.shutdownHook=false` is the lesser evil for that shape, at the
-cost of the leaked-stream case above. See
-[upstream findings §9](upstream-findings.md).
+What the hook cannot cover is a thread still *executing* a query when the process halts. It
+used to try, and trying made things worse: `chdb_close_conn()` on a connection whose query is
+running blocks until the query finishes, and closing one is enough to provoke the same engine
+abort the hook exists to prevent. Two threads on a two-billion-row aggregate, macOS arm64,
+engine 26.7.2-rc.2: 12 aborts in 40 runs with the old hook, 0 in 60 with the hook off, 0 in 80
+with the hook as it now is. The surviving runs held the JVM open for the length of the query —
+34 s for four threads on five billion rows — against 0.3 s now. The hook leaves those
+connections alone, which is what the process would have done with no hook at all.
+
+The cost of leaving them is that `chdb_shutdown()` declines while any connection is open, so a
+process exiting mid-query does not get the engine's threads joined. Measured, that changes no
+exit code, but it is a guarantee you do not have. So **shut your executor down before returning
+from `main`** if you want it. The driver also has no way to interrupt such a query on your
+behalf: the C ABI's cancel applies to a stream, and a query that has not produced one yet has
+nothing to cancel.
+
+There is also a rarer abort in this shape that no hook reaches — the engine's C++ exit-time
+destructors racing a thread that is still inside it, `mutex lock failed: Invalid argument`, at
+the same rate with the hook on and off. Turning the hook off does not avoid it; only not
+exiting mid-query does. See [upstream findings §9](upstream-findings.md), which asks upstream
+for a shutdown that does not require the caller to have closed everything first.
 
 **A misspelled setting name in the URL is silent.** Properties after `?` that the driver does
 not recognize are handed to the engine as `--key=value`, and the engine accepts a name it has
