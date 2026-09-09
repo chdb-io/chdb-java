@@ -40,6 +40,9 @@
       because they make a plain `mvn verify` under LD_PRELOAD work on Linux. Both loaders
       ignore an empty value, so setting them unconditionally costs nothing.
     -->
+    <!-- Named once because the ShardingSphere modules below have to move together. -->
+    <shardingsphere.version>5.5.3</shardingsphere.version>
+
     <chdb.it.sanitizer.preload></chdb.it.sanitizer.preload>
     <chdb.it.asan.options></chdb.it.asan.options>
     <chdb.it.ubsan.options></chdb.it.ubsan.options>
@@ -94,6 +97,73 @@
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-nop</artifactId>
       <version>2.0.13</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      Issue #11's frameworks. Also test scope: chdb-jdbc has no third-party runtime dependency
+      and adding one here must not create one, which `mvn -pl chdb-jdbc dependency:tree` shows.
+
+      Version choice is again "the last release that still runs on Java 11", for the same reason
+      as HikariCP above.
+
+        * MyBatis 3.5.19 is Java 8 bytecode and every one of its own dependencies is optional,
+          so it costs ognl and javassist and nothing else. ognl is needed because MyBatis
+          evaluates even a trivial mapper expression through it.
+        * jOOQ 3.16.23 is the last Java 11 release of the Open Source Edition. 3.17.0 is
+          compiled to class file 61 (Java 17), verified by reading DSLContext.class out of the
+          published jar. It is also before jOOQ shipped a ClickHouse dialect, so this exercises
+          SQLDialect.DEFAULT, which is what an unrecognised driver gets from any jOOQ version.
+    -->
+    <dependency>
+      <groupId>org.mybatis</groupId>
+      <artifactId>mybatis</artifactId>
+      <version>3.5.19</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>ognl</groupId>
+      <artifactId>ognl</artifactId>
+      <version>3.4.3</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jooq</groupId>
+      <artifactId>jooq</artifactId>
+      <version>3.16.23</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      ShardingSphere 5.5.3, which is Java 8 bytecode and so does not move the floor.
+
+      Present for a narrower purpose than the other three. ShardingSphere cannot be wired to
+      this driver at all, so there is no smoke test to run; ShardingSphereIT establishes why,
+      and the cause is upstream's URL parser rather than anything the driver does. These three
+      modules are what it takes to pin that blocker in a test that will start failing if
+      ShardingSphere fixes it: the driver itself, its ClickHouse connector (whose
+      ClickHouseDatabaseType is what claims "jdbc:chdb"), and the HikariCP pool metadata that
+      shardingsphere-jdbc keeps at test scope in its own pom.
+
+      The sharding rule, SQL parser and mode repository a working setup would also need are
+      deliberately absent: nothing here gets far enough to load them.
+    -->
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-jdbc</artifactId>
+      <version>${shardingsphere.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-infra-data-source-pool-hikari</artifactId>
+      <version>${shardingsphere.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-database-connector-clickhouse</artifactId>
+      <version>${shardingsphere.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

@@ -11,6 +11,10 @@ capability gets a truthful answer it can branch on.
 `DatabaseMetaData` agrees with the behaviour throughout: whatever
 `supportsTransactions()` and friends report is what the methods actually do.
 
+Two sections at the end are about frameworks rather than the API: what
+[`DatabaseMetaData`](#databasemetadata-nothing-on-it-throws) does when a GUI sweeps it, and
+[what each framework hits](#under-a-framework).
+
 ## Transactions
 
 | Method | |
@@ -178,6 +182,28 @@ is not something a metadata call may do. Call it on the `ResultSet` after `execu
 `VARCHAR`/`String` — which is what the driver actually binds, not a placeholder answer, though
 it says nothing about the column a value is compared against.
 
+**A bound parameter is a `String`, and ClickHouse will not convert one everywhere.** This is the
+consequence of the line above, and it is the one that shows up under a query builder. Parameters
+go to the engine through `chdb_query_with_params_n`, whose values are text, so every `?` arrives
+typed `String` whichever setter bound it. ClickHouse converts a string literal to the other
+side's type in a comparison, and does not convert it where a numeric *constant* is required.
+Measured on engine 26.7.0:
+
+| Position | |
+|---|---|
+| `WHERE n = ?`, `< ?`, `> ?`, `IN (?)` | works — the literal is converted to the column's type |
+| `SELECT ?`, `length(?)`, any string context | works |
+| `LIMIT ?`, `OFFSET ?` | **fails** — Code 440, "LIMIT expression must be constant with numeric type. Actual: '3'" |
+| `n + ?`, `? + 1`, arithmetic | **fails** — Code 43, "Illegal types UInt64 and String of arguments of function plus" |
+| `numbers(?)` and other numeric table-function arguments | **fails** — Code 43, "Illegal type String expression, must be numeric type" |
+
+**Instead:** cast the parameter in the SQL — `numbers(toUInt64(?))`, `LIMIT toUInt64(?)` — or
+render the value into the statement and let the framework escape it. For jOOQ that means
+`StatementType.STATIC_STATEMENT`; see [under a framework](#under-a-framework).
+
+Splicing the value into the SQL string yourself is the one thing not to do: the escaping is what
+`bind()` exists for, and `PreparedStatementIT` is the evidence it holds.
+
 **`getColumns()`** reports the ClickHouse type name and leaves `DATA_TYPE` as `OTHER`. Mapping a
 type *name* to a JDBC type would be a second implementation of the Arrow mapping, and the two
 would drift. For a column's JDBC type, run `SELECT * FROM t LIMIT 0` and read its
@@ -187,3 +213,141 @@ would drift. For a column's JDBC type, run `SELECT * FROM t LIMIT 0` and read it
 entry level and the whole API surface; chDB has no transactions, no scrollable cursors and
 ClickHouse SQL. Claiming it would be a false statement about the driver rather than a
 formality.
+
+## `DatabaseMetaData`: nothing on it throws
+
+A JDBC GUI — DBeaver, DataGrip, SQuirreL — sweeps most of `DatabaseMetaData` while a connection
+is being opened, before the user has typed anything, and it does so whether or not the answer is
+useful to it. One method throwing `SQLFeatureNotSupportedException` inside that sweep is reported
+as "could not connect", so the driver looks broken on first contact rather than merely limited.
+
+`DatabaseMetaDataSurfaceIT` reproduces the sweep: all 179 methods of JDBC 4.3's
+`DatabaseMetaData` (including the two from `Wrapper`) invoked reflectively with the arguments a
+tool would pass. On 26.7.0:
+
+| | |
+|---|---|
+| Returned a value, or a result set with rows | 160 |
+| Returned a result set with no rows | 19 |
+| Threw `SQLFeatureNotSupportedException` | **0** |
+| Threw anything else | **0** |
+
+`DatabaseMetaData` is the one interface in this driver with no refusal anywhere in it, and that
+is on purpose: it is the interface whose whole job is to be asked questions by software that
+cannot handle being told no. The test asserts the zeros rather than reporting them, so the
+property cannot be lost by accident.
+
+The 19 with no rows are the ones ClickHouse has nothing to say about — no foreign keys, no
+indexes in the JDBC sense, no procedures, no UDTs, no privileges table, no catalog level:
+
+`getAttributes` · `getBestRowIdentifier` · `getCatalogs` · `getClientInfoProperties` ·
+`getColumnPrivileges` · `getCrossReference` · `getExportedKeys` · `getFunctionColumns` ·
+`getImportedKeys` · `getIndexInfo` · `getPrimaryKeys` · `getProcedureColumns` · `getProcedures` ·
+`getPseudoColumns` · `getSuperTables` · `getSuperTypes` · `getTablePrivileges` · `getUDTs` ·
+`getVersionColumns`
+
+An empty result set is not a cheap substitute for an exception here — it is a different code
+path, and the one jOOQ and MyBatis actually read. Both address the columns of these sets *by
+label*, so a zero-row set spelling `PK_NAME` differently, or reporting no columns at all, is as
+broken as a throw and far harder to notice. `DatabaseMetaDataSurfaceIT` therefore also checks
+every result-set-returning method against the column names JDBC 4.3 specifies — transcribed from
+the JDBC javadoc, not from this driver, so a rename here is a failure — and calls every
+`ResultSetMetaData` accessor on every column of every one of them. All present, all answerable,
+rows or not.
+
+## Under a framework
+
+What each framework does that the driver refuses, and what to do instead. `HikariCP` and Spring
+`JdbcTemplate` are covered elsewhere and are not repeated here; these are the four from issue
+&#35;11.
+
+Versions are pinned to the last release of each that still runs on Java 11, which is this
+driver's floor. jOOQ 3.17 and HikariCP 6 require Java 17, and testing those would quietly drop
+Java 11 out of the supported matrix.
+
+### MyBatis 3.5.19 — works, with one configuration change
+
+`MyBatis`'s default `JdbcTransactionFactory` calls `setAutoCommit(false)` on the connection the
+moment a session opens, because `openSession()` with no argument means "not auto-commit". The
+driver refuses that, so the session fails on its first statement.
+
+**Instead:** `openSession(true)`, or configure `ManagedTransactionFactory` — which makes
+`commit()` and `rollback()` no-ops rather than calls the driver has to refuse, and is the honest
+description of what a session against chDB is.
+
+Everything else works. Automatic result mapping, which is MyBatis's heaviest use of
+`ResultSetMetaData`, picks the right `TypeHandler` per column from the driver's reported JDBC
+types; an empty result set gives an empty list; `insert()` returns the real affected-row count.
+`#{}` parameters bind, subject to the
+[String-typed parameter rule](#constraints-not-refusals) above — `numbers(#{n})` needs
+`numbers(toUInt64(#{n}))`.
+
+### jOOQ 3.16.23 — works, with two things to know
+
+**`.limit()` fails by default.** jOOQ renders a limit as a bind value, so `LIMIT ?` reaches the
+engine as `LIMIT '3'` and is refused. This is the most-used clause jOOQ parameterises, so it is
+the first thing a jOOQ user hits.
+
+**Instead:** `new Settings().withStatementType(StatementType.STATIC_STATEMENT)`, which has jOOQ
+render its values inline. jOOQ escapes them itself, so this is not a return to concatenated SQL.
+
+**`transaction()` is refused**, for the same reason as everything else in
+[Transactions](#transactions): jOOQ's `DefaultTransactionProvider` calls `setAutoCommit(false)`
+before running the block, so the block never runs. There is no setting for it. A jOOQ
+application against chDB does its work outside `transaction()`. The connection survives the
+refusal and stays usable.
+
+One thing that is not a driver limitation but will look like one: **jOOQ types every chDB column
+as `Object`.** jOOQ resolves a field's Java type from the type *name* against its dialect
+registry, and no jOOQ dialect this driver is routed to knows `Int32` or `DateTime64`. The driver
+itself reports the column correctly — `ResultSetMetaData` gives type `INTEGER`, type name
+`Int32`, class name `java.lang.Integer`, on a populated and on a zero-row result alike, which
+`JooqIT` asserts. So declare the type at the call site: `DSL.field("n", Integer.class)`, or
+`record.get("n", Integer.class)`.
+
+jOOQ's `meta()` walk — `getCatalogs`, `getSchemas`, `getTables`, `getColumns`, `getPrimaryKeys`,
+`getIndexInfo`, the heaviest `DatabaseMetaData` use of anything tested here — completes, and
+lands on an empty key list and an empty index list rather than an error.
+
+jOOQ resolves this driver to `SQLDialect.DEFAULT`, because `getDatabaseProductName()` returns
+`chDB` and no jOOQ version recognises it. Everything above was measured under `DEFAULT`.
+
+### DBeaver and other JDBC GUIs — no blocker found
+
+Not installed and driven, which is not practical in CI. Covered instead by the
+[full metadata sweep](#databasemetadata-nothing-on-it-throws), which is the part of a GUI's
+connect sequence that can fail: 179 methods, nothing throws, every result set well-formed.
+
+What that does not cover is a GUI's own SQL — the statements it runs to populate its navigator
+tree beyond `DatabaseMetaData`, its data editor's assumption that a result set can be updated,
+and its use of `Connection.setAutoCommit(false)` when the user turns off auto-commit in the
+toolbar. The first is engine SQL rather than driver surface; the other two are refused, and
+[Result sets](#result-sets) and [Transactions](#transactions) say so.
+
+### Apache ShardingSphere 5.5.3 — cannot be wired up
+
+Not a driver limitation, and not fixable from here.
+
+ShardingSphere already knows about chDB: its `ClickHouseDatabaseType` lists `jdbc:chdb` among
+its JDBC URL prefixes alongside `jdbc:clickhouse:` and `jdbc:ch:`, so a chDB URL is routed to
+its ClickHouse dialect without being asked. But every `DatabaseType` then parses the URL with
+`StandardJdbcUrlParser`, which requires the `//authority` component of a client/server URL to be
+present and refuses the URL outright when it is not. An embedded engine has no host and no port,
+so no chDB URL gets through — `jdbc:chdb:`, `jdbc:chdb::memory:` and a filesystem storage path
+all fail identically, with `UnrecognizedDatabaseURLException`.
+
+Both entry points fail in the same place: the `jdbc:shardingsphere:` driver with a YAML
+configuration, and `ShardingSphereDataSourceFactory` handed an already-built HikariCP pool and
+no rules at all. There is no configuration route around it.
+
+Inventing a `//localhost/` to satisfy the parser is not a workaround: the driver reads the text
+after the prefix as the storage path, so it would open a database in a directory named after a
+host that is not there.
+
+`ShardingSphereIT` pins this rather than skipping it, so that the test starts failing when
+ShardingSphere learns to parse an embedded URL.
+
+What is consequently untested is ShardingSphere's own connection management against the
+one-storage-path-per-JVM rule. The nearest thing that is tested is `HikariPoolIT` —
+ShardingSphere's pools are HikariCP, and pool churn against the storage-path registry is exactly
+what that covers.
