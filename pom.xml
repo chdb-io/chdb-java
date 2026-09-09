@@ -221,7 +221,19 @@
                 extra step, at least until several releases have gone out uneventfully.
               -->
               <autoPublish>false</autoPublish>
-              <waitUntilValidated>true</waitUntilValidated>
+              <!--
+                Wait for Sonatype's validation and report the result, rather than uploading and
+                returning. VALIDATED is also the plugin's default; it is written out because
+                the release workflow's success is taken to mean "the bundle is valid and
+                waiting", and that should not depend on a default.
+
+                This replaces a waitUntilValidated element, which is not a parameter of
+                central-publishing-maven-plugin 0.11.0 — the mojo declares waitUntil,
+                waitMaxTime, waitPollingInterval and waitForPublishCompletion, and nothing
+                named waitUntilValidated. Maven drops configuration elements a mojo does not
+                declare rather than failing on them, so it had been doing nothing at all.
+              -->
+              <waitUntil>VALIDATED</waitUntil>
             </configuration>
           </plugin>
         </plugins>

@@ -1,0 +1,456 @@
+name: release
+
+# Issue #15: assembling a release needs all four platform packages staged in one working
+# directory, and no single machine can produce them -- build-native.sh refuses to cross-build,
+# and macos-x86_64 needs an Intel Mac. `build` already builds all four on their own runners
+# and throws the result away. This workflow keeps it: each platform stages on its own runner
+# and uploads target/native/, and one deploy job reassembles the four into a single reactor and
+# runs `mvn -Prelease deploy`.
+#
+# Three decisions the issue asked to settle, with the reasoning kept here rather than in a
+# commit message nobody will read again:
+#
+# 1. WHERE THE VERSION BUMP LIVES -- in git, not here.
+#    This workflow never runs `versions:set`. A release is cut by committing the release
+#    version to the POMs and tagging that commit; the `preflight` job then refuses to run if
+#    the tag and the POM disagree. Rationale: `versions:set` in CI means the bytes on Central
+#    correspond to no commit in this repository, so `git show <tag>` cannot tell you what was
+#    published and a re-run of the same tag can produce different POMs. A `-SNAPSHOT` in the
+#    POM after the tag is the ordinary "back to development" commit.
+#
+# 2. SNAPSHOTS FROM THE SAME WORKFLOW -- yes, and that is the default for workflow_dispatch.
+#    Issue #10 is blocked on nothing ever having consumed this as a published artifact, and a
+#    snapshot is the only way to move it. Running the same jobs, the same staging, the same
+#    signing and the same plugin for a snapshot is what makes the release path already-tested
+#    when a release finally depends on it. The only difference is the version: the publishing
+#    plugin routes a `-SNAPSHOT` deploy straight to Central's snapshot repository instead of
+#    building a portal bundle, so autoPublish and portal review do not apply to it. Snapshot
+#    publishing is opt-in per namespace -- "Enable SNAPSHOTs" in the portal -- and the upload
+#    is rejected until that is done. See docs/publishing.md section 6.
+#
+# 3. REPRODUCIBILITY -- the engine is reproducible, the shim is not bit-for-bit, and we
+#    measured exactly how far off it is rather than leaving it open.
+#    Two consecutive clean builds of the macos-aarch64 shim on the same machine, same source,
+#    same toolchain, produced files of identical length differing in 116 bytes:
+#      - 16 bytes of LC_UUID, which ld64 derives from a content hash that includes the symbol
+#        table;
+#      - 4 bytes, one per translation unit, holding the N_OSO debug-map timestamp -- the mtime
+#        of each .o file (1788931405 vs 1788931408, three seconds apart);
+#      - ~96 bytes of ad-hoc code signature, which covers everything above.
+#    __text, __cstring, __const and __data were byte-identical. So the shim's *content* is
+#    reproducible and only build-time metadata varies. That is not worth chasing here: it
+#    would take a deterministic-UUID link plus zeroed object mtimes, and it would buy nothing
+#    a consumer can act on, because the shim is ~130 KB of a ~326 MB package. What does matter
+#    is the other 99.96%: the engine tarball is pinned by SHA-256 in scripts/engine.properties
+#    and fetch-libchdb.sh verifies it, so the engine bytes in a release are the engine bytes
+#    anyone else can download and check. This workflow therefore does not claim bit-identical
+#    builds; it records what it shipped -- every staged library's SHA-256 goes into the job
+#    summary and into manifest.properties inside the JAR.
+
+on:
+  push:
+    # A release is a tag on a commit whose POMs already carry the release version. `build` does
+    # not run on tags (it filters on branches), which is why preflight checks that `build`
+    # succeeded for this exact commit rather than assuming a tag implies a tested tree.
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "snapshot (Central snapshot repository) or release (portal bundle)"
+        type: choice
+        options: [snapshot, release]
+        default: snapshot
+      dry_run:
+        description: "Stage, sign and package, but upload nothing"
+        type: boolean
+        default: true
+
+# A second concurrent release would race on the portal deployment and, worse, make it unclear
+# which run produced the bundle a human is about to confirm. Never cancel one in flight: a
+# half-finished deploy is the one state this repository cannot recover from.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # preflight reads the `build` workflow's conclusion for this commit.
+  actions: read
+
+env:
+  MAVEN_ARGS: "--batch-mode --no-transfer-progress"
+
+jobs:
+  # Everything that can say "no" before 1.3 GB of native libraries move across the network.
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+
+      - name: Resolve the version and the channel
+        id: resolve
+        env:
+          # A tag push is always a release; workflow_dispatch says which it wants.
+          INPUT_CHANNEL: ${{ github.event_name == 'push' && 'release' || inputs.channel }}
+          # A tag push is never a dry run: the tag is the decision.
+          INPUT_DRY_RUN: ${{ github.event_name == 'push' && 'false' || inputs.dry_run }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # The POMs are the single source of truth for the version. Read from Maven rather
+          # than with sed, so an inherited or property-substituted version reads correctly.
+          VERSION=$(mvn $MAVEN_ARGS -q -DforceStdout help:evaluate -Dexpression=project.version)
+          echo "POM version: $VERSION"
+          echo "channel: $INPUT_CHANNEL, dry run: $INPUT_DRY_RUN"
+
+          case "$INPUT_CHANNEL" in
+            release)
+              case "$VERSION" in
+                *-SNAPSHOT)
+                  echo "::error::the POMs are at $VERSION. A release needs a non-SNAPSHOT version committed and tagged; see the header of this workflow."
+                  exit 1
+                  ;;
+              esac
+              if [ "${{ github.event_name }}" = "push" ]; then
+                # Decision 1 enforced: the tag names the bytes, so it has to agree with them.
+                TAG_VERSION="${REF_NAME#v}"
+                if [ "$TAG_VERSION" != "$VERSION" ]; then
+                  echo "::error::tag $REF_NAME implies version $TAG_VERSION but the POMs say $VERSION. Commit the release version, then tag that commit."
+                  exit 1
+                fi
+              fi
+              ;;
+            snapshot)
+              case "$VERSION" in
+                *-SNAPSHOT) ;;
+                *)
+                  echo "::error::the POMs are at $VERSION, which is not a snapshot. Publishing it to the snapshot repository would put release coordinates somewhere they are never promoted from."
+                  exit 1
+                  ;;
+              esac
+              ;;
+          esac
+
+          {
+            echo "version=$VERSION"
+            echo "channel=$INPUT_CHANNEL"
+            echo "dry_run=$INPUT_DRY_RUN"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: The engine version this release carries
+        # Read, never written: scripts/engine.properties is the pin, and hard-coding a version
+        # here would give it a second source of truth that drifts on the next baseline bump.
+        run: |
+          set -euo pipefail
+          ENGINE=$(sed -n 's/^engine.version=//p' scripts/engine.properties | head -1)
+          echo "engine $ENGINE, pinned by SHA-256 in scripts/engine.properties" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The `build` workflow must have passed for this commit
+        # `build` filters on branches, so a tag push does not run it. Without this check a
+        # release could be cut from a commit whose test matrix was never green -- and the
+        # thing being published cannot be unpublished.
+        #
+        # Advisory for a snapshot: the point of a snapshot is to publish early, sometimes from
+        # a commit whose matrix is still running.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ steps.resolve.outputs.channel }}
+        run: |
+          set -euo pipefail
+          CONCLUSION=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}&per_page=100" \
+            --jq '[.workflow_runs[] | select(.name == "build")] | first | .conclusion // "none"')
+          echo "build workflow for ${{ github.sha }}: $CONCLUSION"
+          if [ "$CONCLUSION" != "success" ]; then
+            if [ "$CHANNEL" = "release" ]; then
+              echo "::error::the build workflow for this commit concluded '$CONCLUSION'. Push the commit to a branch, let the matrix go green, then tag it."
+              exit 1
+            fi
+            echo "::warning::the build workflow for this commit concluded '$CONCLUSION'; continuing because this is a snapshot."
+          fi
+
+  # One job per platform, on its own runner, because build-native.sh refuses to cross-build:
+  # a shim linked for another architecture fails at System.load() in a user's JVM rather than
+  # here. This is the half of issue #15 that CI could already do and was discarding.
+  stage:
+    name: stage ${{ matrix.platform }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # No fail-fast: knowing that three platforms staged and one did not is more useful than
+      # a cancelled matrix, and a release cannot proceed on three anyway.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+          - platform: linux-aarch64-gnu
+            runner: ubuntu-22.04-arm
+          - platform: macos-aarch64
+            runner: macos-15
+          # macos-15-intel, not macos-15: the plain label is Apple Silicon. This runner is the
+          # whole reason a release could not be assembled from one machine.
+          - platform: macos-x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          # The floor, deliberately: building the shim against Java 11's jni.h and compiling
+          # the driver with Java 11's javac is what makes maven.compiler.release=11 a fact
+          # rather than a claim. `build` covers 17, 21 and 25 on every push; re-running the
+          # whole JDK matrix here would double a release's wall time to re-prove what
+          # preflight already confirmed was green for this commit.
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+
+      - name: Cache the pinned engine download
+        uses: actions/cache@v4
+        with:
+          # Same key shape as `build`, so a release reuses the download that workflow already
+          # made for this commit instead of pulling ~326 MB per platform again.
+          path: target/engine/download
+          key: chdb-engine-${{ matrix.platform }}-${{ hashFiles('scripts/engine.properties') }}
+
+      - name: Compile the Java side
+        # build-native.sh refuses to run without javac -h output, so a signature drift between
+        # Java and native is a compile error rather than a user's UnsatisfiedLinkError.
+        run: mvn $MAVEN_ARGS -pl chdb-jdbc -am compile
+
+      - name: Fetch the engine, build the shim, stage the platform package
+        # Verifies the download's SHA-256 against scripts/engine.properties, checks the shim's
+        # $ORIGIN/@loader_path linkage, refuses an absolute build-machine path in its load
+        # commands, and holds the platform's version floor to its ceiling. Linux builds in
+        # manylinux_2_28 so the package keeps working on the RHEL 8 family.
+        run: |
+          case "${{ matrix.platform }}" in
+            linux-*) scripts/build-native-in-container.sh ${{ matrix.platform }} ;;
+            *)       scripts/build-native.sh ${{ matrix.platform }} ;;
+          esac
+
+      - name: Record what was staged
+        # The reproducibility answer in practice: not "these bytes are inevitable" but "these
+        # are the bytes, and here is their hash". Also lands in the JAR as
+        # META-INF/chdb/native/<os>/<arch>/manifest.properties.
+        run: |
+          set -euo pipefail
+          case "${{ matrix.platform }}" in
+            macos-*) OS=macos ;;
+            *)       OS=linux ;;
+          esac
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          DIR="chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/$OS/$ARCH"
+          {
+            echo "### ${{ matrix.platform }}"
+            echo '```'
+            cat "$DIR/sha256sums.txt"
+            grep -E '^(engine\.version|engine\.source|platform\.min\.|build\.commit)' \
+              "$DIR/manifest.properties"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Integration tests against the staged package
+        # A release must not be assembled from a package that cannot run a query, even though
+        # preflight already checked `build` was green: the staged bytes here are new bytes.
+        run: |
+          set -euo pipefail
+          case "${{ matrix.platform }}" in
+            macos-*) OS=macos ;;
+            *)       OS=linux ;;
+          esac
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          LIBS="$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/$OS/$ARCH"
+          mvn $MAVEN_ARGS -pl chdb-integration-tests -am verify \
+            -Dchdb.it.platform=${{ matrix.platform }} \
+            -Dchdb.it.library.path="$LIBS"
+
+      - name: Upload the staged platform package
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: chdb-native-${{ matrix.platform }}/target/native
+          # Everything the loader reads has to survive the round trip, so an empty upload must
+          # fail here rather than produce a JAR with no engine in it.
+          if-no-files-found: error
+          # Long enough to re-run a failed deploy against the same bytes, short enough not to
+          # leave ~600 MB per platform in the repository's artifact storage for a fortnight.
+          retention-days: 5
+
+      - name: Archive debug symbols
+        # Several times the size of the runtime library, so kept out of the JAR -- but a crash
+        # report from a released build is unreadable without them, and a release is exactly
+        # when they are worth keeping longer than a CI run.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-symbols-${{ matrix.platform }}
+          path: target/debug-symbols/
+          if-no-files-found: warn
+          retention-days: 90
+
+  # The job issue #15 exists for: four platforms in one working directory, on one machine.
+  deploy:
+    name: deploy (${{ needs.preflight.outputs.channel }}${{ needs.preflight.outputs.dry_run == 'true' && ', dry run' || '' }})
+    needs: [preflight, stage]
+    runs-on: ubuntu-latest
+    # The first of two human gates. This environment is where CENTRAL_* and GPG_* live, so
+    # configuring required reviewers on it means nothing reaches Sonatype without someone
+    # saying so. The second gate is autoPublish=false: the bundle then waits in the portal.
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+          # Writes the `central` server entry the release profile's publishingServerId expects,
+          # and imports the signing key. Doing it here rather than by hand keeps the token and
+          # the key out of the workflow's own shell history.
+          server-id: central
+          server-username: CENTRAL_USERNAME
+          server-password: CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          # The *name* of the variable holding the passphrase, which is what maven-gpg-plugin
+          # reads. The release profile passes --pinentry-mode loopback so it never wants a tty.
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Download every staged platform package
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: /tmp/staged
+
+      - name: Put each platform back where its module expects it
+        # Two things the artifact round trip does not preserve and the build depends on:
+        #
+        #   - the executable bit. dlopen() does not require it, but a 0644 shared library in a
+        #     released JAR is the kind of difference that shows up as one platform behaving
+        #     oddly six months later, so it is restored rather than reasoned about.
+        #   - nothing else: the layout under target/native is flat files, no symlinks.
+        run: |
+          set -euo pipefail
+          for platform in linux-x86_64-gnu linux-aarch64-gnu macos-aarch64 macos-x86_64; do
+            src="/tmp/staged/native-$platform"
+            dest="chdb-native-$platform/target/native"
+            [ -d "$src" ] || { echo "::error::no artifact for $platform"; exit 1; }
+            mkdir -p "$(dirname "$dest")"
+            rm -rf "$dest"
+            mv "$src" "$dest"
+            find "$dest" -type f \( -name '*.so' -o -name '*.dylib' \) -exec chmod 0755 {} +
+          done
+
+      - name: Every platform must be complete, and none may be a local engine
+        # The release profile fails on both of these too (see the antrun execution in each
+        # native module). Repeated here because this job knows all four at once: a message
+        # naming which platform is short is worth more than the first module to fail, and it
+        # arrives before signing spends four minutes.
+        run: |
+          set -euo pipefail
+          total=0
+          for spec in linux-x86_64-gnu:linux:x86_64:so \
+                      linux-aarch64-gnu:linux:aarch64:so \
+                      macos-aarch64:macos:aarch64:dylib \
+                      macos-x86_64:macos:x86_64:dylib; do
+            IFS=: read -r platform os arch jniext <<< "$spec"
+            dir="chdb-native-$platform/target/native/META-INF/chdb/native/$os/$arch"
+            for f in libchdb.so "libchdb_java_jni.$jniext" manifest.properties sha256sums.txt; do
+              [ -s "$dir/$f" ] || { echo "::error::$platform is missing $f"; exit 1; }
+            done
+            if grep -q '^engine.source=local' "$dir/manifest.properties"; then
+              echo "::error::$platform was staged from a --local-engine build, which skips the pinned checksum and ships no licence inventory"
+              exit 1
+            fi
+            # The checksums the loader will verify at runtime, verified now, against the bytes
+            # that came back from the artifact store. This is the one thing on issue #10's list
+            # that only a real upload and download can exercise -- so exercise it.
+            ( cd "$dir" && sha256sum -c sha256sums.txt )
+            size=$(du -sm "$dir" | cut -f1)
+            total=$((total + size))
+            echo "$platform: ${size} MB"
+          done
+          echo "staged total: ${total} MB"
+          # ~1.3 GB staged, the same bytes again inside the JARs, plus sources, javadoc and
+          # signatures. Printed rather than guessed at, because running out of disk halfway
+          # through a deploy is the failure this job least wants.
+          df -h .
+
+      - name: Package, sign and publish
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        # Modules named explicitly rather than building the whole reactor: chdb-examples and
+        # chdb-integration-tests are not published, and the integration suite has already run
+        # on each platform's own runner, where it could actually exercise that platform.
+        #
+        # `verify`, not `package`, for the dry run: signing is bound to verify, so `package`
+        # would silently produce no .asc files and prove nothing.
+        run: |
+          set -euo pipefail
+          GOAL=deploy
+          if [ "$DRY_RUN" = "true" ]; then GOAL=verify; fi
+          echo "mvn -Prelease $GOAL for $VERSION ($CHANNEL)"
+          mvn $MAVEN_ARGS -Prelease "$GOAL" \
+            -pl .,chdb-bom,chdb-jdbc,chdb-native-macos-aarch64,chdb-native-macos-x86_64,chdb-native-linux-x86_64-gnu,chdb-native-linux-aarch64-gnu
+
+      - name: What was produced
+        if: always()
+        env:
+          DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### $VERSION ($CHANNEL${DRY_RUN:+, dry run: $DRY_RUN})"
+            echo '```'
+            find . -path ./target -prune -o -name '*.jar' -print -o -name '*.asc' -print \
+              | sort | while read -r f; do printf '%9s  %s\n' "$(du -h "$f" | cut -f1)" "$f"; done
+            echo '```'
+            if [ "$DRY_RUN" != "true" ] && [ "$CHANNEL" = "release" ]; then
+              echo "The bundle is uploaded but **not published**: autoPublish=false."
+              echo "Confirm it at <https://central.sonatype.com/publishing/deployments> -- a"
+              echo "release cannot be unpublished, so read the file list before pressing it."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Archive the signatures and POMs
+        # Not the JARs: they are 500 MB and already on their way to Central. The signatures and
+        # POMs are what you need to answer "what exactly did that release contain" later, and
+        # they are a few hundred kilobytes.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            **/target/*.asc
+            **/target/*.pom
+            **/target/native/META-INF/chdb/native/*/*/manifest.properties
+            **/target/native/META-INF/chdb/native/*/*/sha256sums.txt
+          if-no-files-found: warn
+          retention-days: 90
