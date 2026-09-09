@@ -105,24 +105,41 @@ public final class ChdbConnection implements Connection {
         }
 
         StoragePathRegistry.acquire(url);
-        boolean opened = false;
-        try {
-            this.handle = ChdbNative.connect(Utf8.encodeAll(url.toConnectArguments()));
-            opened = true;
-        } catch (ChdbNativeException e) {
-            throw ChdbExceptions.wrap("Cannot connect to " + url.url(), e);
-        } finally {
-            if (!opened) {
-                // A failed connect must not leave the storage path pinned, or the next
-                // attempt at a different path fails for a connection that does not exist.
-                StoragePathRegistry.release(url);
-            }
-        }
 
-        // A JVM that exits with a streaming result set still open aborts inside the engine.
-        // Closing connections at shutdown closes their result sets, which is the state the
-        // engine tolerates. See ShutdownCleanup.
-        ShutdownCleanup.register(this);
+        // Announced before the handle exists and disowned only after it is registered, so the
+        // shutdown hook can tell "nothing is open" from "something is opening". Between
+        // chdb_connect() returning and register() completing, the engine holds a live handle
+        // that the hook's registry knows nothing about; a hook that ran in that window used to
+        // find an empty registry and return, leaving this connection's stream to be caught by
+        // the exit-time abort. See ShutdownCleanup.CONNECTS_IN_FLIGHT.
+        //
+        // The finally is the whole point. A count left raised by a connect that threw would
+        // make every subsequent JVM exit in this process wait out the drain's entire budget,
+        // so this must unwind on the failure paths too -- which is why it wraps the catch
+        // clauses rather than sitting inside the try.
+        ShutdownCleanup.connectStarted();
+        try {
+            boolean opened = false;
+            try {
+                this.handle = ChdbNative.connect(Utf8.encodeAll(url.toConnectArguments()));
+                opened = true;
+            } catch (ChdbNativeException e) {
+                throw ChdbExceptions.wrap("Cannot connect to " + url.url(), e);
+            } finally {
+                if (!opened) {
+                    // A failed connect must not leave the storage path pinned, or the next
+                    // attempt at a different path fails for a connection that does not exist.
+                    StoragePathRegistry.release(url);
+                }
+            }
+
+            // A JVM that exits with a streaming result set still open aborts inside the engine.
+            // Closing connections at shutdown closes their result sets, which is the state the
+            // engine tolerates. See ShutdownCleanup.
+            ShutdownCleanup.register(this);
+        } finally {
+            ShutdownCleanup.connectFinished();
+        }
     }
 
     // ------------------------------------------------------------------ internals

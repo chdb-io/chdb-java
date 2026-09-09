@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.chdb.internal.ChdbNative;
 
 /**
@@ -51,9 +52,10 @@ import org.chdb.internal.ChdbNative;
  * draining, and a connection can be mid-{@code close()} on another thread when the hook reaches
  * it. Both cases end with the stream closed, or the hook has not done its job.
  *
- * <p>The hook does not stop at the first empty registry either, because a thread part-way
- * through {@code connect()} has not registered yet; it waits out a quiet period first. The two
- * constants below bound how long it tries.
+ * <p>The hook does not stop at the first empty registry either. A thread part-way through
+ * {@code connect()} has not registered yet, so the drain counts those separately and waits
+ * while the count is non-zero; and any close or registration it does see restarts a quiet
+ * period. The constants below bound how long it tries.
  *
  * <h2>What it cannot do</h2>
  * A connection opened long after everything went quiet — from a competing shutdown hook, say —
@@ -105,6 +107,31 @@ final class ShutdownCleanup {
             Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
+     * Connect attempts that have not reached {@link #register} yet.
+     *
+     * <p>The registry alone cannot answer "is anything still coming?". {@code
+     * ChdbConnection}'s constructor opens the native handle before it registers, so between
+     * those two points a live engine handle exists and {@link #OPEN} is empty — and the first
+     * connection in a process is the most exposed, because the thread that installs the hook
+     * is the thread that has not registered yet. The drain used to look, find nothing and
+     * return, which left that connection's stream open at exit: the abort this class exists
+     * to prevent.
+     *
+     * <p>Counted rather than inferred from an empty registry, because the alternative — treat
+     * the start of the drain as activity and always wait out {@link #QUIET_PERIOD_NANOS} —
+     * makes every clean exit pay up to 400 ms for a connection that is usually not there. A
+     * counter waits only when a connect is known to be in progress; measured, a clean exit
+     * still pays nothing (see {@code ProcessLifecycleIT}).
+     *
+     * <p>Incremented before {@code chdb_connect()} and decremented after {@code register()},
+     * in a {@code finally} so a connect that throws cannot leave it raised — a leaked count
+     * would make every later JVM exit in the process wait out {@link #DRAIN_BUDGET_NANOS}.
+     * The order inside {@code register()} matters too: the connection is in {@link #OPEN}
+     * before the count drops, so there is no instant in which neither says it exists.
+     */
+    private static final AtomicInteger CONNECTS_IN_FLIGHT = new AtomicInteger();
+
+    /**
      * How long the hook keeps re-checking for connections opened while it was running.
      *
      * <p>Bounded by time rather than by a number of passes: a thread still opening connections
@@ -118,13 +145,16 @@ final class ShutdownCleanup {
     /**
      * How long the registry must stay quiet before the hook accepts that it is done.
      *
-     * <p>An empty registry is not proof that nothing is coming. A thread part-way through
-     * {@code connect()} when shutdown began has not registered yet, and the hook can look, find
-     * nothing and return before it does — leaving that thread's stream open at exit, which is
-     * the whole failure this class exists to prevent. Nor is it enough to wait only after
-     * seeing a late registration: on a machine where closing is faster than connecting, the
-     * hook drains what it found and is gone before the first late registration happens. So any
-     * activity at all — a close or a registration — restarts this clock.
+     * <p>It is not enough to wait only after seeing a late registration: on a machine where
+     * closing is faster than connecting, the hook drains what it found and is gone before the
+     * first late registration happens. So any activity at all — a close or a registration —
+     * restarts this clock.
+     *
+     * <p>The other case an empty registry does not rule out — a thread part-way through
+     * {@code connect()} that has not registered yet — is <em>not</em> covered by this clock,
+     * and used to be missed entirely: with nothing closed and nothing registered there was no
+     * activity to wait out, so the drain returned at once. {@link #CONNECTS_IN_FLIGHT} covers
+     * that one by counting it instead of guessing at it.
      *
      * <p>A clean exit pays nothing for it. Every connection is already closed, so the hook's
      * first pass closes nothing, there is no activity to wait out, and it returns immediately.
@@ -147,6 +177,21 @@ final class ShutdownCleanup {
     private static volatile long lastActivityNanos;
 
     private ShutdownCleanup() {
+    }
+
+    /**
+     * Notes that a thread is about to open a native handle it has not registered yet.
+     *
+     * <p>Must be paired with {@link #connectFinished()} from a {@code finally}, on every path
+     * including a connect that throws. See {@link #CONNECTS_IN_FLIGHT}.
+     */
+    static void connectStarted() {
+        CONNECTS_IN_FLIGHT.incrementAndGet();
+    }
+
+    /** The other half of {@link #connectStarted()}, whether the connect succeeded or not. */
+    static void connectFinished() {
+        CONNECTS_IN_FLIGHT.decrementAndGet();
     }
 
     /** Notes a connection as open, installing the hook on first use. */
@@ -271,7 +316,17 @@ final class ShutdownCleanup {
         }
     }
 
-    private static void drainOpenConnections() {
+    /**
+     * Package-private rather than private so a test can drive it.
+     *
+     * <p>The interesting part of this method is what it does <em>before</em> the JVM halts,
+     * and a forked-process test cannot see that: once the last shutdown hook returns the JVM
+     * is gone, so "did it wait for the connect that was in progress?" leaves no trace in an
+     * exit code. Calling it directly is the only way to assert the wait. Not public and not
+     * on any published type — {@code ShutdownCleanup} itself is package-private — so this is
+     * a seam for {@code ShutdownCleanupTest}, not surface a caller can reach.
+     */
+    static void drainOpenConnections() {
         // Drained rather than snapshotted once. A thread that connects and opens a stream
         // after a single snapshot was taken would be missed, leaving exactly the state this
         // hook exists to prevent -- and shutdown hooks run alongside application threads, so
@@ -307,7 +362,13 @@ final class ShutdownCleanup {
             }
 
             if (batch.isEmpty()) {
-                if (!sawActivity || System.nanoTime() - lastActivityNanos >= QUIET_PERIOD_NANOS) {
+                // A connect in progress is a handle that exists and has not announced itself,
+                // so keep waiting for it however long the registry has been quiet. Bounded by
+                // the deadline checked above, which is the whole reason this is a "while the
+                // count is non-zero" loop and not a join.
+                if (CONNECTS_IN_FLIGHT.get() == 0
+                        && (!sawActivity
+                                || System.nanoTime() - lastActivityNanos >= QUIET_PERIOD_NANOS)) {
                     return;
                 }
                 try {

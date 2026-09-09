@@ -160,6 +160,84 @@ class ProcessLifecycleIT extends NativeTestBase {
     }
 
     /**
+     * A connect that fails inside {@code chdb_connect()}, then an ordinary session.
+     *
+     * <p>The failing URL names a storage path whose parent is a regular file, which no
+     * platform can turn into a directory -- so the driver gets past its own URL parsing and
+     * the storage-path registry and fails in the engine, which is the only failure that lands
+     * between the in-flight-connect count going up and coming back down.
+     *
+     * <p>The second, successful connection is what installs the shutdown hook: the first one
+     * never reached {@code register()}.
+     */
+    public static final class ConnectsBadlyThenCleanly {
+        public static void main(String[] args) throws Exception {
+            Path parent = Files.createTempFile("chdb-not-a-directory", ".tmp");
+            try (Connection connection =
+                    DriverManager.getConnection("jdbc:chdb:" + parent + File.separator + "db")) {
+                System.out.println("unexpected: the engine accepted a path under a file");
+            } catch (SQLException expected) {
+                System.out.println("bad path refused");
+            }
+
+            try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
+                    Statement statement = connection.createStatement();
+                    ResultSet rs = statement.executeQuery("SELECT 1")) {
+                rs.next();
+            }
+            System.out.println(EXIT_MARKER + System.currentTimeMillis());
+        }
+    }
+
+    @Test
+    @DisplayName("a connect that failed does not make later exits pay the drain budget")
+    @Timeout(value = 3, unit = TimeUnit.MINUTES)
+    void aFailedConnectDoesNotStallTheExit() throws Exception {
+        // The way the in-flight-connect count is most easily got wrong. It is raised before
+        // chdb_connect() and lowered after register(); if the lowering is not in a finally, a
+        // single failed connect leaves it raised forever and the drain then waits out its
+        // whole 5 s budget on every subsequent exit -- silently, since the exit code is still
+        // 0. So the assertion has to be about time, not status.
+        ForkResult result = fork(ConnectsBadlyThenCleanly.class.getName(), List.of());
+        assertEquals(0, result.exitCode, result.output);
+        assertTrue(result.output.contains("bad path refused"), result.output);
+
+        long shutdownMillis = shutdownMillis(result);
+        // Measured on macOS arm64: 13-14 ms over three runs, against 400 ms for a leaked
+        // stream and 5000 ms for a leaked count. Anywhere under 3 s means the count came back
+        // down; the gap is wide enough that a slow CI machine cannot close it.
+        assertTrue(
+                shutdownMillis < 3000,
+                "the hook should have had nothing to wait for after a failed connect, but"
+                        + " shutdown took "
+                        + shutdownMillis
+                        + " ms -- an in-flight-connect count left raised by the failure would"
+                        + " spend the drain's whole budget.\n"
+                        + result.output);
+    }
+
+    /**
+     * Printed by a forked program as the last thing {@code main} does, carrying the wall clock
+     * at that moment.
+     *
+     * <p>What these tests need to bound is the shutdown phase, and total process time cannot
+     * do it: loading a 342 MB engine dominates and varies by an order of magnitude between a
+     * warm laptop and a cold CI runner. Subtracting the marker from the moment the process
+     * exits leaves the hook's own contribution.
+     */
+    private static final String EXIT_MARKER = "exit-at=";
+
+    private static long shutdownMillis(ForkResult result) {
+        long now = System.currentTimeMillis();
+        for (String line : result.output.split("\n")) {
+            if (line.startsWith(EXIT_MARKER)) {
+                return now - Long.parseLong(line.substring(EXIT_MARKER.length()).trim());
+            }
+        }
+        throw new AssertionError("the forked program never reached the end of main:\n" + result.output);
+    }
+
+    /**
      * Calls {@code chdb_shutdown()} the way the hook does, and reports what it answered.
      *
      * <p>In a forked JVM because it is irreversible: the engine is closed for the rest of the
