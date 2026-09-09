@@ -2,6 +2,7 @@ package org.chdb.jdbc;
 
 import java.sql.ParameterMetaData;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Types;
 
 /**
@@ -94,7 +95,7 @@ final class ChdbParameterMetaData implements ParameterMetaData {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+        throw new SQLFeatureNotSupportedException("Not a wrapper for " + iface.getName(), "0A000");
     }
 
     @Override

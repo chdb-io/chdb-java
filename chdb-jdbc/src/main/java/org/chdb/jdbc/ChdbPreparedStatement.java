@@ -17,6 +17,7 @@ import java.sql.Ref;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.RowId;
+import java.sql.SQLDataException;
 import java.sql.SQLException;
 import java.sql.SQLXML;
 import java.sql.Time;
@@ -548,7 +549,7 @@ public final class ChdbPreparedStatement extends ChdbStatement implements Prepar
                 }
             }
         } catch (java.io.IOException e) {
-            throw new SQLException("Failed to read the parameter's character stream: " + e, "22000", e);
+            throw new SQLDataException("Failed to read the parameter's character stream: " + e, "22000", e);
         }
         if (length > 0 && out.length() > length) {
             out.setLength(length);
@@ -614,7 +615,7 @@ public final class ChdbPreparedStatement extends ChdbStatement implements Prepar
                 }
             }
         } catch (java.io.IOException e) {
-            throw new SQLException("Failed to read the parameter's stream: " + e, "22000", e);
+            throw new SQLDataException("Failed to read the parameter's stream: " + e, "22000", e);
         }
         byte[] bytes = out.toByteArray();
         if (length > 0 && bytes.length > length) {

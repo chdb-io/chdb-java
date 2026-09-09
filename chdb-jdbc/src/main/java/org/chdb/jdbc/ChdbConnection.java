@@ -9,7 +9,9 @@ import java.sql.DatabaseMetaData;
 import java.sql.NClob;
 import java.sql.PreparedStatement;
 import java.sql.SQLClientInfoException;
+import java.sql.SQLDataException;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLWarning;
 import java.sql.SQLXML;
 import java.sql.Savepoint;
@@ -79,6 +81,26 @@ public final class ChdbConnection implements Connection {
     private final Set<ChdbStatement> openStatements =
             Collections.newSetFromMap(new ConcurrentHashMap<ChdbStatement, Boolean>());
 
+    /**
+     * Arbitrates between a thread starting a statement here and the shutdown hook closing this
+     * connection, which must never overlap: closing a connection whose statement is executing
+     * aborted the process in 21 runs of 60 on engine 26.7.2-rc.2, macOS arm64, against 0 of 60
+     * with the hook off, and blocked until the query finished in the runs that survived -- 34 s
+     * for four threads on a five-billion-row aggregate, 79 s for a longer one, against 1.1 s
+     * once those connections are skipped.
+     *
+     * <p>A gate rather than a counter the hook reads, because a read followed by a close is
+     * check-then-act and a shutdown hook runs alongside application threads. {@link
+     * ExecutionGate} has the reasoning and the reason it is not a lock; {@link ShutdownCleanup}
+     * has the whole measurement table.
+     *
+     * <p>Not the same question as {@link #statementSlot}, which is held from execution until
+     * the result set closes -- so a leaked stream on a parked thread holds it too, and that is
+     * precisely the connection the hook must close. What distinguishes them is whether a
+     * thread is inside the engine right now.
+     */
+    private final ExecutionGate executionGate = new ExecutionGate();
+
     private final Map<String, String> clientInfo = new LinkedHashMap<>();
     private volatile boolean readOnly;
     private volatile String catalog;
@@ -105,24 +127,41 @@ public final class ChdbConnection implements Connection {
         }
 
         StoragePathRegistry.acquire(url);
-        boolean opened = false;
-        try {
-            this.handle = ChdbNative.connect(Utf8.encodeAll(url.toConnectArguments()));
-            opened = true;
-        } catch (ChdbNativeException e) {
-            throw ChdbExceptions.wrap("Cannot connect to " + url.url(), e);
-        } finally {
-            if (!opened) {
-                // A failed connect must not leave the storage path pinned, or the next
-                // attempt at a different path fails for a connection that does not exist.
-                StoragePathRegistry.release(url);
-            }
-        }
 
-        // A JVM that exits with a streaming result set still open aborts inside the engine.
-        // Closing connections at shutdown closes their result sets, which is the state the
-        // engine tolerates. See ShutdownCleanup.
-        ShutdownCleanup.register(this);
+        // Announced before the handle exists and disowned only after it is registered, so the
+        // shutdown hook can tell "nothing is open" from "something is opening". Between
+        // chdb_connect() returning and register() completing, the engine holds a live handle
+        // that the hook's registry knows nothing about; a hook that ran in that window used to
+        // find an empty registry and return, leaving this connection's stream to be caught by
+        // the exit-time abort. See ShutdownCleanup.CONNECTS_IN_FLIGHT.
+        //
+        // The finally is the whole point. A count left raised by a connect that threw would
+        // make every subsequent JVM exit in this process wait out the drain's entire budget,
+        // so this must unwind on the failure paths too -- which is why it wraps the catch
+        // clauses rather than sitting inside the try.
+        ShutdownCleanup.connectStarted();
+        try {
+            boolean opened = false;
+            try {
+                this.handle = ChdbNative.connect(Utf8.encodeAll(url.toConnectArguments()));
+                opened = true;
+            } catch (ChdbNativeException e) {
+                throw ChdbExceptions.wrap("Cannot connect to " + url.url(), e);
+            } finally {
+                if (!opened) {
+                    // A failed connect must not leave the storage path pinned, or the next
+                    // attempt at a different path fails for a connection that does not exist.
+                    StoragePathRegistry.release(url);
+                }
+            }
+
+            // A JVM that exits with a streaming result set still open aborts inside the engine.
+            // Closing connections at shutdown closes their result sets, which is the state the
+            // engine tolerates. See ShutdownCleanup.
+            ShutdownCleanup.register(this);
+        } finally {
+            ShutdownCleanup.connectFinished();
+        }
     }
 
     // ------------------------------------------------------------------ internals
@@ -137,6 +176,53 @@ public final class ChdbConnection implements Connection {
 
     StatementSlot statementSlot() {
         return statementSlot;
+    }
+
+    /**
+     * Announces that this thread is about to start a statement in the engine.
+     *
+     * <p>{@code false} means the shutdown hook has taken this connection and is closing it, so
+     * the caller must not reach the engine. Paired with {@link #executionFinished()} from a
+     * {@code finally} whenever it returns {@code true}: a count left raised would make the
+     * hook skip this connection for the rest of the process, which is a silent leak of the
+     * thing the hook is for.
+     */
+    boolean executionStarted() {
+        return executionGate.enter();
+    }
+
+    void executionFinished() {
+        executionGate.exit();
+    }
+
+    /**
+     * Takes this connection for the shutdown hook, if no statement is starting on it.
+     *
+     * <p>Called by {@link ShutdownCleanup}'s drain while it holds its registry monitor, but the
+     * exclusion comes from the gate rather than from that monitor — which is what lets the
+     * drain call {@link #close()} after releasing it. See {@link ExecutionGate}.
+     *
+     * @return whether the hook may now close this connection
+     */
+    boolean claimForShutdownClose() {
+        return executionGate.closeToNewEntrants();
+    }
+
+    /** Whether the shutdown hook has claimed this connection. For the refusal message. */
+    boolean isClaimedForShutdownClose() {
+        return executionGate.isClosedToNewEntrants();
+    }
+
+    /**
+     * How many threads are inside a statement-start call here. For diagnostics and tests.
+     *
+     * <p>Non-terminal, unlike {@link #claimForShutdownClose()}, which is what makes it usable
+     * for checking that a statement that failed put the gate back. A count stuck above zero
+     * would make the shutdown hook skip this connection for the rest of the process and refuse
+     * nothing, so the leak is silent both ways.
+     */
+    int executionsInFlight() {
+        return executionGate.inFlight();
     }
 
     void register(ChdbStatement statement) {
@@ -319,7 +405,7 @@ public final class ChdbConnection implements Connection {
     @Override
     public boolean isValid(int timeout) throws SQLException {
         if (timeout < 0) {
-            throw new SQLException("timeout must not be negative", "22023");
+            throw new SQLDataException("timeout must not be negative", "22023");
         }
         if (closed.get()) {
             return false;
@@ -530,7 +616,7 @@ public final class ChdbConnection implements Connection {
     public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
         checkOpen();
         if (milliseconds < 0) {
-            throw new SQLException("timeout must not be negative", "22023");
+            throw new SQLDataException("timeout must not be negative", "22023");
         }
         // Recorded for getNetworkTimeout, but there is no network: chDB runs in this process.
         // Statement.setQueryTimeout is the timeout that does something.
@@ -611,7 +697,7 @@ public final class ChdbConnection implements Connection {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+        throw new SQLFeatureNotSupportedException("Not a wrapper for " + iface.getName(), "0A000");
     }
 
     @Override

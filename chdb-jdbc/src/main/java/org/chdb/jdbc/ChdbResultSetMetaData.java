@@ -1,7 +1,9 @@
 package org.chdb.jdbc;
 
 import java.sql.ResultSetMetaData;
+import java.sql.SQLDataException;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import org.chdb.internal.ArrowFieldType;
 import org.chdb.internal.ArrowSchemaView;
 
@@ -26,7 +28,7 @@ final class ChdbResultSetMetaData implements ResultSetMetaData {
 
     private ArrowFieldType type(int column) throws SQLException {
         if (column < 1 || column > schema.columnCount()) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Column index "
                             + column
                             + " is out of range; this result set has "
@@ -171,7 +173,7 @@ final class ChdbResultSetMetaData implements ResultSetMetaData {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+        throw new SQLFeatureNotSupportedException("Not a wrapper for " + iface.getName(), "0A000");
     }
 
     @Override

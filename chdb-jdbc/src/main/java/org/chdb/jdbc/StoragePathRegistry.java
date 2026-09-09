@@ -1,6 +1,7 @@
 package org.chdb.jdbc;
 
 import java.sql.SQLException;
+import java.sql.SQLNonTransientConnectionException;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -51,7 +52,7 @@ final class StoragePathRegistry {
         String key = url.registryKey();
         synchronized (LOCK) {
             if (openConnections > 0 && !key.equals(boundKey)) {
-                throw new SQLException(conflictMessage(key), "08004");
+                throw new SQLNonTransientConnectionException(conflictMessage(key), "08004");
             }
             boundKey = key;
             openConnections++;

@@ -2,10 +2,12 @@ package org.chdb.jdbc;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.chdb.internal.ChdbNative;
 
 /**
@@ -48,41 +50,78 @@ import org.chdb.internal.ChdbNative;
  * <h2>Concurrency</h2>
  * A shutdown hook runs concurrently with application threads, which the JVM does not stop
  * first. Everything here is written for that: registration can happen while the hook is
- * draining, and a connection can be mid-{@code close()} on another thread when the hook reaches
- * it. Both cases end with the stream closed, or the hook has not done its job.
+ * draining, a connection can be mid-{@code close()} on another thread when the hook reaches
+ * it, and a thread can be starting a statement on a connection the hook is about to reach.
+ * The first two end with the stream closed, or the hook has not done its job. The third is
+ * settled by {@link ExecutionGate}, and settled rather than raced: the hook takes a connection
+ * with a compare-and-set that succeeds only while nothing is starting on it, so there is no
+ * "look, then close" window for a statement to arrive in.
  *
- * <p>The hook does not stop at the first empty registry either, because a thread part-way
- * through {@code connect()} has not registered yet; it waits out a quiet period first. The two
- * constants below bound how long it tries.
+ * <p>The hook does not stop at the first empty registry either. A thread part-way through
+ * {@code connect()} has not registered yet, so the drain counts those separately and waits
+ * while the count is non-zero; and any close or registration it does see restarts a quiet
+ * period. The constants below bound how long it tries.
  *
  * <h2>What it cannot do</h2>
  * A connection opened long after everything went quiet — from a competing shutdown hook, say —
  * is unreachable. Nothing can reach it: the hook would have to wait for a connection that may
  * never come.
  *
- * <p>More importantly, <strong>a JVM that exits while another thread is still executing a
- * query aborts, and this hook is what aborts it.</strong> Four threads, and for the first two
- * rows a leaked stream in {@code main} as well; measured on engine 26.7.2-rc.2, and the last
- * two rows measured the same way on 26.7.0:
+ * <h2>Connections it declines to close</h2>
+ * <strong>A connection whose statement is executing is left alone.</strong> Closing one is not
+ * something the engine tolerates, and this hook used to do it — which made the hook the cause
+ * of the very assertion quoted at the top of this class. Measured on engine 26.7.2-rc.2, macOS
+ * arm64, two threads with {@code main} returning while they are in flight, counting the
+ * {@code front()} assertion above:
  *
  * <pre>
- *   threads parked after leaking their streams, hook on   exit 0
- *   threads parked after leaking their streams, hook off  exit 134
- *   threads with a query still in flight, hook on         exit 134
- *   threads with a query still in flight, hook off        exit 0
+ *   route          hook on, closing   hook off   hook on, skipping
+ *   streaming        21 in 60          0 in 60      0 in 80
+ *   materialized      6 in 40          0 in 20      0 in 80
  * </pre>
  *
- * The last row is the uncomfortable one: left alone, that process exits cleanly, and the
- * hook's attempt to close a connection whose query is still running is what turns it into an
- * abort. {@code close()} on such a connection is not something the engine tolerates, and the
- * hook cannot tell that case apart from the leaked stream it exists for — an open stream holds
- * the statement slot too. {@code chdb_shutdown()} does not rescue it either: it declines to
- * act while a connection is open, and that connection is the one that cannot be closed.
+ * "Closing" is what this hook did before; "skipping" is what it does now. Both of {@code
+ * ChdbStatement}'s result-set routes are covered because both start with a native call on the
+ * connection, and the abort does not care which — the streaming figures come from a
+ * two-billion-row aggregate, the materialized ones from a {@code DESC} over a 1.9 GB
+ * {@code JSONEachRow} file with the schema-inference row limit raised, which is the one
+ * materialized statement that reads data rather than metadata (25.9 s, against 87 ms for
+ * {@code CHECK TABLE} on a 30 M-row {@code MergeTree} and 1–5 ms for {@code EXPLAIN}).
  *
- * <p>So an application that queries from background threads has to stop them before exiting.
- * If it cannot, {@code -Dchdb.shutdownHook=false} is the better trade for that shape, at the
- * cost of the leaked-stream case. Both halves are in {@code docs/unsupported.md} and
- * {@code docs/upstream-findings.md} §9, because the real fix is upstream.
+ * <p>The runs that did not abort were not free either: {@code chdb_close_conn()} on a
+ * connection with a query running <em>blocks</em> until the query finishes, so the hook held
+ * the JVM open for as long as the query — 34 s for four threads on five billion rows, 79 s for
+ * a longer one — against 1.1 s now. {@link #DRAIN_BUDGET_NANOS} cannot bound that: the budget
+ * is checked between passes and a close already under way is not interruptible.
+ *
+ * <p>Skipping is safe because the state it leaves behind is the one the engine is happy with —
+ * a connection open, with no stream of its own yet, which the second row above shows exits
+ * cleanly. It is not the leaked stream this class exists for: that thread is parked, not inside
+ * the engine, so it is closed as before. The two are told apart by whether a thread is inside a
+ * native call that starts a statement, not by the statement slot, which a leaked stream holds
+ * as well.
+ *
+ * <p>The distinction is <em>claimed</em>, not inspected. Asking a connection whether a
+ * statement is executing and then closing it would leave the abort reachable in the window
+ * between the two, which for a hook running alongside live application threads is an ordinary
+ * interleaving rather than an exotic one. {@link ExecutionGate} makes the question and the
+ * answer one compare-and-set, and tells the loser: the hook skips the connection, or the
+ * application thread gets {@code SQLException} with SQLSTATE {@code 08003} naming the shutdown.
+ *
+ * <p><strong>One abort in this shape is still not the driver's to fix.</strong> Rarely, and in
+ * bursts that track machine load, a JVM halting with a thread inside the engine dies in C++
+ * exit-time destructors instead: {@code mutex lock failed: Invalid argument}. It appears at the
+ * same rate whether the hook runs or not — 2 of 80 against 3 of 80 on one build, and 1 of 80
+ * with the hook on after the claim went in — so no hook reaches it, and
+ * {@code -Dchdb.shutdownHook=false} does not avoid it. {@code docs/upstream-findings.md} §9 has
+ * it.
+ *
+ * <p>What skipping costs: {@link #stopEngine()} declines while any connection is open, so a
+ * process exiting with a query in flight does not get the engine's threads joined. Measured,
+ * that changes no exit code — see {@link #stopEngine()} — and the drain does give such a
+ * connection another look on each pass, so a query that ends inside the drain's remaining time
+ * is closed after all. An application that wants the guarantee has to stop its query threads
+ * before exiting; that has not changed, and {@code docs/unsupported.md} says so.
  */
 final class ShutdownCleanup {
 
@@ -105,6 +144,31 @@ final class ShutdownCleanup {
             Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
+     * Connect attempts that have not reached {@link #register} yet.
+     *
+     * <p>The registry alone cannot answer "is anything still coming?". {@code
+     * ChdbConnection}'s constructor opens the native handle before it registers, so between
+     * those two points a live engine handle exists and {@link #OPEN} is empty — and the first
+     * connection in a process is the most exposed, because the thread that installs the hook
+     * is the thread that has not registered yet. The drain used to look, find nothing and
+     * return, which left that connection's stream open at exit: the abort this class exists
+     * to prevent.
+     *
+     * <p>Counted rather than inferred from an empty registry, because the alternative — treat
+     * the start of the drain as activity and always wait out {@link #QUIET_PERIOD_NANOS} —
+     * makes every clean exit pay up to 400 ms for a connection that is usually not there. A
+     * counter waits only when a connect is known to be in progress; measured, a clean exit
+     * still pays nothing (see {@code ProcessLifecycleIT}).
+     *
+     * <p>Incremented before {@code chdb_connect()} and decremented after {@code register()},
+     * in a {@code finally} so a connect that throws cannot leave it raised — a leaked count
+     * would make every later JVM exit in the process wait out {@link #DRAIN_BUDGET_NANOS}.
+     * The order inside {@code register()} matters too: the connection is in {@link #OPEN}
+     * before the count drops, so there is no instant in which neither says it exists.
+     */
+    private static final AtomicInteger CONNECTS_IN_FLIGHT = new AtomicInteger();
+
+    /**
      * How long the hook keeps re-checking for connections opened while it was running.
      *
      * <p>Bounded by time rather than by a number of passes: a thread still opening connections
@@ -118,13 +182,16 @@ final class ShutdownCleanup {
     /**
      * How long the registry must stay quiet before the hook accepts that it is done.
      *
-     * <p>An empty registry is not proof that nothing is coming. A thread part-way through
-     * {@code connect()} when shutdown began has not registered yet, and the hook can look, find
-     * nothing and return before it does — leaving that thread's stream open at exit, which is
-     * the whole failure this class exists to prevent. Nor is it enough to wait only after
-     * seeing a late registration: on a machine where closing is faster than connecting, the
-     * hook drains what it found and is gone before the first late registration happens. So any
-     * activity at all — a close or a registration — restarts this clock.
+     * <p>It is not enough to wait only after seeing a late registration: on a machine where
+     * closing is faster than connecting, the hook drains what it found and is gone before the
+     * first late registration happens. So any activity at all — a close or a registration —
+     * restarts this clock.
+     *
+     * <p>The other case an empty registry does not rule out — a thread part-way through
+     * {@code connect()} that has not registered yet — is <em>not</em> covered by this clock,
+     * and used to be missed entirely: with nothing closed and nothing registered there was no
+     * activity to wait out, so the drain returned at once. {@link #CONNECTS_IN_FLIGHT} covers
+     * that one by counting it instead of guessing at it.
      *
      * <p>A clean exit pays nothing for it. Every connection is already closed, so the hook's
      * first pass closes nothing, there is no activity to wait out, and it returns immediately.
@@ -147,6 +214,21 @@ final class ShutdownCleanup {
     private static volatile long lastActivityNanos;
 
     private ShutdownCleanup() {
+    }
+
+    /**
+     * Notes that a thread is about to open a native handle it has not registered yet.
+     *
+     * <p>Must be paired with {@link #connectFinished()} from a {@code finally}, on every path
+     * including a connect that throws. See {@link #CONNECTS_IN_FLIGHT}.
+     */
+    static void connectStarted() {
+        CONNECTS_IN_FLIGHT.incrementAndGet();
+    }
+
+    /** The other half of {@link #connectStarted()}, whether the connect succeeded or not. */
+    static void connectFinished() {
+        CONNECTS_IN_FLIGHT.decrementAndGet();
     }
 
     /** Notes a connection as open, installing the hook on first use. */
@@ -182,8 +264,11 @@ final class ShutdownCleanup {
     /**
      * Whether the JVM is shutting down and this hook is doing the closing.
      *
-     * <p>{@code ChdbConnection.close()} reads it to skip work that only matters to a process
-     * that keeps running, and to avoid waiting on anything.
+     * <p>Nothing reads it. It was added for a {@code ChdbConnection.close()} that would skip
+     * work only a surviving process cares about, and that close path was never written —
+     * noted here rather than deleted because the flag is also what {@link #register} uses to
+     * decide whether a late registration counts as activity, and because a caller that does
+     * want to ask is likely to arrive with the connection-level fix upstream (§9).
      */
     static boolean isShuttingDown() {
         return shuttingDown;
@@ -240,10 +325,10 @@ final class ShutdownCleanup {
      * <p><strong>It did not change any exit code this driver can measure.</strong> Every shape
      * tried on macOS arm64, drain-only against drain-then-{@code chdb_shutdown()}, six runs
      * each, came out identical: the leaked-stream exit was already clean from the drain alone,
-     * and the case the drain cannot reach — four threads with a query still in flight when the
-     * process halts — aborts either way, because a connection carrying a running query is one
-     * the drain cannot close, and an open connection is exactly what {@code chdb_shutdown()}
-     * refuses to act under. See "What it cannot do" above for that one.
+     * and the case the drain declines to touch — a thread with a query still in flight when
+     * the process halts — exits cleanly with this call returning {@code CHDBError}, since an
+     * open connection is exactly what it refuses to act under. See "Connections it declines to
+     * close" above for that one.
      *
      * <p>It is called anyway, because what it guarantees is an ordering an exit code cannot
      * see: no engine thread is alive when the host proceeds to its own native teardown —
@@ -271,21 +356,56 @@ final class ShutdownCleanup {
         }
     }
 
-    private static void drainOpenConnections() {
+    /**
+     * Package-private rather than private so a test can drive it.
+     *
+     * <p>The interesting part of this method is what it does <em>before</em> the JVM halts,
+     * and a forked-process test cannot see that: once the last shutdown hook returns the JVM
+     * is gone, so "did it wait for the connect that was in progress?" leaves no trace in an
+     * exit code. Calling it directly is the only way to assert the wait. Not public and not
+     * on any published type — {@code ShutdownCleanup} itself is package-private — so this is
+     * a seam for {@code ShutdownCleanupTest}, not surface a caller can reach.
+     */
+    static void drainOpenConnections() {
         // Drained rather than snapshotted once. A thread that connects and opens a stream
         // after a single snapshot was taken would be missed, leaving exactly the state this
         // hook exists to prevent -- and shutdown hooks run alongside application threads, so
         // that race is ordinary rather than exotic.
         long deadline = System.nanoTime() + DRAIN_BUDGET_NANOS;
         while (true) {
-            List<ChdbConnection> batch;
+            List<ChdbConnection> batch = new ArrayList<>();
             synchronized (OPEN) {
-                batch = OPEN.isEmpty() ? Collections.emptyList() : new ArrayList<>(OPEN.keySet());
-                OPEN.clear();
+                for (Iterator<ChdbConnection> it = OPEN.keySet().iterator(); it.hasNext(); ) {
+                    ChdbConnection connection = it.next();
+                    // Claimed, not inspected. Asking "is a statement executing?" and then
+                    // closing is check-then-act, and this thread runs alongside the
+                    // application's: a statement starting between the question and the close
+                    // would put the connection back in the state that aborts. The claim is a
+                    // compare-and-set that succeeds only from idle and, once it succeeds,
+                    // stops any further statement from starting -- so it settles the question
+                    // it asks. See ExecutionGate.
+                    if (!connection.claimForShutdownClose()) {
+                        // Left registered rather than taken, which is what gives it another
+                        // look on the next pass: a query that ends inside the drain's remaining
+                        // time gets closed after all, and one that does not is simply left
+                        // open. Not closing it is the point -- see the class javadoc for the
+                        // measurement -- and leaving it here costs nothing, because a pass that
+                        // takes nothing is a pass that sleeps, so this cannot spin.
+                        continue;
+                    }
+                    batch.add(connection);
+                    it.remove();
+                }
             }
 
-            // Outside the lock: close() reaches the engine, and holding the registry's monitor
-            // across that would block every thread still trying to register or unregister.
+            // Outside the lock, and that is not a compromise. close() reaches the engine, and
+            // chdb_close_conn() blocks until the connection's query finishes -- 79 s in the
+            // worst case measured -- so a monitor held across it would stall every thread
+            // trying to register, unregister or start a statement for that whole time, which
+            // is a worse failure than the one this class is fixing. Nothing is lost by
+            // releasing it: the claim above already stopped new statements on every connection
+            // in this batch, so the exclusion these closes need is carried by the connection's
+            // own gate rather than by any lock this thread holds.
             for (ChdbConnection connection : batch) {
                 noteActivity();
                 try {
@@ -307,7 +427,13 @@ final class ShutdownCleanup {
             }
 
             if (batch.isEmpty()) {
-                if (!sawActivity || System.nanoTime() - lastActivityNanos >= QUIET_PERIOD_NANOS) {
+                // A connect in progress is a handle that exists and has not announced itself,
+                // so keep waiting for it however long the registry has been quiet. Bounded by
+                // the deadline checked above, which is the whole reason this is a "while the
+                // count is non-zero" loop and not a join.
+                if (CONNECTS_IN_FLIGHT.get() == 0
+                        && (!sawActivity
+                                || System.nanoTime() - lastActivityNanos >= QUIET_PERIOD_NANOS)) {
                     return;
                 }
                 try {

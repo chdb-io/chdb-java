@@ -224,4 +224,54 @@ class HikariPoolIT extends NativeTestBase {
             assertFalse(connection.isClosed());
         }
     }
+
+    @Test
+    @DisplayName("a connection the shutdown hook has claimed is evicted, not handed on")
+    @Timeout(value = 2, unit = TimeUnit.MINUTES)
+    void aClaimedConnectionIsEvictedFromThePool() throws SQLException {
+        // The end of the chain issue #22 opened. Once the hook has claimed a connection it can
+        // never run another statement, so a pool that returned it to the idle set would hand
+        // the next caller a connection that fails on use -- forever, for the rest of the
+        // process.
+        //
+        // Worth being precise about what makes this work, because it is not the exception type:
+        // HikariCP evicts on getSQLState().startsWith("08"), checked against
+        // ProxyConnection.checkException in 5.1.0, so it acts on the SQLSTATE alone and this
+        // passed before the refusal was given its JDBC subclass as well. What the subclass buys
+        // is callers that catch SQLNonTransientConnectionException instead of reading the
+        // string; SqlStateTypeTest covers that. This test covers the pool.
+        // Sized to one on purpose: a pool that did not evict has nowhere else to get a
+        // connection from, so it would have to hand the claimed one back and the SELECT below
+        // would fail. With room for a second, the test could pass without eviction happening.
+        try (HikariDataSource dataSource = pool(1)) {
+            org.chdb.jdbc.ChdbConnection claimed;
+            try (Connection pooled = dataSource.getConnection()) {
+                claimed = pooled.unwrap(org.chdb.jdbc.ChdbConnection.class);
+                assertTrue(
+                        org.chdb.jdbc.ShutdownHookAccess.claim(claimed),
+                        "an idle pooled connection is claimable");
+
+                SQLException refused =
+                        org.junit.jupiter.api.Assertions.assertThrows(
+                                SQLException.class,
+                                () -> {
+                                    try (Statement statement = pooled.createStatement()) {
+                                        statement.executeQuery("SELECT 1");
+                                    }
+                                });
+                assertEquals("08003", refused.getSQLState(), refused.getMessage());
+            }
+
+            // Returned to the pool and, because of the SQLSTATE, marked broken on the way. The
+            // next caller must get a different physical connection that works.
+            try (Connection replacement = dataSource.getConnection();
+                    Statement statement = replacement.createStatement();
+                    ResultSet rs = statement.executeQuery("SELECT 1")) {
+                assertTrue(rs.next(), "the pool handed out a connection that cannot be used");
+                assertFalse(
+                        replacement.unwrap(org.chdb.jdbc.ChdbConnection.class) == claimed,
+                        "the pool handed back the claimed connection instead of evicting it");
+            }
+        }
+    }
 }

@@ -7,6 +7,7 @@ import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.SQLException;
+import java.sql.SQLNonTransientConnectionException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -103,7 +104,7 @@ public final class ChdbUrl {
      */
     public static ChdbUrl parse(String url, Properties supplied) throws SQLException {
         if (!accepts(url)) {
-            throw new SQLException(
+            throw new SQLNonTransientConnectionException(
                     "Not a chDB JDBC URL: " + url + ". Expected " + PREFIX
                             + "<path>, " + PREFIX + MEMORY + ", or " + PREFIX + " for in-memory.",
                     "08001");
@@ -153,7 +154,7 @@ public final class ChdbUrl {
             String textual =
                     encodingThatCannotHold(pathPart) == null ? null : resolveTextually(pathPart);
             if (textual == null) {
-                throw new SQLException(
+                throw new SQLNonTransientConnectionException(
                         "Cannot resolve the storage path \"" + pathPart + "\" from URL " + url
                                 + ": " + e + localeHint(pathPart),
                         "08001",
@@ -290,7 +291,7 @@ public final class ChdbUrl {
             }
             int eq = pair.indexOf('=');
             if (eq < 0) {
-                throw new SQLException(
+                throw new SQLNonTransientConnectionException(
                         "Malformed property \"" + pair + "\" in URL " + url
                                 + ". Properties are key=value pairs separated by '&'.",
                         "08001");
@@ -305,9 +306,10 @@ public final class ChdbUrl {
             // V1's floor is Java 11 but this keeps the file compilable on the old signature.
             return URLDecoder.decode(value, "UTF-8");
         } catch (UnsupportedEncodingException e) {
-            throw new SQLException("UTF-8 is unavailable in this JVM", "08001", e);
+            throw new SQLNonTransientConnectionException(
+                    "UTF-8 is unavailable in this JVM", "08001", e);
         } catch (IllegalArgumentException e) {
-            throw new SQLException(
+            throw new SQLNonTransientConnectionException(
                     "Malformed percent-encoding in URL " + url + ": " + e.getMessage(), "08001", e);
         }
     }

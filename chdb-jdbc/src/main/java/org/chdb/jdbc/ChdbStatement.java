@@ -2,7 +2,9 @@ package org.chdb.jdbc;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.SQLDataException;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLTimeoutException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
@@ -44,6 +46,14 @@ import org.chdb.internal.ChdbNativeException;
  * to cancel yet: the call that opens the result set. {@link
  * #checkDeadlineSurvivedTheOpen(String)} is what keeps that window from turning a timeout into
  * a late success.
+ *
+ * <h2>At JVM shutdown</h2>
+ * All three routes start with the same native call into a connection the shutdown hook may be
+ * about to close, and closing a connection mid-statement aborts the engine. So execution takes
+ * {@link ExecutionGate} first, before the route is decided, and a statement that arrives after
+ * the hook has claimed the connection is refused with SQLSTATE {@code 08003} rather than
+ * started. See {@link ShutdownCleanup} for the measurement and {@code docs/unsupported.md} for
+ * what a caller should do about it.
  */
 public class ChdbStatement implements Statement {
 
@@ -182,7 +192,36 @@ public class ChdbStatement implements Statement {
         // time, and its fetches count.
         connection.statementSlot().acquire(sql);
         boolean handedOff = false;
+        boolean entered = false;
         try {
+            // Covers every native call that starts a statement on this connection -- the
+            // classifier in route(), both stream opens in openStream() (chdb_query_arrow_n on
+            // the materialized route, the streaming open on the other) and chdb_query_n in
+            // runMaterialized() -- and stops where a result set takes over, because from there
+            // on the thread is fetching rather than starting. Held by covering the whole body
+            // rather than by wrapping each call, so a fourth entry point added later is inside
+            // it by default rather than by remembering.
+            //
+            // The shutdown hook cannot close the connection while this is held, and cannot be
+            // talked into it by timing: the gate is taken by compare-and-set, not by asking and
+            // then acting. See ExecutionGate.
+            //
+            // Before the timeout is armed, deliberately. A refusal here must not leave a timer
+            // running against an execution that never happened; putting the gate first means
+            // there is no timer to disarm rather than a timer whose staleness some other
+            // mechanism has to notice. It is after the slot acquire, equally deliberately: a
+            // thread waiting for another statement's result set to close is not inside the
+            // engine, and holding the gate across that wait would block the hook for as long as
+            // the other statement lives.
+            //
+            // Refused only when the hook already owns the connection. Nothing has been
+            // allocated at this point -- no stream, no result set, no timeout armed -- so the
+            // finally below releasing the slot is the whole of the unwinding needed.
+            entered = connection.executionStarted();
+            if (!entered) {
+                throw ChdbExceptions.shuttingDown();
+            }
+
             StatementShape.Route route = route(sql);
             boolean producesResultSet = route != StatementShape.Route.NO_RESULT_SET;
             if (expectResultSet != null && expectResultSet && !producesResultSet) {
@@ -213,6 +252,9 @@ public class ChdbStatement implements Statement {
             runMaterialized(sql, parameterNames, parameterValues);
             return false;
         } finally {
+            if (entered) {
+                connection.executionFinished();
+            }
             if (!handedOff) {
                 connection.statementSlot().release();
             }
@@ -317,7 +359,7 @@ public class ChdbStatement implements Statement {
             // Reported rather than worked around: interpolating the values into the SQL is
             // the injection this driver's server-side binding exists to avoid, and running
             // the statement with the bindings dropped would answer the wrong question.
-            throw new SQLException(
+            throw new SQLFeatureNotSupportedException(
                     "Server-side parameters are not supported for "
                             + describeStatement(sql)
                             + ", because the engine has no parameter-binding form of the Arrow"
@@ -625,7 +667,7 @@ public class ChdbStatement implements Statement {
     public void setQueryTimeout(int seconds) throws SQLException {
         checkOpen();
         if (seconds < 0) {
-            throw new SQLException("query timeout must not be negative", "22023");
+            throw new SQLDataException("query timeout must not be negative", "22023");
         }
         this.queryTimeoutSeconds = seconds;
     }
@@ -640,7 +682,7 @@ public class ChdbStatement implements Statement {
     public void setMaxRows(int max) throws SQLException {
         checkOpen();
         if (max < 0) {
-            throw new SQLException("maxRows must not be negative", "22023");
+            throw new SQLDataException("maxRows must not be negative", "22023");
         }
         this.maxRows = max;
     }
@@ -668,7 +710,7 @@ public class ChdbStatement implements Statement {
     public void setFetchSize(int rows) throws SQLException {
         checkOpen();
         if (rows < 0) {
-            throw new SQLException("fetchSize must not be negative", "22023");
+            throw new SQLDataException("fetchSize must not be negative", "22023");
         }
         // Recorded but inert: batch size is the engine's block size, which the driver does not
         // control. Throwing here would break frameworks that set a fetch size as a matter of
@@ -834,7 +876,7 @@ public class ChdbStatement implements Statement {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+        throw new SQLFeatureNotSupportedException("Not a wrapper for " + iface.getName(), "0A000");
     }
 
     @Override

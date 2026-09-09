@@ -5,6 +5,7 @@ import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.RowIdLifetime;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import org.chdb.internal.NativeLibraryLoader;
 
@@ -1179,7 +1180,7 @@ final class ChdbDatabaseMetaData implements DatabaseMetaData {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+        throw new SQLFeatureNotSupportedException("Not a wrapper for " + iface.getName(), "0A000");
     }
 
     @Override

@@ -15,6 +15,26 @@ Two sections at the end are about frameworks rather than the API: what
 [`DatabaseMetaData`](#databasemetadata-nothing-on-it-throws) does when a GUI sweeps it, and
 [what each framework hits](#under-a-framework).
 
+## What to catch
+
+Every SQLSTATE the driver throws carries the `SQLException` subclass JDBC 4 defines for its
+class, so `catch` on the type and a check of `getSQLState()` agree:
+
+| SQLSTATE | thrown as | when |
+|---|---|---|
+| `08001`, `08003`, `08004` | `SQLNonTransientConnectionException` | bad URL or unusable platform; a statement started after the shutdown hook claimed the connection; a second storage path in one JVM |
+| `0A000` | `SQLFeatureNotSupportedException` | everything in this document, plus `?` parameters on the statements listed under [Other](#other) |
+| `22xxx` | `SQLDataException` | a value that does not fit the requested type, an unparseable date, a negative `setQueryTimeout` |
+| `42xxx` | `SQLSyntaxErrorException` | the engine rejected the SQL; a `?` the driver's lexer cannot place; no such column in the result set |
+| `53200` | `SQLTransientException` | `max_memory_usage` exceeded — the one failure where retrying is meaningful |
+| `57014` | `SQLTimeoutException` for a timeout, `SQLException` for a cancel | `setQueryTimeout` expired, or `cancel()` was called |
+| `25000`, `70100`, `HY010`, `HY000`, `07xxx`, `24000` | `SQLException`, or `SQLNonTransientException` for `HY010` | JDBC defines no subclass for these classes, so the driver claims nothing more |
+
+`getErrorCode()` carries ClickHouse's own error number whenever the engine supplied one, which
+is what to branch on for a specific engine condition; it is stable across engine versions in a
+way message text is not. An engine error the driver does not recognise deliberately arrives with
+**no** SQLSTATE rather than a guessed one.
+
 ## Transactions
 
 | Method | |
@@ -217,15 +237,37 @@ One consequence worth knowing: `chdb_connect()` fails once the hook has run, bec
 concurrently and in no defined order, so a host that queries chDB from a shutdown hook of its
 own is racing this one. Do that work before shutdown, or turn the hook off.
 
-What the hook cannot cover is a thread still *executing* a query when the process halts, and
-here it is worse than that: the hook's attempt to close that connection is itself enough to
-abort. Four threads each running a long aggregate while `main` returns exits 134 with the hook
-on and 0 with it off, on 26.7.0 and 26.7.2-rc.2 alike. `chdb_shutdown()` does not rescue it —
-the engine declines to shut down while any connection is open, and a connection with a query
-in flight is the one the hook cannot close. So **shut your executor down before returning from
-`main`**. If you cannot, `-Dchdb.shutdownHook=false` is the lesser evil for that shape, at the
-cost of the leaked-stream case above. See
-[upstream findings §9](upstream-findings.md).
+What the hook cannot cover is a thread still *executing* a query when the process halts. It
+used to try, and trying made things worse: `chdb_close_conn()` on a connection whose query is
+running blocks until the query finishes, and closing one is enough to provoke the same engine
+abort the hook exists to prevent. Two threads on a two-billion-row aggregate, macOS arm64,
+engine 26.7.2-rc.2: 21 aborts in 60 runs with the old hook, 0 in 60 with the hook off, 0 in 80
+with the hook as it now is; and the same again on the route that materializes its result set
+(`SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK`), 6 aborts in 40 against 0 in 80, because the
+abort is about closing the connection rather than about how the statement was started. The
+surviving runs held the JVM open for the length of the query — 34 s for four threads on five
+billion rows — against 0.3 s now. The hook leaves those
+connections alone, which is what the process would have done with no hook at all.
+
+The cost of leaving them is that `chdb_shutdown()` declines while any connection is open, so a
+process exiting mid-query does not get the engine's threads joined. Measured, that changes no
+exit code, but it is a guarantee you do not have. So **shut your executor down before returning
+from `main`** if you want it. The driver also has no way to interrupt such a query on your
+behalf: the C ABI's cancel applies to a stream, and a query that has not produced one yet has
+nothing to cancel.
+
+The mirror of that rule is visible to your code. Once the hook has taken a connection, a
+statement started on it is refused with `SQLException`, SQLSTATE `08003`, whose message names
+the shutdown. The hook has to refuse rather than let the statement through — starting one on a
+connection it is closing is the abort above — so a thread that queries during shutdown should
+expect this, and it means the hook declined for a reason rather than that anything is broken.
+The `Statement` is left usable and unclosed, and no stream or result set is left half-open.
+
+There is also a rarer abort in this shape that no hook reaches — the engine's C++ exit-time
+destructors racing a thread that is still inside it, `mutex lock failed: Invalid argument`, at
+the same rate with the hook on and off. Turning the hook off does not avoid it; only not
+exiting mid-query does. See [upstream findings §9](upstream-findings.md), which asks upstream
+for a shutdown that does not require the caller to have closed everything first.
 
 **A misspelled setting name in the URL is silent.** Properties after `?` that the driver does
 not recognize are handed to the engine as `--key=value`, and the engine accepts a name it has
