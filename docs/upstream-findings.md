@@ -64,14 +64,59 @@ Two further details that shape the workaround:
 `SignalGuard` that snapshots every guarded signal's `sigaction`, makes the call, and restores
 whatever changed, under a process-wide lock.
 
-**What would remove it:** an entry point that suppresses future installs without touching the
-incumbent handlers — the work plan's §5.6 first choice. `chdb_reset_signal_handlers()` is
-useful on its own and should keep its current behaviour; it is
-`chdb_set_signal_handlers_enabled(0)` calling it that makes the compound operation unusable
-from a host runtime.
+### 1a. The workaround cannot be made correct under concurrency
+
+**Severity: kills the JVM, intermittently, with no crash report. Not worked around — it cannot
+be from outside the engine.** This is issue #14.
+
+Signal dispositions are process-wide, so "snapshot, call, restore" is not atomic with respect
+to the *other* threads in the JVM. The lock `SignalGuard` holds serialises guard against guard;
+it does nothing about the eight application threads a connection pool has running Java code.
+Between `chdb_reset_signal_handlers()` inside `chdb_connect()` and the shim's restore, the
+whole process has `SIGSEGV` at `SIG_DFL` — and any thread that takes one of HotSpot's
+recoverable SIGSEGVs in that window is killed by the kernel.
+
+Worse, it is killed **silently**: HotSpot writes `hs_err_pid*.log` from its own SIGSEGV
+handler, which is the handler that was just removed. So the failure mode is a bare exit 139
+with no crash report, no matter what `-XX:ErrorFile` is set to. That is precisely what #14
+observed, and why waiting for a stack there was never going to work.
+
+Measured with an observer thread sampling `signalDispositions()` while another thread opens and
+closes 200 connections (`scripts/run-signal-window-test.sh measure`):
+
+| platform | JVM | observations of a host handler at `SIG_DFL` | samples |
+|---|---|---|---|
+| macOS arm64 | HotSpot 11.0.25 | 648–803 | ~365,000 |
+| linux-aarch64 | Red Hat 11.0.25 | 1,116–1,161 | ~490,000 |
+
+About 0.2% of wall clock, a few microseconds per connect. Small, but it is hit: eight threads
+opening connections alongside eight threads generating stack-guard SIGSEGVs
+(`scripts/run-signal-window-test.sh stress`) killed the JVM in **8 of 8 runs on macOS arm64
+(exit 138, SIGBUS) and 4 of 4 on linux-aarch64 (exit 139, SIGSEGV)**, with no `hs_err` file in
+any of them.
+
+Leaving the opt-out unset is not an escape. With the flag clear, the engine installs its own
+deadly-signal handlers during connect instead, and the same observer sees them in place for
+331,296 of 557,194 samples — roughly 60% of every connect, three orders of magnitude more
+exposure — where they turn a SIGSEGV HotSpot would have recovered from into a fatal engine
+crash. The opt-out is the lesser hazard, which is why the driver keeps it.
+
+All the driver can do is reduce the number of windows, and it has: the opt-out is now made once
+per process rather than once per `Connection.open()`, which took the macOS figure from 233–260
+down to 179–184 over the same 200 connects. The window inside `chdb_connect()` is upstream's.
+
+**What would remove it:** the same API as §1 — a way to set the opt-out flag without resetting
+the incumbent handlers. With that, `chdb_connect()`'s two reset branches never fire and the
+window disappears. Alternatively, `chdb_connect()` could stop resetting handlers even when the
+flag is set: the flag's documented purpose is to suppress *future installs*, and re-resetting on
+every connect is not needed for that.
 
 **Tests:** `SignalHandlerIT` — including `jvmStillOwnsSegv`, which triggers a real
-NullPointerException after connecting, and would terminate the JVM if the guard regressed.
+NullPointerException after connecting, and would terminate the JVM if the guard regressed, and
+`concurrentConnectsNeverExposeAChdbHandler`, which is the only case that watches the
+dispositions from a *different* thread than the one making the call. `scripts/run-signal-window-test.sh`
+is the standalone reproducer; its `measure` count reaching zero is how an upstream fix gets
+verified.
 
 ---
 

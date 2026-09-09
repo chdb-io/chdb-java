@@ -89,11 +89,15 @@ public final class ChdbConnection implements Connection {
         this.url = url;
 
         try {
-            // Loads libchdb and the shim, and opts out of chDB's signal handlers before the
-            // first connect -- that opt-out resets the JVM's own SIGSEGV/SIGBUS/SIGILL/SIGFPE
-            // handlers as a side effect, and the shim restores them (work plan section 5.6).
+            // Loads libchdb and the shim. The opt-out from chDB's signal handlers happens
+            // inside this call, once per process -- not here, per connection, as it used to.
+            // The opt-out resets the JVM's own SIGSEGV/SIGBUS/SIGILL/SIGFPE handlers as a
+            // side effect and the shim restores them (work plan section 5.6), but the restore
+            // cannot be atomic: dispositions are process-wide, so every call leaves a window
+            // in which another thread taking one of those signals dies with no handler.
+            // Doing it per connection doubled the number of those windows for nothing, since
+            // the flag it sets is sticky. See issue #14 and NativeLibraryLoader.load().
             NativeLibraryLoader.ensureLoaded();
-            ChdbNative.protectHostSignalHandlers();
         } catch (UnsupportedPlatformException e) {
             throw ChdbExceptions.wrap("Cannot connect to " + url.url(), e);
         } catch (ChdbNativeException e) {

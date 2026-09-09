@@ -6,8 +6,11 @@ chDB installs process-wide crash handlers so it can print ClickHouse-style stack
 is wrong for a JVM: HotSpot's own SIGSEGV, SIGBUS, SIGILL and SIGFPE handlers are load-bearing.
 So the driver opts out of chDB's handlers — and repairs the damage that opting out does.
 
-You do not have to configure anything. This page is here because the behaviour is surprising
-and because you lose one diagnostic.
+You do not have to configure anything. This page is here because the behaviour is surprising,
+because you lose one diagnostic, and because the repair is not quite complete: a residual
+few-microsecond window per connect is not closable from outside the engine, and matters only if
+you open connections while other threads are running. See
+[What the guard cannot do](#what-the-guard-cannot-do).
 
 ## Why the JVM needs its own handlers
 
@@ -43,7 +46,9 @@ The JNI shim brackets every call that can reach that code:
 3. restore whatever changed, and report which signals those were.
 
 Under a process-wide lock, so two threads cannot interleave a reset with a restore. The guard
-is applied on the opt-out call and on every connect, because both re-run the reset.
+is applied on the opt-out call and on every connect, because both re-run the reset. The opt-out
+is made once per process, at load; the reset inside `chdb_connect()` is not something the driver
+can decline, so that one is guarded per connect.
 
 You can see it happen:
 
@@ -66,6 +71,40 @@ assert before.equals(ChdbNative.signalDispositions());
 
 `SignalHandlerIT` asserts exactly this across load, connect, query and close, and is a release
 gate for V1 — the driver is not publishable if it fails.
+
+## What the guard cannot do
+
+That check is taken from the thread that made the call, after it returned, so it only ever sees
+what the guard restored. It is blind to the thing that actually bites.
+
+Signal dispositions belong to the process, not the thread, so "snapshot, call, restore" cannot
+be atomic against the *rest* of the JVM. Between chDB's reset — which happens inside
+`chdb_connect()`, before the shim gets control back — and the guard's restore, the whole
+process has `SIGSEGV` at `SIG_DFL` for a few microseconds. A thread that takes one of HotSpot's
+recoverable SIGSEGVs in that window is killed by the kernel, and no `hs_err_pid*.log` is
+written, because HotSpot's crash reporter is the handler that was just removed. The symptom is
+a bare exit 139 with nothing to read.
+
+This needs concurrency to matter: something has to be running Java code while another thread
+opens a connection. A single-threaded application never sees it. A connection pool that opens
+connections while other threads work is exactly the shape that does — see
+[issue #14](https://github.com/chdb-io/chdb-java/issues/14) and
+[upstream findings §1a](upstream-findings.md).
+
+Measured over 200 connects with an observer thread, the exposure is about 0.2% of wall clock.
+If you want to see it, or to check whether a newer engine has fixed it:
+
+```
+scripts/run-signal-window-test.sh measure     # non-destructive; counts the window
+scripts/run-signal-window-test.sh stress      # demonstrates it is lethal; kills the JVM
+```
+
+There is no setting that avoids this, and the driver has already taken the only reduction
+available to it — making the opt-out once per process rather than once per connection. Closing
+the window needs an engine that does not reset host handlers on the connect path. Until then,
+the practical mitigation is to open connections early and keep them, rather than opening one
+per request: the exposure is per `chdb_connect()`, so a pool with a stable set of connections
+pays it a handful of times at startup instead of continuously.
 
 ## What you lose
 

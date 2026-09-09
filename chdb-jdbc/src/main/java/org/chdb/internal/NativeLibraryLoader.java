@@ -219,6 +219,19 @@ public final class NativeLibraryLoader {
         }
 
         NativeOwner.publish(loaded);
+
+        // Opt out of chDB's signal handlers exactly once per process, here rather than in
+        // ChdbConnection's constructor. The flag chdb_set_signal_handlers_enabled(0) sets is
+        // process-wide and sticky, so one call is all the opt-out needs -- but each call also
+        // resets the JVM's SIGSEGV/SIGBUS/SIGILL/SIGFPE handlers to SIG_DFL for the few
+        // microseconds until the shim's SignalGuard puts them back, and in that window any
+        // other thread taking one of those signals is killed with no handler and no hs_err
+        // report. Calling it per connection paid that window twice per Connection.open()
+        // instead of twice per JVM; see issue #14.
+        //
+        // Safe to call native methods here: verify() above already does, re-entering
+        // ChdbNative's initializer on this thread (JLS 12.4.2).
+        ChdbNative.protectHostSignalHandlers();
         return loaded;
     }
 
