@@ -62,4 +62,49 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!-- Central requires a sources and a javadoc jar for every non-pom artifact. -->
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals>
+                  <goal>jar-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <!--
+                The driver's javadoc is a large part of how it documents its own limits, so
+                doclint stays on for everything except the accessibility checks, which flag
+                the tables in the type-mapping docs and say nothing useful about the API.
+              -->
+              <doclint>all,-accessibility</doclint>
+              <quiet>true</quiet>
+              <notimestamp>true</notimestamp>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

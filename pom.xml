@@ -20,6 +20,38 @@
     </license>
   </licenses>
 
+  <organization>
+    <name>chDB</name>
+    <url>https://chdb.io</url>
+  </organization>
+
+  <!--
+    Central rejects a release without <scm>, <developers> and <licenses>. They are here rather
+    than in the release profile because they describe the project whether or not it is being
+    published, and a consumer reading the POM from a snapshot should see the same thing.
+  -->
+  <scm>
+    <connection>scm:git:https://github.com/chdb-io/chdb-java.git</connection>
+    <developerConnection>scm:git:git@github.com:chdb-io/chdb-java.git</developerConnection>
+    <url>https://github.com/chdb-io/chdb-java</url>
+    <tag>HEAD</tag>
+  </scm>
+
+  <developers>
+    <developer>
+      <id>chdb-io</id>
+      <name>The chDB maintainers</name>
+      <url>https://github.com/chdb-io</url>
+      <organization>chDB</organization>
+      <organizationUrl>https://chdb.io</organizationUrl>
+    </developer>
+  </developers>
+
+  <issueManagement>
+    <system>GitHub Issues</system>
+    <url>https://github.com/chdb-io/chdb-java/issues</url>
+  </issueManagement>
+
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
@@ -123,7 +155,77 @@
           <artifactId>exec-maven-plugin</artifactId>
           <version>3.2.0</version>
         </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-gpg-plugin</artifactId>
+          <version>3.2.8</version>
+        </plugin>
+        <plugin>
+          <groupId>org.sonatype.central</groupId>
+          <artifactId>central-publishing-maven-plugin</artifactId>
+          <version>0.11.0</version>
+        </plugin>
       </plugins>
     </pluginManagement>
   </build>
+
+  <profiles>
+    <!--
+      Everything a Maven Central release needs and an ordinary build must not pay for: signing
+      (which prompts for a passphrase), and the publishing plugin (which talks to Sonatype).
+      The source and javadoc jars Central also requires are attached per module, because what
+      "sources" means differs between the driver and a package whose content is two shared
+      libraries — see the release profile in each module.
+
+          mvn -Prelease deploy
+
+      Requires a `central` server entry in settings.xml holding the portal token, and a GPG
+      key whose public half is on a keyserver. docs/publishing.md is the runbook.
+    -->
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+                <configuration>
+                  <!--
+                    Loopback pinentry so the passphrase can come from a CI secret rather than a
+                    terminal. Harmless interactively: gpg-agent still caches as usual.
+                  -->
+                  <gpgArguments>
+                    <arg>--pinentry-mode</arg>
+                    <arg>loopback</arg>
+                  </gpgArguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <!--
+                Deliberately not automatic. A release here is ~550 MB across six artifacts and
+                cannot be unpublished; a human confirming the bundle in the portal is worth the
+                extra step, at least until several releases have gone out uneventfully.
+              -->
+              <autoPublish>false</autoPublish>
+              <waitUntilValidated>true</waitUntilValidated>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

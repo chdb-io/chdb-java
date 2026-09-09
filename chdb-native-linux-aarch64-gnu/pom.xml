@@ -66,4 +66,71 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      Central requires a sources and a javadoc jar even for an artifact whose entire content is
+      two shared libraries. There is no Java here to document, so these are empty by
+      construction rather than by accident — maven-source-plugin would produce nothing at all
+      and the upload would be rejected for a missing file. The sources are in this repository
+      and the POM's <scm> says where.
+    -->
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>make-empty-dir</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target>
+                    <mkdir dir="${project.build.directory}/empty-for-central"/>
+                  </target>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-jar-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>empty-sources-jar</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+                <configuration>
+                  <classifier>sources</classifier>
+                  <classesDirectory>${project.build.directory}/empty-for-central</classesDirectory>
+                  <forceCreation>true</forceCreation>
+                  <skipIfEmpty>false</skipIfEmpty>
+                </configuration>
+              </execution>
+              <execution>
+                <id>empty-javadoc-jar</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+                <configuration>
+                  <classifier>javadoc</classifier>
+                  <classesDirectory>${project.build.directory}/empty-for-central</classesDirectory>
+                  <forceCreation>true</forceCreation>
+                  <skipIfEmpty>false</skipIfEmpty>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
