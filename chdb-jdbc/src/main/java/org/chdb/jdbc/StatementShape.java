@@ -16,9 +16,11 @@ import java.util.Set;
  *
  * <ol>
  *   <li>{@code chdb_classify_query_n}, which parses the SQL with the engine's own parser and
- *       settings and executes nothing. Authoritative, and available from engine v26.7.1-rc.1.
- *   <li>the leading-keyword scan below, for the pinned v26.7.0 baseline, which does not
- *       export the classifier.
+ *       settings and executes nothing. Authoritative, and available from engine v26.7.2-rc.2 --
+ *       the pinned baseline, so this is the path taken in practice.
+ *   <li>the leading-keyword scan below, for an engine that does not export the classifier.
+ *       Nothing older than the baseline is supported, but the loader can be pointed at another
+ *       {@code libchdb} of the same version, so the fallback stays.
  * </ol>
  *
  * <h2>Why a wrong guess is not retried</h2>

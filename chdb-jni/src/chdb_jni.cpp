@@ -572,8 +572,19 @@ Java_org_chdb_internal_ChdbNative_connect(JNIEnv * env, jclass, jobjectArray arg
             // the causes have to be listed here. Ordered by how often they are the answer, and
             // deliberately not led by the storage-path conflict: the Java layer checks that
             // itself before calling, so by this point it has almost certainly been ruled out.
+            //
+            // The settings cause is first because the arguments are printed directly below it,
+            // which makes it the one a reader can check without leaving the message. It is also
+            // new: on engine 26.7.0 an invalid value for a known setting connected successfully
+            // with the setting ignored, so it could not be the reason. On v26.7.2-rc.2 it is --
+            // --max_threads=not-a-number, --max_threads=-5 and --max_memory_usage=abc all fail
+            // the connect, which is what chdb.h documents. An unrecognized setting *name* is
+            // still accepted and ignored, so it is not a cause.
             std::string message = "chdb_connect failed. The engine gives no reason of its own, so"
                                   " check, in this order:\n"
+                                  "  - a setting below has a value the engine rejects: since"
+                                  " engine 26.7.2-rc.2 an invalid value for a known setting fails"
+                                  " the connect rather than being ignored\n"
                                   "  - the storage path exists as a directory, or can be created:"
                                   " a path naming an existing regular file fails here\n"
                                   "  - the process can read and write it\n"
@@ -824,9 +835,9 @@ Java_org_chdb_internal_ChdbNative_classifyQuery(JNIEnv * env, jclass, jlong conn
 {
     try
     {
-        // Optional symbol: absent on the pinned v26.7.0 baseline, present from
-        // v26.7.1-rc.1. Null tells the Java side to use its own statement-shape heuristic
-        // rather than failing the query.
+        // Optional symbol: present from v26.7.2-rc.2, which is the pinned baseline, absent
+        // on anything older. Null tells the Java side to use its own statement-shape
+        // heuristic rather than failing the query.
         const auto classify = optionalApi().classify_query_n;
         if (classify == nullptr)
             return nullptr;

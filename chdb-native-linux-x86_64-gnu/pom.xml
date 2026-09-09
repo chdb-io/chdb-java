@@ -7,7 +7,7 @@
   <parent>
     <groupId>org.chdb</groupId>
     <artifactId>chdb-java-parent</artifactId>
-    <version>26.7.0.1-SNAPSHOT</version>
+    <version>26.7.2-rc.2.1-SNAPSHOT</version>
   </parent>
 
   <artifactId>chdb-native-linux-x86_64-gnu</artifactId>

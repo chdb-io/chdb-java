@@ -1,9 +1,23 @@
 # Engine findings from building the V1 binding
 
-Facts about `chdb-core` that this binding had to work around, each one observed against the
-pinned baseline **v26.7.0** on macOS arm64 while implementing work-plan phases 0–8. They are
-recorded here because every one of them is a decision the driver's code depends on, and because
-several belong upstream rather than in a Java driver.
+Facts about `chdb-core` that this binding had to work around, each one first observed on macOS
+arm64 while implementing work-plan phases 0–8 against what was then the pinned baseline,
+**v26.7.0**. They are recorded here because every one of them is a decision the driver's code
+depends on, and because several belong upstream rather than in a Java driver.
+
+The baseline has since moved to **v26.7.2-rc.2** (issue #8, for `chdb_shutdown()`), and four
+of these entries changed with it rather than being carried over:
+
+- **§2 was wrong about who was at fault** and is rewritten. The released header was always
+  correct; the stale version constant came from this repository vendoring the source tree's
+  copy instead of the tarball's.
+- **§5 is now half fixed upstream.** An invalid *value* for a known setting fails the connect,
+  as documented. An unrecognized setting *name* is still accepted and ignored.
+- **§6 no longer applies to the baseline**: both optional symbols are exported now.
+- **§9 is new**, from measuring what `chdb_shutdown()` does and does not do.
+
+The rest still hold on the new engine, and the tests named against each are what demonstrates
+that — they run in `mvn verify` against whichever engine is pinned.
 
 Reproduce any of them with `mvn verify` — each has a test named below.
 
@@ -120,32 +134,44 @@ verified.
 
 ---
 
-## 2. `CHDB_VERSION` in the v26.7.0 header says `26.5.1-rc.3`
+## 2. `CHDB_VERSION` is stale in the source tree, correct in the release — the bug was ours
 
-**Severity: breaks a documented release check. Not worked around; the header constant is
-unusable.**
+**Severity: none upstream, for anyone using a release. Was a wrong vendoring source here; now
+fixed.**
 
-The header at tag `v26.7.0` carries:
+This entry used to say the v26.7.0 header shipped `#define CHDB_VERSION "26.5.1-rc.3"` while
+`chdb_version()` returned `26.7.0`, and blamed upstream for not bumping the constant. Moving
+the baseline turned up the real cause, which is worth recording because the conclusion was
+inverted.
 
-```c
-#define CHDB_VERSION "26.5.1-rc.3"
-```
+`chdb.h` exists in two places and they do not agree:
 
-while `chdb_version()` from the same release's shared library returns `26.7.0`. The constant
-was not bumped for the release.
+| | v26.7.0 | v26.7.2-rc.2 |
+|---|---|---|
+| `programs/local/chdb.h` at the git tag | `26.5.1-rc.3` | `26.7.2` |
+| `chdb.h` inside the release tarball | `26.7.0` | `26.7.2-rc.2` |
+| `chdb_version()` from that tarball's library | `26.7.0` | `26.7.2-rc.2` |
 
-Work plan §5.1 asks for a consistency check across `chdb_version()`, the release tag and the
-header version. Two of the three agree; the header does not, and no Java-side check can fix
-that.
+The release build stamps the constant, and the released artifact has always been right. What
+was wrong was this repository's vendored copy: it was byte-identical to the *source tree* at
+tag v26.7.0, stale constant included, rather than to the header inside the release tarball.
 
-**Consequence for this binding:** the loader compares `chdb_version()` against
-`CHDB_JNI_EXPECTED_ENGINE_VERSION`, which comes from `scripts/engine.properties` via CMake, and
-treats the header's `CHDB_VERSION` as build provenance only. It is reported by
-`ChdbNative.shimBuildInfo()` as `shim.built.against.engine.header` so a mismatched pair is
-diagnosable, and is deliberately not used for any decision.
+**Consequence for this binding:** `chdb-jni/include/chdb.h` is now taken from the release
+tarball, which is the artifact this binding is built beside and ships against, and
+`shim.built.against.engine.header` reads `26.7.2-rc.2` accordingly. The rule is recorded in
+`chdb-jni/CMakeLists.txt` where the vendored header is included: copy it from the tarball, not
+from the source tree, and do not edit it — its value is being byte-identical to what upstream
+shipped, which is what makes the next comparison able to detect drift. This finding was made
+exactly that way.
 
-**Suggested upstream fix:** derive `CHDB_VERSION` from the release version at build time, or
-drop it, since `chdb_version()` already answers the question correctly at runtime.
+**What is left for upstream, and it is minor:** the in-tree constant is stale between releases,
+so anyone building chdb-core from a checkout gets a header that misreports its own version.
+Deriving it at configure time as well as at release time would close that.
+
+**Unchanged decision:** the loader still compares `chdb_version()` against
+`CHDB_JNI_EXPECTED_ENGINE_VERSION` from `scripts/engine.properties`, and still treats the
+header's constant as build provenance only. A constant compiled into the shim cannot describe
+the library that was actually loaded, however correct it is.
 
 ---
 
@@ -222,59 +248,76 @@ currently implies but does not deliver.
 
 ---
 
-## 5. Invalid setting values do not fail the connection
+## 5. Invalid setting *values* now fail the connection; unknown *names* still do not
 
-**Severity: documentation mismatch. Not worked around; nothing to work around.**
+**Severity: half fixed upstream between v26.7.0 and v26.7.2-rc.2. The remaining half is a
+silent typo, documented rather than worked around.**
 
 `chdb.h` says of `chdb_connect`:
 
 > An invalid value for a known setting fails the connection.
 
-On v26.7.0 it does not. All three of these connect successfully:
+On v26.7.0 it did not. On v26.7.2-rc.2 it does. Measured through the driver, one connection
+per URL:
 
-```
---max_threads=not-a-number
---max_threads=-5
---no_such_setting_at_all=1
-```
+| connection | v26.7.0 | v26.7.2-rc.2 |
+|---|---|---|
+| `?max_threads=4` | connects, `max_threads=4` | connects, `max_threads=4` |
+| `?max_threads=not-a-number` | connects, setting ignored | **connect fails** |
+| `?max_threads=-5` | connects, setting ignored | **connect fails** |
+| `?max_memory_usage=abc` | connects, setting ignored | **connect fails** |
+| `?no_such_setting_at_all=1` | connects, ignored | connects, ignored |
 
-A caller that mistypes a setting in a JDBC URL gets a working connection with the setting
-silently absent.
+So an invalid value is now reported, as documented. An unrecognized setting *name* is still
+accepted and silently dropped, which is the more common typo of the two: `max_thread=4` or
+`max_memmory_usage=...` gives a working connection with the setting absent.
 
-**Consequence for this binding:** the driver forwards unknown properties to the engine as
-`--key=value` and cannot validate them, so a typo is invisible. `docs/native-loading.md` says
-so rather than implying the engine checks.
+**Consequence for this binding:** the driver forwards unrecognized URL properties to the engine
+as `--key=value` and cannot tell a setting name from a misspelling, so it still cannot catch
+that case. Two things follow from the half that changed. The connect-failure diagnostic in
+`chdb_jni.cpp` now leads with "a setting below has a value the engine rejects", because
+`chdb_connect()` returns NULL with no message and the previous list named only storage-path
+causes — a user passing `--max_threads=not-a-number` was told to check disk space.
+`docs/unsupported.md` and `docs/native-loading.md` say which half is caught and which is not,
+and recommend `SELECT value FROM system.settings WHERE name = '...'` for the half that is not.
 
-**Suggested upstream fix:** either validate at connect as documented, or amend the
-documentation. Validating is the more useful of the two for every binding.
+**Suggested upstream fix:** fail, or at least warn, on a setting name the engine does not
+recognize. Validating values without validating names catches the rarer mistake.
 
 ---
 
-## 6. `chdb_classify_query_n` and `chdb_shutdown` are absent from v26.7.0
+## 6. `chdb_classify_query_n` and `chdb_shutdown` arrived in v26.7.2-rc.2
 
-**Severity: expected; handled as optional symbols.**
+**Severity: expected; still handled as optional symbols.**
 
-Both landed in v26.7.1-rc.1, after the pinned V1 baseline. Verified against the release
-library:
+Neither is in v26.7.0 or v26.7.1-rc.1. Both are in v26.7.2-rc.2, which is now the baseline.
+Checked in the release library rather than in the source's export list, because the two are not
+the same claim:
 
 ```
 $ nm -gU libchdb.so | grep -E ' _chdb_(classify_query_n|shutdown)$'
-(no output)
+0000000005a94ec0 T _chdb_classify_query_n
+0000000005a94fc0 T _chdb_shutdown
 ```
+
+On v26.7.0 and v26.7.1-rc.1 the same command prints nothing, and neither name appears in
+`chdb/libchdb_export_macos.txt`, `chdb/libchdb_export.map` or `programs/local/chdb.h` at either
+tag — which is worth stating because the driver's own comments claimed v26.7.1-rc.1 for a
+while.
 
 This is what work plan §5.1's split between required and optional symbols is for. The required
 set — the 18 entry points `chdb_jni.cpp` calls directly — is checked by the linker at build time
-and re-checked by the loader at startup. The optional two are resolved with
-`dlsym(RTLD_DEFAULT)` in `chdb_optional_api.cpp` and their absence is not an error:
+and re-checked by the loader at startup. These two are resolved with `dlsym(RTLD_DEFAULT)` in
+`chdb_optional_api.cpp`, and they stay there now that the baseline has them, because the
+loader can be pointed at another `libchdb` of the same version and an absent symbol has to
+degrade rather than fail the load:
 
 - no classifier: `StatementShape` falls back to a leading-keyword scan to decide whether a
   statement has a result set to stream;
 - no `chdb_shutdown`: `ChdbNative.shutdown()` returns 2, and the engine threads are reaped by
   process exit as they always were.
 
-Both are worth having, so V1.1 on a stable engine that exports them should prefer the
-classifier over the keyword scan — the engine's own parser is authoritative and the scan is
-not.
+`chdb_shutdown()` turned out to be narrower than issue #8 assumed — see §9.
 
 ---
 
@@ -398,6 +441,62 @@ even where it happens to be harmless. The cause was `std::atoi`, which returns 0
 non-numeric input, and an unconditional 8-byte width for anything starting `ts`. Both parsers
 are now pinned to the same table, in `ArrowFieldTypeTest.unsupportedFormats` and
 `chdb_jni_test.cpp`.
+
+---
+
+## 9. `chdb_shutdown()` cannot make an unclean exit clean
+
+**Severity: the exit-time abort stays a driver problem. Not worked around; needs either an
+upstream change or an accepted limitation.**
+
+Issue #8 moved the baseline to v26.7.2-rc.2 to get `chdb_shutdown()`, on the expectation that
+it would replace the driver's shutdown hook. It cannot, and measuring it says why. The header
+is explicit about the reason:
+
+> Close every connection and destroy every result first. While a connection is still open this
+> does nothing and returns `CHDBError`, because tearing the engine down under a live connection
+> would leave it dangling.
+
+So it is not a teardown a host can call on the way out — it is a teardown a host can call once
+it has already done the hard part. Measured on macOS arm64, a JVM that leaks a streaming
+`ResultSet` and falls off the end of `main` with the driver's hook off:
+
+| what the process does before exiting | `chdb_shutdown()` returns | exit |
+|---|---|---|
+| nothing | — | 134 |
+| calls it with the connection still open | 1 (`CHDBError`) | 134 |
+| closes the connection, then calls it | 0 | 0 |
+
+The third row is what the driver's hook now does: drain the connection registry, then call it.
+The second row is why the registry could not be deleted.
+
+What the call buys, measured, is nothing an exit code can see: every shape tried came out
+identical with and without it, six runs each. It is kept because the ordering it guarantees —
+no engine thread alive when the host proceeds to its own native teardown — is real even where
+no exit code reflects it, and because it is free once the connections are closed.
+
+**A second finding fell out of the same measurement.** Closing a connection whose query is
+still executing can itself trigger the abort. Four threads each running one long aggregate,
+`main` returning while they are in flight:
+
+| engine | driver hook | exit, over runs |
+|---|---|---|
+| 26.7.0 | on | 134, 134, 0 |
+| 26.7.0 | off | 0, 0, 0 |
+| 26.7.2-rc.2 | on (with or without `chdb_shutdown()`) | 134 × 12 |
+| 26.7.2-rc.2 | off | 0 × 6 |
+
+Both engines behave the same way, so this is not something the baseline move introduced, and
+the `chdb_shutdown()` call makes no difference to it. But it means the hook can turn a clean
+exit into an abort for an application that queries from background threads — the one case
+where the safety net is the hazard. `docs/unsupported.md` says so, and
+`-Dchdb.shutdownHook=false` is the switch.
+
+**Suggested upstream fix:** a shutdown that does not require the caller to have closed
+everything first — cancel and join whatever is running, since the process is going away
+regardless — would let a host make its own exit safe without racing its own application
+threads. Failing that, `chdb_close_conn()` on a connection with a query in flight should be
+safe, which would let the hook do its job in the one case it currently cannot.
 
 ---
 

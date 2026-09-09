@@ -121,5 +121,7 @@ int result = org.chdb.internal.ChdbNative.shutdown();
 ```
 
 Not needed for a process that simply exits: the threads are reaped by exit, as they always
-were. The pinned 26.7.0 engine does not export it and returns 2; see
-[upstream findings §6](upstream-findings.md).
+were. The pinned 26.7.2-rc.2 engine exports it, so 2 is what an older engine returns; see
+[upstream findings §6](upstream-findings.md). The driver's shutdown hook already calls it
+after closing the connections it knows about, so a host that leaves the hook installed does
+not need to.

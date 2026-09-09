@@ -238,7 +238,14 @@ jobs:
         # load. Exercised separately because the integration tests use chdb.library.path.
         run: |
           mvn $MAVEN_ARGS -pl chdb-examples -am compile
-          java -cp "chdb-jdbc/target/chdb-jdbc-26.7.0.1-SNAPSHOT.jar:$(ls chdb-native-${{ matrix.platform }}/target/*.jar | head -1):chdb-examples/target/classes" \
+          # Globbed rather than spelled out: the driver JAR carries the project version, which
+          # moves with the engine baseline, and a hardcoded name here goes stale silently.
+          # `package -DskipTests` above builds only the main JAR, so there is nothing else to
+          # match.
+          DRIVER_JAR=$(ls chdb-jdbc/target/chdb-jdbc-*.jar | grep -v -e '\-sources\.jar$' -e '\-javadoc\.jar$' | head -1)
+          [ -n "$DRIVER_JAR" ] || { echo "::error::no chdb-jdbc JAR in chdb-jdbc/target"; exit 1; }
+          echo "driver JAR: $DRIVER_JAR"
+          java -cp "$DRIVER_JAR:$(ls chdb-native-${{ matrix.platform }}/target/*.jar | head -1):chdb-examples/target/classes" \
             -Dchdb.cache.dir="$PWD/target/ci-cache" \
             org.chdb.examples.QuickStart
 
@@ -336,7 +343,7 @@ jobs:
               ldd '"$LIBS"'/libchdb_java_jni.so
 
               echo
-              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.7.0                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
+              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.7.2-rc.2                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
             '
 
       - name: A query over the memory limit returns an exception, not an OOM kill

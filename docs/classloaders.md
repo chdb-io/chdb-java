@@ -49,16 +49,16 @@ and the driver is loaded once by the common loader; both webapps reach it by del
 
 ```
 The chDB native runtime is already loaded in a different ClassLoader, so this
-ClassLoader cannot load /tmp/chdb-java/26.7.0-.../libchdb.so as well. A JVM holds
+ClassLoader cannot load /tmp/chdb-java/26.7.2-rc.2-.../libchdb.so as well. A JVM holds
 one copy of a JNI library and it belongs to whichever ClassLoader loaded it.
 
 Already loaded by:
   owner = org.apache.catalina.loader.ParallelWebappClassLoader@4b1c1ea6
   platform = linux-x86_64-gnu
-  engine.version = 26.7.0
+  engine.version = 26.7.2-rc.2
   jni.abi.version = 1
   source = native-jar
-  engine.path = /tmp/chdb-java/26.7.0-linux-x86_64-gnu-.../libchdb.so
+  engine.path = /tmp/chdb-java/26.7.2-rc.2-linux-x86_64-gnu-.../libchdb.so
   jni.path = ...
 Loading from:
   org.apache.catalina.loader.ParallelWebappClassLoader@7a3e0c11

@@ -12,11 +12,11 @@ extern "C" {
 
 #define CHDB_EXPORT __attribute__((visibility("default")))
 
-#define CHDB_VERSION "26.5.1-rc.3"
+#define CHDB_VERSION "26.7.2-rc.2"
 
 /**
  * Returns the version of the linked chDB library.
- * @return Null-terminated version string, e.g. "26.5.1-rc.3"
+ * @return Null-terminated version string, e.g. "26.7.2"
  */
 CHDB_EXPORT const char * chdb_version(void);
 
@@ -80,6 +80,81 @@ typedef enum chdb_state
     CHDBError = 1
 } chdb_state;
 
+// What a statement does to state that outlives it, as decided by the
+// ClickHouse parser -- see chdb_classify_query_n().
+//
+// The classes answer two questions a caller replaying statements has to keep
+// apart: does this change anything that outlives the statement, and would
+// `BACKUP DATABASE <db>` carry the change?
+//
+//                            outlives it?   `BACKUP DATABASE` carries it?
+//   READ_ONLY                     no              --
+//   MUTATING                      yes             yes
+//   MUTATING_GLOBAL               yes             NO
+//   CONTROL                    session only, or not replayable at all
+//
+// MUTATING_GLOBAL is the class that catches people out. `CREATE FUNCTION`,
+// `CREATE USER` and a named collection all change something real and are
+// worth replaying, but they live beside the databases rather than inside one,
+// so a checkpoint of the database does not hold them. A caller that files
+// them with the MUTATING statements and later checkpoints loses them without
+// an error -- the failure surfaces much later, somewhere else. Keep them
+// where a checkpoint cannot truncate them.
+//
+// Values ascend by how restricted the statement is, so a batch of statements
+// classifies as the maximum over its members.
+typedef enum chdb_query_class
+{
+    // SELECT, SHOW, DESCRIBE, EXPLAIN, EXISTS, CHECK: leaves no trace.
+    CHDB_QUERY_READ_ONLY = 0,
+    // INSERT, CREATE, ALTER, DROP, TRUNCATE, RENAME, UPDATE, DELETE, OPTIMIZE:
+    // changes a database, and `BACKUP DATABASE` captures the change.
+    CHDB_QUERY_MUTATING = 1,
+    // Global UDFs, named collections, workloads, resources, access management,
+    // and writes into the `system` database: persistent, replayable, and
+    // outside every database a checkpoint could capture.
+    CHDB_QUERY_MUTATING_GLOBAL = 2,
+    // USE, SET, ATTACH, DETACH, SYSTEM, BACKUP, RESTORE, KILL, transaction
+    // control, and statements writing outside the engine altogether
+    // (INTO OUTFILE, INSERT INTO FUNCTION): either session-scoped, so
+    // replaying makes no sense, or not something a caller should be issuing
+    // through a managed connection at all.
+    CHDB_QUERY_CONTROL = 3,
+    // Did not parse, or parsed into a statement this version does not classify.
+    // Callers gating writes on the class must treat it as a refusal.
+    CHDB_QUERY_UNKNOWN = 4
+} chdb_query_class;
+
+// Facts about a statement beyond its class -- see chdb_classify_query_n().
+typedef enum chdb_query_analysis_flag
+{
+    // The text carries a credential: a named collection's key, a password, an
+    // access key handed to a table function. Never set when the class is
+    // UNKNOWN, since nothing was proven about text that did not parse.
+    CHDB_QUERY_HAS_SECRETS = 1u << 0,
+    // Every persistent write the statement performs lands in the database the
+    // caller named. Set only when that can be proven: an unqualified name is
+    // resolved through the connection's current database first, and any write
+    // to another database, to `system`, to a table function, or to a file
+    // clears it. A statement that writes nothing sets it vacuously.
+    CHDB_QUERY_WRITES_ONLY_TARGET_DATABASE = 1u << 1,
+    // The statement creates, drops or renames a database rather than acting
+    // inside one. That is a change to the container, which a caller managing
+    // an object per database has to handle itself rather than log.
+    CHDB_QUERY_CHANGES_DATABASE_LIFECYCLE = 1u << 2
+} chdb_query_analysis_flag;
+
+// What chdb_classify_query_n() reports. Versioned by size: set struct_size to
+// sizeof the struct you compiled against, and a newer engine will fill only
+// the fields you have room for.
+typedef struct chdb_query_analysis_v1
+{
+    uint32_t struct_size;      // caller sets to sizeof(chdb_query_analysis_v1)
+    uint32_t statement_count;  // executable statements; PARALLEL WITH arms count
+    uint32_t flags;            // chdb_query_analysis_flag, OR-ed
+    uint32_t query_class;      // chdb_query_class, as a fixed-width ABI field
+} chdb_query_analysis_v1;
+
 // Opaque handle for query results.
 // Internal data structure managed by chDB implementation.
 // Users should only interact through API functions.
@@ -135,6 +210,14 @@ CHDB_EXPORT void free_result_v2(struct local_result_v2 * result);
  * The engine uses one storage path per process: multiple connections to that
  * same path may be open at once. Connecting with a different path requires
  * closing all existing connections first.
+ *
+ * Arguments naming a ClickHouse query-level setting (--<setting>=<value>,
+ * e.g. --max_threads=4 or --output_format_json_quote_denormals=1) apply to
+ * this connection only, exactly as if it had executed SET <setting> = <value>:
+ * concurrent connections to the same path each keep their own settings.
+ * An invalid value for a known setting fails the connection. Server-level
+ * options (--path=..., --user_scripts_path=..., logging options, ...) are consumed by
+ * the connection that boots the engine and ignored afterwards.
  *
  * @param argc Number of command-line arguments
  * @param argv Command-line arguments array (--path=<db_path> to specify database location)
@@ -254,6 +337,14 @@ CHDB_EXPORT void chdb_streaming_cancel_query(struct chdb_conn * conn, chdb_strea
  * The engine uses one storage path per process: multiple connections to that
  * same path may be open at once. Connecting with a different path requires
  * closing all existing connections first.
+ *
+ * Arguments naming a ClickHouse query-level setting (--<setting>=<value>,
+ * e.g. --max_threads=4 or --output_format_json_quote_denormals=1) apply to
+ * this connection only, exactly as if it had executed SET <setting> = <value>:
+ * concurrent connections to the same path each keep their own settings.
+ * An invalid value for a known setting fails the connection. Server-level
+ * options (--path=..., --user_scripts_path=..., logging options, ...) are consumed by
+ * the connection that boots the engine and ignored afterwards.
  *
  * @param argc Number of command-line arguments
  * @param argv Command-line arguments array (--path=<db_path> to specify database location)
@@ -810,6 +901,142 @@ CHDB_EXPORT chdb_state chdb_arrow_array_scan(
 CHDB_EXPORT chdb_state chdb_arrow_unregister_table(chdb_connection conn, const char * table_name);
 
 //===--------------------------------------------------------------------===//
+// Backup, Restore and Statement Classification
+//===--------------------------------------------------------------------===//
+
+/**
+ * Backs a database up into a single archive file.
+ *
+ * The database name and the destination path are separate arguments and chDB
+ * quotes each one for the position it goes in, so a caller never builds
+ * `BACKUP ...` text and a name holding a backtick, a quote or a path holding
+ * an apostrophe cannot change what runs.
+ *
+ * The destination is subject to the `backups.allowed_path` configuration
+ * parameter, exactly as a hand-written `BACKUP ... TO File(...)` is; a
+ * connection that never set it cannot write a backup anywhere. Set it when
+ * connecting, e.g. `--backups.allowed_path=/var/lib/chdb/backups`.
+ *
+ * file_path must be absolute and its directory must already exist. Both are
+ * checked here rather than left to the engine: `backups.allowed_path`
+ * resolves a relative value against the data directory and a relative
+ * file_path then resolves against that, so a relative path lands somewhere no
+ * caller intended, and the engine reports a missing directory by naming the
+ * allow-list rather than the directory.
+ *
+ * An existing destination is never overwritten -- the call fails instead. Give
+ * every backup its own name and delete the ones you no longer want.
+ *
+ * Passing base_file_path makes the backup incremental against that archive:
+ * only what changed since it is written, and the new archive records the base
+ * it needs. Note that the recorded reference is the base's path as given here,
+ * so a caller that moves its archives between machines or into object storage
+ * has to keep that path reachable, or stay with full backups. NULL, or a
+ * length of zero, means a full backup.
+ *
+ * @param conn Connection whose engine performs the backup
+ * @param database Database name, unquoted (e.g. `my-db`, not `` `my-db` ``)
+ * @param database_len Length of database in bytes
+ * @param file_path Destination archive path, unquoted and absolute
+ * @param file_path_len Length of file_path in bytes
+ * @param base_file_path Existing archive to make this backup incremental
+ *                       against, unquoted and absolute; NULL for a full backup
+ * @param base_file_path_len Length of base_file_path in bytes; 0 for a full backup
+ * @return Query result; check chdb_result_error() and destroy it with
+ *         chdb_destroy_query_result() as for any other result
+ */
+CHDB_EXPORT chdb_result * chdb_backup_database_n(
+    chdb_connection conn,
+    const char * database,
+    size_t database_len,
+    const char * file_path,
+    size_t file_path_len,
+    const char * base_file_path,
+    size_t base_file_path_len);
+
+/**
+ * Restores a database from an archive written by chdb_backup_database_n().
+ *
+ * Quoting, the absolute-path requirement, the `backups.allowed_path`
+ * constraint and the result lifecycle match chdb_backup_database_n(); the
+ * archive itself must exist. The current database of the session is left
+ * alone: restoring into `mem` does not make `mem` current, so a caller that
+ * wants to query the restored database has to say so.
+ *
+ * An incremental archive names its base internally, so there is no base
+ * argument here -- but that name is the path the backup was written against,
+ * and the restore fails if nothing is there.
+ *
+ * RESTORE appends to an existing table rather than replacing it, so restore
+ * into a database that does not already hold the tables in the archive.
+ *
+ * @param conn Connection whose engine performs the restore
+ * @param database Database name, unquoted
+ * @param database_len Length of database in bytes
+ * @param file_path Source archive path, unquoted
+ * @param file_path_len Length of file_path in bytes
+ * @return Query result; check chdb_result_error() and destroy it with
+ *         chdb_destroy_query_result()
+ */
+CHDB_EXPORT chdb_result * chdb_restore_database_n(
+    chdb_connection conn,
+    const char * database,
+    size_t database_len,
+    const char * file_path,
+    size_t file_path_len);
+
+/**
+ * Says what a statement would do, without running it.
+ *
+ * Parses the SQL with the connection's own parser and settings -- the same
+ * parser that would execute it -- and reports what it found. Nothing is
+ * executed and the session is left untouched: no current database change, no
+ * settings change, no query log entry.
+ *
+ * The report answers the questions a caller has to settle before it decides
+ * whether to run a statement and whether to record it:
+ *
+ *   statement_count  How many executable statements the text holds. Zero for
+ *                    empty input or text that did not parse. A batch is more
+ *                    than one, and so is `a PARALLEL WITH b`, because both
+ *                    arms execute. A caller that logs statements one at a
+ *                    time needs this: only a count of one is a statement it
+ *                    can replay on its own.
+ *   query_class      What the statement does to state that outlives it; see
+ *                    chdb_query_class. A batch takes the maximum over its
+ *                    members.
+ *   flags            See chdb_query_analysis_flag.
+ *
+ * target_database names the database the caller considers its own, and is
+ * what CHDB_QUERY_WRITES_ONLY_TARGET_DATABASE is judged against. Pass NULL to
+ * skip that judgement, in which case the flag is never set.
+ *
+ * SQL that does not parse reports CHDB_QUERY_UNKNOWN with no flags and a count
+ * of zero, and still returns CHDBSuccess -- what it is, is the answer, not an
+ * error.
+ *
+ * @param conn Connection supplying the parser dialect, parser settings, and
+ *             the current database used to resolve unqualified names
+ * @param sql SQL text to analyse (may contain null bytes)
+ * @param sql_len Length of sql in bytes
+ * @param target_database The caller's own database, unquoted; may be NULL
+ * @param target_database_len Length of target_database in bytes
+ * @param out_analysis Receives the report. Set out_analysis->struct_size to
+ *                     sizeof(chdb_query_analysis_v1) before the call; every
+ *                     field that fits is written on success
+ * @return CHDBSuccess, or CHDBError if conn or out_analysis is null, the
+ *         connection is closed, or struct_size is smaller than this engine's
+ *         minimum
+ */
+CHDB_EXPORT chdb_state chdb_classify_query_n(
+    chdb_connection conn,
+    const char * sql,
+    size_t sql_len,
+    const char * target_database,
+    size_t target_database_len,
+    chdb_query_analysis_v1 * out_analysis);
+
+//===--------------------------------------------------------------------===//
 // Signal Handler Control
 //===--------------------------------------------------------------------===//
 
@@ -828,6 +1055,37 @@ CHDB_EXPORT void chdb_set_signal_handlers_enabled(int enabled);
  * e.g. to let the embedding process manage its own signal handling.
  */
 CHDB_EXPORT void chdb_reset_signal_handlers(void);
+
+//===--------------------------------------------------------------------===//
+// Engine Shutdown
+//===--------------------------------------------------------------------===//
+
+/**
+ * Stops the engine: joins every thread chDB started, so that no chDB thread is
+ * alive once this returns. Call it before the host runs a teardown sequence of
+ * its own — global destructors, a finalizing language runtime, a sanitizer exit
+ * handler — which would otherwise race the still-running engine threads.
+ *
+ * Close every connection and destroy every result first. While a connection is
+ * still open this does nothing and returns CHDBError, because tearing the engine
+ * down under a live connection would leave it dangling.
+ *
+ * Once it starts, the library is closed for business for the rest of the process,
+ * whether or not it manages to stop every thread: chdb_connect() then fails and
+ * query_stable() must not be called. Calling this again is harmless -- it returns
+ * CHDBSuccess if the engine is already stopped, and otherwise retries.
+ *
+ * Safe to call from any thread and concurrently with itself and with
+ * chdb_connect(): callers are serialized, and a connect racing a shutdown either
+ * gets in first and is counted, or arrives later and is refused.
+ *
+ * Skipping it stays as safe as it has always been for a process that just exits:
+ * the threads left running are reaped by process exit.
+ *
+ * @return CHDBSuccess once no chDB thread is left running, CHDBError if a
+ *         connection is still open or some thread could not be stopped
+ */
+CHDB_EXPORT chdb_state chdb_shutdown(void);
 
 #ifdef __cplusplus
 }

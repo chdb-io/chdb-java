@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import org.chdb.internal.ChdbNative;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -105,6 +106,10 @@ class ProcessLifecycleIT extends NativeTestBase {
      * with SIGABRT (exit 134) and a stack naming ClickHouse internals. Narrow but easy to hit:
      * exiting with a Connection open is fine, and closing the Connection while a stream is open
      * is fine, because that closes the stream. Only an open stream at exit does it.
+     *
+     * <p>Still true on engine 26.7.2-rc.2, which is the baseline that added {@code
+     * chdb_shutdown()}: that call declines to do anything while a connection is open, so it
+     * does not replace the hook's drain. See {@link #chdbShutdownStopsTheEngine()}.
      */
     public static final class ExitsWithOpenStream {
         public static void main(String[] args) throws Exception {
@@ -136,10 +141,14 @@ class ProcessLifecycleIT extends NativeTestBase {
     @DisplayName("the same JVM with the hook disabled reaches the engine's own teardown path")
     @Timeout(value = 3, unit = TimeUnit.MINUTES)
     void hookCanBeDisabled() throws Exception {
-        // Asserting only that the switch is honoured, not that the engine aborts. The abort is
-        // the current behaviour of engine 26.7.0 and pinning a test to it would turn an
-        // upstream fix -- or chdb_shutdown() arriving -- into a CI failure. What matters here
-        // is that a host managing its own teardown can turn the hook off.
+        // Still asserting only that the switch is honoured, not that the engine aborts.
+        //
+        // chdb_shutdown() arriving in the 26.7.2-rc.2 baseline was the event this test was
+        // written to survive, and surviving it is exactly what happened: the abort is
+        // unchanged, because chdb_shutdown() refuses to act while a connection is open and
+        // this JVM's connection is open. So there is still no correct exit code to pin here,
+        // and pinning 134 would turn a real upstream fix into a CI failure. What matters is
+        // that a host managing its own teardown can turn the hook off.
         ForkResult result =
                 fork(ExitsWithOpenStream.class.getName(), List.of("-Dchdb.shutdownHook=false"));
         assertTrue(result.output.contains("leaked an open stream"), result.output);
@@ -148,6 +157,57 @@ class ProcessLifecycleIT extends NativeTestBase {
                     "with the hook off, this engine exits " + result.exitCode
                             + " -- which is what the hook exists to prevent");
         }
+    }
+
+    /**
+     * Calls {@code chdb_shutdown()} the way the hook does, and reports what it answered.
+     *
+     * <p>In a forked JVM because it is irreversible: the engine is closed for the rest of the
+     * process once it returns, so a reconnect afterwards has to fail.
+     */
+    public static final class ShutsTheEngineDown {
+        public static void main(String[] args) throws Exception {
+            try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
+                    Statement statement = connection.createStatement();
+                    ResultSet rs = statement.executeQuery("SELECT number FROM numbers(1000)")) {
+                rs.next();
+            }
+            System.out.println("shutdown=" + ChdbNative.shutdown());
+            System.out.println("again=" + ChdbNative.shutdown());
+            try {
+                DriverManager.getConnection("jdbc:chdb::memory:").close();
+                System.out.println("reconnect=allowed");
+            } catch (SQLException e) {
+                System.out.println("reconnect=refused");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("chdb_shutdown() is on the baseline, succeeds once everything is closed, and"
+            + " closes the engine")
+    @Timeout(value = 3, unit = TimeUnit.MINUTES)
+    void chdbShutdownStopsTheEngine() throws Exception {
+        // The premise of what ShutdownCleanup does at the end of its drain. Worth a test of its
+        // own because all three parts are assumptions about the pinned engine rather than about
+        // this driver: that the symbol is there at all (2 means it is not), that it succeeds
+        // once the connections are closed, and that it is idempotent.
+        ForkResult result = fork(ShutsTheEngineDown.class.getName(), List.of());
+        assertEquals(0, result.exitCode, result.output);
+        assertTrue(
+                result.output.contains("shutdown=0"),
+                "chdb_shutdown() should stop the engine once every connection is closed;"
+                        + " 2 means this engine does not export it at all, which would remove the"
+                        + " reason the baseline moved to v26.7.2-rc.2.\n"
+                        + result.output);
+        assertTrue(
+                result.output.contains("again=0"),
+                "the engine documents a second call as harmless:\n" + result.output);
+        // Not asserted as refused: what matters is that the process still exits 0 either way.
+        // The engine says connecting afterwards fails, and it does here, but a future engine
+        // being able to restart is not a regression this test should manufacture.
+        System.out.println("after chdb_shutdown(), " + (result.output.contains("reconnect=refused")
+                ? "reconnecting is refused" : "reconnecting is allowed"));
     }
 
     /** A JVM that closes everything before exiting, which must also be clean. */

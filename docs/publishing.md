@@ -241,6 +241,16 @@ change what we redistribute.
 `licenses/engine-third-party-<new-version>.tsv`. `LicenseInventoryIT` will tell you if it is
 wrong.
 
+The file is generated on whichever platform the person doing the bump has, but it is asserted
+on all four: `LicenseInventoryIT` runs in every platform job and queries that job's own engine,
+so a component set that differs between platforms fails CI rather than shipping.
+
+Done once so far. The v26.7.0 → v26.7.2-rc.2 bump produced a **byte-identical** inventory —
+same 968 entries, same licence strings, same SHA-256 — so the redistribution position did not
+move, and the count above still describes the engine we ship. That is the expected shape of a
+patch-level bump, not something to rely on: the whole point of keying the file by version is
+that the next one may differ.
+
 ### The one open question
 
 Reading the inventory rather than guessing at it: most components are permissive, and several
