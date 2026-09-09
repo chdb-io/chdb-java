@@ -208,7 +208,7 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 
 | Phase | | Notes |
 |---|---|---|
-| 9 — JDBC ecosystem | 🟡 | `META-INF/services/java.sql.Driver` ✅, `DriverPropertyInfo` ✅, minimum `DatabaseMetaData` ✅, `Automatic-Module-Name` ✅, ClassLoader diagnostics ✅ and documented for Tomcat/Spark/Flink. ⬜ Spring, HikariCP and ShardingSphere smoke tests; ⬜ JPMS module-path and two-child-ClassLoader tests |
+| 9 — JDBC ecosystem | 🟡 | `META-INF/services/java.sql.Driver` ✅, `DriverPropertyInfo` ✅, minimum `DatabaseMetaData` ✅, `Automatic-Module-Name` ✅, ClassLoader diagnostics ✅ and documented for Tomcat/Spark/Flink. HikariCP, MyBatis and jOOQ smoke tests ✅, and all 179 `DatabaseMetaData` methods swept reflectively with nothing throwing ✅. ⬜ Spring `JdbcTemplate`; 🚫 ShardingSphere, which cannot parse a `jdbc:chdb:` URL at all; ⬜ JPMS module-path and two-child-ClassLoader tests |
 | 10 — Off-heap memory and stability | 🟡 | Handle counters asserted zero after every test ✅; bounded streaming, slow consumer, early close, cancel and 1000-query RSS plateau ✅. UBSan over the whole JDBC suite ✅ and ASan+UBSan over the shim's own logic ✅, on both a Linux and a macOS toolchain — but **ASan cannot run against the released engine at all** ([findings §8](upstream-findings.md)), so full-process ASan and LSan need an upstream sanitizer build. ⬜ 1-6 hour soak; ⬜ cgroup + `max_memory_usage` matrix; ⬜ `Cleaner` backstop |
 | 11 — Platform and JDK matrix | 🟡 | ✅ All four platforms × Java 11/17/21/25 run the full suite in CI, plus Java 26 as allow-failure and a packaged-JAR load on each. ⬜ OpenJ9; ⬜ awkward paths; ⬜ corrupted-library and arch-mismatch cases |
 | 12 — ADBC experiment | ⬜ | Untouched. Does not block V1 |
@@ -244,9 +244,12 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 1. **File the two upstream issues.** The signal-handler API (§1) is the one release gate whose
    workaround depends on upstream behaviour not changing underneath it. A sanitizer build of
    chdb-core (§8) is what unblocks the other half of the sanitizer gate.
-2. **Framework smoke tests.** HikariCP in particular, because it is where the
-   one-statement-per-connection rule meets real pooling; then Spring `JdbcTemplate` and
-   ShardingSphere, which is also where issue #2's reporter came from.
+2. **Framework smoke tests.** HikariCP ✅, because it is where the one-statement-per-connection
+   rule meets real pooling; MyBatis ✅ and jOOQ ✅, because they are what read `DatabaseMetaData`
+   heavily; and all 179 methods of that interface swept reflectively ✅, standing in for the JDBC
+   GUI nobody has run. What is left is Spring `JdbcTemplate`. ShardingSphere is not doable until
+   upstream stops parsing every JDBC URL as client/server — it is also where issue #2's reporter
+   came from.
 3. **The soak test**, the remaining phase-10 item that a CI run cannot stand in for.
 4. **The §3.3 batch-access benchmark**, so the data-path choice is recorded as measured rather
    than as reasoned.

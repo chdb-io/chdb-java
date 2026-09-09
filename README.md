@@ -194,7 +194,7 @@ engine. In Tomcat, Spark or Flink this decides where the driver goes. See
 | ✅ | Bounded memory on results far larger than the heap |
 | ✅ | Host JVM signal handlers preserved — see [signal handlers](docs/signal-handlers.md) |
 | ✅ | Native loading from the platform JAR, or a directory you point at |
-| 🚧 | Framework smoke tests (Spring, HikariCP, ShardingSphere) |
+| 🚧 | Framework smoke tests — HikariCP, MyBatis and jOOQ pass, and nothing on the full `DatabaseMetaData` surface throws; Spring `JdbcTemplate` is next, and ShardingSphere cannot parse a `jdbc:chdb:` URL at all — see [under a framework](docs/unsupported.md#under-a-framework) |
 | 🚧 | Soak tests; full-process ASan, which needs an upstream sanitizer build of chdb-core |
 | 🚧 | Maven Central publishing — nothing is released yet |
 | ❌ | Transactions, batch updates, scrollable/updatable result sets, `CallableStatement` |
