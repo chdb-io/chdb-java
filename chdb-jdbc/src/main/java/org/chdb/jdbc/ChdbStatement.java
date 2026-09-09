@@ -62,12 +62,38 @@ public class ChdbStatement implements Statement {
     /** The stream currently executing, for {@link #cancel()}. Null when nothing is in flight. */
     private final AtomicReference<Long> inFlightStream = new AtomicReference<>(null);
 
+    /**
+     * Counts executions of this statement, so a query timeout can tell whether the execution
+     * it was armed for is still the one running.
+     *
+     * <p>{@link QueryTimeout#stop()} cannot promise a task will not run, so without this a
+     * timer armed for one statement could cancel the next one on the same {@code Statement} --
+     * which for a pooled connection running thousands of statements means an occasional valid
+     * query rejected as cancelled. Guarded by {@link #timeoutLock} rather than merely atomic:
+     * a compare that is not held across the act it guards is the same bug in a smaller window.
+     */
+    private long executions;
+
+    /**
+     * Serializes "start an execution" against "a timeout decides whether to act".
+     *
+     * <p>Held by {@link #queryTimeoutFired(QueryTimeout, long)} across both the staleness check
+     * and the cancel, so a timeout cannot pass the check and then land on an execution that
+     * began in between. Nothing native is called while acquiring it, and the executing thread
+     * holds it only to bump the counter and schedule, so it cannot deadlock against the
+     * engine's own locks.
+     */
+    private final Object timeoutLock = new Object();
+
     private ChdbResultSet currentResultSet;
     /**
      * Armed while a streaming statement is in flight and disarmed when its result set closes
      * or is exhausted, so the clock covers the fetches rather than only the open.
+     *
+     * <p>Volatile because a result set may be read on a different thread than the one that
+     * executed the statement, and {@link #timedOut()} is read from there.
      */
-    private QueryTimeout activeTimeout = QueryTimeout.NONE;
+    private volatile QueryTimeout activeTimeout = QueryTimeout.NONE;
     private long currentUpdateCount = -1;
     private int queryTimeoutSeconds;
     private int fetchSize = DEFAULT_FETCH_SIZE;
@@ -137,7 +163,19 @@ public class ChdbStatement implements Statement {
         // because closing it is what frees the slot the previous execution held.
         closeCurrentResultSet();
         currentUpdateCount = -1;
-        cancelled.set(false);
+
+        // Claims a new execution number and clears the cancel flag under the same lock a
+        // firing timeout takes, so a timer from the previous execution can no longer be
+        // between its own staleness check and its cancel while this one starts.
+        long thisExecution;
+        synchronized (timeoutLock) {
+            cancelled.set(false);
+            // Dropped rather than left pointing at the previous execution's timeout, so
+            // timedOut() cannot report a deadline that belonged to a statement already gone.
+            // Re-armed below for a statement that has a result set, and left NONE otherwise.
+            activeTimeout = QueryTimeout.NONE;
+            thisExecution = ++executions;
+        }
 
         // Held until the result set closes for a streaming statement, and only for the call
         // itself for one with no result set. The engine runs one statement per connection at a
@@ -155,7 +193,7 @@ public class ChdbStatement implements Statement {
                 // Armed before the open, because the open performs the first fetch, and
                 // disarmed by the result set rather than here -- the fetches that follow are
                 // where the time goes.
-                activeTimeout = QueryTimeout.start(this, queryTimeoutSeconds);
+                activeTimeout = QueryTimeout.start(this, queryTimeoutSeconds, thisExecution);
                 try {
                     boolean opened = openStream(route, sql, parameterNames, parameterValues);
                     if (opened) {
@@ -370,6 +408,46 @@ public class ChdbStatement implements Statement {
     // ------------------------------------------------------------------ cancellation
 
     /**
+     * A query timeout's deadline passed. Cancels the statement only if the execution the
+     * timeout was armed for is still the one running.
+     *
+     * <p>{@link QueryTimeout#stop()} is {@code Future.cancel(false)}, so a task the scheduler
+     * has already begun runs whatever the statement does next -- and the task's only effect
+     * used to be a bare {@link #cancel()}, which sets a flag shared across executions and
+     * cancels whatever stream is in flight <em>now</em>. On a reused {@code Statement} that
+     * meant a timer armed for the previous query could cancel the next one, and since {@link
+     * #checkDeadlineSurvivedTheOpen(String)} fails an execution whose cancel flag is set, the
+     * visible result was an occasional valid statement rejected with SQLSTATE 57014.
+     *
+     * <p>The check and the cancel are both under {@link #timeoutLock}, which {@link
+     * #executeInternal} also takes to claim its execution number. Doing only the check under a
+     * lock, or only comparing an atomic, would leave the same bug in a shorter window: the
+     * timeout could pass the check and then be descheduled while the next execution starts.
+     *
+     * <p>This is deliberately <em>not</em> the path {@link #cancel()} takes. An application
+     * calling {@code Statement.cancel()} means "stop whatever is running now", which is never
+     * stale and must not be filtered by an execution number.
+     */
+    void queryTimeoutFired(QueryTimeout timeout, long execution) {
+        synchronized (timeoutLock) {
+            if (executions != execution) {
+                // Armed for an execution that has already finished. Its result set, if any, is
+                // long closed, and the stream this would reach belongs to somebody else.
+                return;
+            }
+            timeout.markExpired();
+            try {
+                cancel();
+            } catch (Exception ignored) {
+                // The statement may have finished or been closed in the meantime. A timeout's
+                // cancel is best-effort by definition, and there is no caller on this thread
+                // to report a failure to; the expired flag above is what the executing thread
+                // reads.
+            }
+        }
+    }
+
+    /**
      * Asks the engine to abandon the statement in flight.
      *
      * <p>Called from another thread, by design, and therefore without the connection's
@@ -497,6 +575,11 @@ public class ChdbStatement implements Statement {
         try {
             closeCurrentResultSet();
         } finally {
+            // Unconditionally, not only via the result set: a closed statement must not leave a
+            // task sitting in the shared scheduler queue holding a reference to it, which for a
+            // long queryTimeout is a retention leak even though the execution number already
+            // makes the task harmless.
+            stopTimeout();
             connection.unregister(this);
         }
     }
@@ -506,7 +589,11 @@ public class ChdbStatement implements Statement {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
-        closeCurrentResultSet();
+        try {
+            closeCurrentResultSet();
+        } finally {
+            stopTimeout();
+        }
     }
 
     @Override

@@ -60,28 +60,25 @@ final class QueryTimeout {
     }
 
     /**
-     * Arms a timeout that cancels {@code statement} after {@code seconds}.
+     * Arms a timeout for one execution of {@code statement}.
+     *
+     * <p>The scheduled task does not cancel the statement itself. It hands both this timeout
+     * and {@code execution} back to {@link ChdbStatement#queryTimeoutFired(QueryTimeout, long)},
+     * which drops it if that execution is already over -- see {@link #stop()} for why a task
+     * can still be on its way after the execution that armed it has finished.
      *
      * @param seconds 0 or less for no timeout
+     * @param execution the statement's execution counter at the moment of arming
      * @return the armed timeout, or {@link #NONE} when there is nothing to schedule
      */
-    static QueryTimeout start(ChdbStatement statement, int seconds) {
+    static QueryTimeout start(ChdbStatement statement, int seconds, long execution) {
         if (seconds <= 0) {
             return NONE;
         }
         QueryTimeout timeout = new QueryTimeout();
         timeout.future =
                 SCHEDULER.schedule(
-                        () -> {
-                            timeout.expired.set(true);
-                            try {
-                                statement.cancel();
-                            } catch (Exception ignored) {
-                                // The statement may have finished or been closed in the
-                                // meantime. Cancel is best-effort by definition, and there is
-                                // no caller on this thread to report a failure to.
-                            }
-                        },
+                        () -> statement.queryTimeoutFired(timeout, execution),
                         seconds,
                         TimeUnit.SECONDS);
         return timeout;
@@ -92,7 +89,28 @@ final class QueryTimeout {
         return expired.get();
     }
 
-    /** Disarms the timeout. Idempotent, and safe after it has already fired. */
+    /**
+     * Records that this timeout's deadline passed while its own execution was still running.
+     *
+     * <p>Set by {@link ChdbStatement} rather than by the task, because whether the deadline
+     * belongs to the execution now in flight is the statement's question, not the timer's.
+     */
+    void markExpired() {
+        expired.set(true);
+    }
+
+    /**
+     * Disarms the timeout.
+     *
+     * <p>Idempotent, and safe after it has already fired -- but <em>not</em> a guarantee that
+     * the task will not run. This is {@code Future.cancel(false)}: a task the scheduler has
+     * already begun runs to completion, and this call does not wait for it. So a timeout
+     * stopped at the instant its deadline passed can still deliver, after the execution that
+     * armed it has finished and the next one has started on the same statement. Interrupting
+     * instead ({@code cancel(true)}) would not fix that -- the task does no interruptible
+     * waiting -- and waiting for it would put an unbounded pause in {@code ResultSet.close()}.
+     * Which is why the task carries an execution number and {@link ChdbStatement} checks it.
+     */
     void stop() {
         ScheduledFuture<?> scheduled = future;
         if (scheduled != null) {
