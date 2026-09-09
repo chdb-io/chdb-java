@@ -24,7 +24,7 @@ namespace chdb_jni
 
 // Bumped only on an incompatible change to the Java <-> shim contract. Must match
 // ChdbNative.JNI_ABI_VERSION on the Java side and chdb.jni.abi.version in the poms.
-constexpr int32_t kJniAbiVersion = 1;
+constexpr int32_t kJniAbiVersion = 2;
 
 enum HandleKind : int32_t
 {
@@ -33,6 +33,29 @@ enum HandleKind : int32_t
     kKindStream = 3,
 };
 
+// Lock order, for every mutex in the shim. Acquire left to right, never right to left.
+//
+//     StreamHandle::mutex  ->  ConnHandle::mutex  ->  HandleRegistry::mutex_
+//
+// and, separately and never nested with any of the above:
+//
+//     chdb_jni_signals.cpp signalMutex()      (leaf, held only around chdb_connect and
+//                                              chdb_set_signal_handlers_enabled)
+//
+// Why the stream comes first: a stream is driven by exactly one caller thread, which holds
+// its handle mutex for the length of a fetch, and that fetch needs the connection to stay
+// open underneath it -- so the connection lock is the inner one. Nothing goes the other way:
+// closeConnection() takes only ConnHandle::mutex and does not reach into stream handles, and
+// the open paths take only ConnHandle::mutex because their stream is not published yet and no
+// other thread can see it.
+//
+// HandleRegistry::mutex_ is last because registry methods are leaves: they never call the
+// engine and never take a handle mutex.
+//
+// ConnHandle::conn must be read under ConnHandle::mutex, and the engine call that uses it made
+// while that lock is still held. Reading it under the stream's lock alone is a data race with
+// closeConnection() -- and worse than a race, since the value can become null between the
+// check and the dereference.
 struct HandleBase
 {
     explicit HandleBase(HandleKind k) : kind(k) { }

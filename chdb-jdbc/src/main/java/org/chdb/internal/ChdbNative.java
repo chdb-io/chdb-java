@@ -28,7 +28,7 @@ public final class ChdbNative {
      * Must equal {@code chdb_jni::kJniAbiVersion} in the shim and {@code
      * chdb.jni.abi.version} in the poms. Verified at load time before any other call.
      */
-    public static final int JNI_ABI_VERSION = 1;
+    public static final int JNI_ABI_VERSION = 2;
 
     /** Handle kinds, for {@link #openHandleCount(int)}. */
     public static final int KIND_CONNECTION = 1;
@@ -168,6 +168,43 @@ public final class ChdbNative {
             byte[] sql,
             byte[][] paramNames,
             byte[][] paramValues,
+            boolean lowCardinalityAsDictionary,
+            boolean unsupportedAsBinary,
+            boolean stringAsString);
+
+    /**
+     * {@code chdb_query_arrow_n}: runs the statement to completion and exports the whole
+     * result set through the same Arrow C Data Interface the streaming path consumes.
+     *
+     * <p>The route for a statement that has a result set the engine refuses to stream --
+     * {@code SHOW}, {@code DESCRIBE}, {@code EXPLAIN}, {@code EXISTS}, {@code CHECK}. The
+     * engine's streaming door admits only a SELECT pipeline, so without this every non-SELECT
+     * read failed with {@code Streaming query is not supported} (issue #12).
+     *
+     * <p>Returns a handle of the same kind as {@link #streamOpen}, driven by the same {@code
+     * stream*} methods: the batches come from the exported Arrow stream instead of from the
+     * engine's pipeline, and nothing above the shim can tell the difference.
+     *
+     * <p>Differences a caller has to know about:
+     *
+     * <ul>
+     *   <li>Memory is not bounded by one batch. The result is fully materialized in the engine
+     *       before this returns, which is what makes it safe only for the statements above:
+     *       their results are bounded by the schema, not by the data.
+     *   <li>No server-side parameters. The engine exports {@code chdb_query_arrow_n} but no
+     *       {@code _with_params_n} variant of it, so a parameterized non-streamable statement
+     *       has no route at all; {@code ChdbStatement} reports that rather than silently
+     *       dropping the bindings.
+     *   <li>{@link #streamCancel(long, long)} cannot stop the execution, only the iteration:
+     *       the statement has already run by the time there is a handle to cancel.
+     * </ul>
+     *
+     * @return a stream handle
+     * @throws ChdbNativeException carrying the engine's error text if the statement failed
+     */
+    public static native long streamOpenMaterialized(
+            long connection,
+            byte[] sql,
             boolean lowCardinalityAsDictionary,
             boolean unsupportedAsBinary,
             boolean stringAsString);

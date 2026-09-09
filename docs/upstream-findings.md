@@ -15,6 +15,8 @@ of these entries changed with it rather than being carried over:
   as documented. An unrecognized setting *name* is still accepted and ignored.
 - **§6 no longer applies to the baseline**: both optional symbols are exported now.
 - **§9 is new**, from measuring what `chdb_shutdown()` does and does not do.
+- **§10 and §11 are new**, from measuring which statements the streaming Arrow entry
+  point accepts, and what a query timeout can actually interrupt.
 
 The rest still hold on the new engine, and the tests named against each are what demonstrates
 that — they run in `mvn verify` against whichever engine is pinned.
@@ -497,6 +499,212 @@ everything first — cancel and join whatever is running, since the process is g
 regardless — would let a host make its own exit safe without racing its own application
 threads. Failing that, `chdb_close_conn()` on a connection with a query in flight should be
 safe, which would let the hook do its job in the one case it currently cannot.
+
+---
+
+## 10. The streaming Arrow API refuses every non-`SELECT` read
+
+**Severity: would have shipped a driver where `SHOW TABLES` fails. Worked around with a second
+route; the parameter half still needs upstream.**
+
+`chdb_stream_query_arrow_n` admits a statement only if it parses as an `ASTSelectWithUnionQuery`:
+
+```cpp
+// src/Client/ClientBase.cpp, ClientBase::processTextAsSingleQuery
+else if (streaming_query_context->is_streaming_query && parsed_query->as<ASTSelectWithUnionQuery>())
+    ...
+else
+    throw Exception(ErrorCodes::BAD_ARGUMENTS, "Streaming query is not supported for query: {}", full_query);
+```
+
+Every other row-returning statement is refused. First measured on v26.7.0 and re-measured
+unchanged on the v26.7.2-rc.2 baseline, macOS arm64: `SHOW TABLES`, `SHOW DATABASES`, `SHOW
+CREATE TABLE`, `SHOW COLUMNS`, `SHOW SETTINGS`, `DESCRIBE`, `DESC`, `DESCRIBE (subquery)`,
+`EXISTS TABLE`, `EXISTS DATABASE`, `CHECK TABLE` and all seven `EXPLAIN` forms — all with
+`Code: 36 ... Streaming query is not supported`. So this did not move with the baseline.
+
+`chdb_query_arrow_n` accepts all of them and exports the whole result through the same Arrow C
+Data Interface, so nothing above the shim has to change. The driver therefore carries three
+routes rather than two, and `StatementShape` decides which from the leading keyword; see
+`NonStreamableResultsIT`.
+
+### The classifier cannot make this decision, on this baseline or any yet
+
+Worth stating plainly, because the obvious next step is to ask the engine instead of scanning
+keywords, and it does not work. `chdb_classify_query_n` arrived in the baseline (§6) and is
+authoritative about whether a statement has a result set — but it separates read from write,
+not streamable from not. Measured on v26.7.2-rc.2, every statement in the list above returns
+the same class as a plain `SELECT`, with no other field distinguishing them:
+
+| statement | `chdb_query_class` | streaming door |
+|---|---|---|
+| `SELECT 1` | `READ_ONLY` | accepted |
+| `WITH x AS (…) SELECT * FROM x` | `READ_ONLY` | accepted |
+| `SHOW TABLES` / `SHOW DATABASES` / `SHOW CREATE TABLE` | `READ_ONLY` | **refused** |
+| `DESCRIBE` / `DESC` / `DESCRIBE (subquery)` | `READ_ONLY` | **refused** |
+| `EXPLAIN` (all seven forms) | `READ_ONLY` | **refused** |
+| `EXISTS TABLE` / `EXISTS DATABASE` | `READ_ONLY` | **refused** |
+| `CHECK TABLE` | `READ_ONLY` | **refused** |
+| `INSERT` / `CREATE` / `DROP` / `OPTIMIZE` | `MUTATING` | refused |
+| `WITH q AS (…) INSERT INTO t SELECT …` | `MUTATING` | refused |
+| `SET` / `SYSTEM FLUSH LOGS` / `KILL QUERY` | `CONTROL` | refused |
+| `TABLE t` | `UNKNOWN` | (parses as `SELECT TABLE AS t`) |
+
+Routing on the classifier alone would put every `SHOW` back on the streaming door, which is
+this finding. The keyword scan is therefore a long-term mechanism for the stream/materialize
+half rather than a stopgap for a missing classifier — and it will stay one until the ABI can
+say "this statement has a result set the streaming path will accept". The classifier does close
+one gap: `WITH q AS (…) INSERT …` is reported `MUTATING`, so it now routes to `chdb_query_n`
+and executes correctly instead of hitting the streaming refusal.
+
+### An abandoned stream poisons the next materialized query
+
+Also new, and load-bearing for the second route. Opening a streaming query and closing it
+without cancelling leaves the engine in streaming mode for that connection, and the next
+`chdb_query_arrow_n` on it fails with the *streaming* refusal even though it went through the
+materialized entry point. Measured on v26.7.2-rc.2, driving the shim directly:
+
+| what happened to the stream first | next `chdb_query_arrow_n("SHOW DATABASES")` |
+|---|---|
+| opened, closed with 0 batches read | `Code: 36 … Streaming query is not supported for query: SHOW DATABASES` |
+| opened, 1 batch of many read, closed | same refusal |
+| drained to the end, then closed | ok, 4 rows |
+| cancelled, then closed | ok, 4 rows |
+
+A following *streaming* query is unaffected, so the state is specific to the materialized
+entry point. The driver does not hit this because `ChdbResultSet.close()` already cancels an
+unexhausted stream — for the unrelated reason of not making the engine finish a query nobody
+is reading — but the new route now depends on that cancel for correctness, which is not
+obvious from either side. `NonStreamableResultsIT.materializedStatementAfterAnAbandonedStream`
+is what pins it.
+
+**Suggested upstream fix:** `chdb_query_arrow_n` should not inherit a previous query's
+streaming mode; a materialized call is a new query and should reset it.
+
+Three more things are worth noting for upstream:
+
+- **The refusal is raised before execution**, in `processTextAsSingleQuery` and ahead of
+  `processParsedSingleQuery`. Confirmed by measurement on v26.7.0, where that statement still
+  reached the streaming door: `WITH q AS (SELECT 2 AS v) INSERT INTO t SELECT v FROM q` is
+  accepted by the parser, refused by the streaming door, and leaves the table untouched. That ordering is what would make a retry safe — but it is only observable
+  through an error-message prefix, and this driver will not key a re-execution decision on
+  one. A `chdb_state` or error code distinguishing "not streamable, nothing ran" from every
+  other failure would let a client retry without guessing.
+- **`chdb_query_arrow_n` still has no `_with_params_n` variant on the baseline.**
+  `chdb_query_arrow_with_settings_n` takes a `NameToNameMap` of parameters but lives in
+  `namespace CHDB` and is absent from `chdb/libchdb_export_macos.txt` and
+  `chdb/libchdb_export.map`. Re-checked in the v26.7.2-rc.2 release library, where
+  `nm -gU libchdb.so | grep _chdb_query_arrow` prints only `_chdb_query_arrow` and
+  `_chdb_query_arrow_n`. So a non-streamable statement with server-side bindings has no entry
+  point at all, and the driver reports that rather than interpolating the values into the SQL.
+- **`chdb_query_arrow_n` executes a statement that has no result header, then reports an
+  error.** Measured on v26.7.2-rc.2: handed `INSERT INTO w VALUES (42)` it returns
+  `Missing result header for Arrow output` — and the row is in the table afterwards.
+  `runMaterializedArrowQuery` calls `executeMaterializedQuery` before it checks
+  `chunk_result->header`. Harmless for this driver, which never routes a write there, but it
+  is the concrete reason a "retry the refused statement on the materialized door" fallback
+  would have been unsafe rather than merely unprovable: the retry would both write the row and
+  report a failure.
+
+**Suggested upstream fix:** export a `chdb_query_arrow_with_params_n`, and give the streaming
+initialisation a machine-readable "this statement is not streamable" state so a client can
+route on it instead of on a keyword scan.
+
+### The materialized route's peak is entirely engine-side
+
+Worth recording separately, because it decides what a client can and cannot do about it.
+`chdb_query_arrow_n` has already allocated the whole result by the time it returns: measured
+RSS after the open, with not one row read, is +234 MB for a 108 MB result and +896 MB for an
+864 MB one, and it does not move while the caller iterates. The streaming route grows by
+48 KB–6.5 MB for the same queries. `chdb-arrow-output.cpp` shows why: `runMaterializedArrowQuery`
+collects every chunk, converts all of them into one `arrow::Table`, and exports a
+`TableBatchReader` over that — so the ClickHouse chunks and their Arrow copy are both live
+before the function returns.
+
+The consequence for any client is that a row cap applied on its side of the ABI is too late by
+construction. What does work is the engine's own per-query accounting, which does cover this
+path: under `SET max_memory_usage`, an oversized materialization fails in milliseconds with
+`Code: 241` and leaves no handles behind (15/15 clean refusals under a 100 MB cap).
+
+Two smaller observations from measuring it:
+
+- **Settings passed in the connect argument vector were swallowed until v26.7.2-rc.2. Resolved
+  by the baseline bump; nothing outstanding.** Given as `--max_memory_usage=…`,
+  `--max_threads=…`, `--max_result_rows=…` or `--max_block_size=…`, `getSetting()` reported the
+  default in every case on v26.7.0, while the same values via `SET` all took effect. Not
+  specific to the Arrow routes and predated them.
+
+  The cause is upstream's, not this driver's argument vector, which has the same
+  `--key=value` shape chdb-core's own Python binding builds in `LocalChdb.cpp`
+  (`build_clickhouse_args`). `EmbeddedServer` is a process-wide singleton that reads argv only
+  when the first connection boots it, so per-connection settings were swallowed into its config
+  layer without ever reaching a session context — chdb-core issue #191. Fixed by chdb-core
+  commit `3231c03afca` (2026-08-24), which added `ChdbClient::applyCmdSettings`; that is 12 days
+  after the v26.7.0 tag, which is why this repository sees it and bindings built on a later
+  engine do not.
+
+  Measured through JDBC on macOS arm64, same code and URL against both engines,
+  `jdbc:chdb::memory:?max_threads=7&max_result_rows=13&max_block_size=4096`:
+
+  | setting | v26.7.0 | v26.7.2-rc.2 (baseline) |
+  |---|---|---|
+  | `max_threads` | `auto(18)` — ignored | `7` |
+  | `max_result_rows` | `0` — ignored | `13` |
+  | `max_block_size` | `65409` — ignored | `4096` |
+
+  On the baseline all three also report `changed = 1` in `system.settings`, and the value is
+  enforced rather than merely readable: a 100-row `SELECT` under `max_result_rows = 13` fails
+  with `Code: 396. Limit for result exceeded`. So `ChdbUrl.toConnectArguments`'s promise that
+  "every ClickHouse query setting [is] reachable from a JDBC URL" holds on the baseline, and
+  `docs/memory.md` recommends the URL property again rather than `SET`. Related to finding 5
+  above.
+- **Errors on this path arrive wrapped two or three times**: `Code: 241. DB::Exception: Code:
+  241. DB::Exception: Code: 241. DB::Exception: Query memory limit exceeded: …`, with the
+  nesting depth varying between runs. Cosmetic — `ChdbExceptions` still extracts 241 from the
+  first occurrence — but the message a user sees is worse than the streaming path's single
+  wrap.
+
+**Documented in:** `NonStreamableResultsIT`, `StatementShape`, `docs/memory.md`, issue #12.
+
+---
+
+## 11. Nothing can be cancelled until a query has returned a handle
+
+**Severity: made `setQueryTimeout` silently ineffective for a whole class of statements. Worked
+around; needs an upstream API to fix properly.**
+
+Every cancel the C ABI exports takes a result or stream handle — `chdb_stream_cancel_query`,
+`chdb_streaming_cancel_query`, `chdb_stream_cancel_insert` — and there is no connection-level
+cancel. Re-checked in the v26.7.2-rc.2 release library: `nm -gU libchdb.so | grep -i cancel`
+prints those three and nothing else. So the call that *produces* the handle cannot be interrupted: there is nothing to pass
+to a cancel function while it runs.
+
+How long that window is depends entirely on the statement:
+
+| statement | where the time goes |
+|---|---|
+| `SELECT` that emits as it scans | milliseconds in the open, the rest in the fetches |
+| full aggregate, `GROUP BY`, `ORDER BY` without `LIMIT` | **the whole query is in the open** — there is no first batch until the scan finishes |
+| anything on the materialized Arrow route | **the whole statement is in the open** |
+
+Measured on v26.7.0 before the driver handled it, and the ABI has not changed on the
+v26.7.2-rc.2 baseline: `setQueryTimeout(1)` on `SELECT max(sipHash64(number)) FROM
+numbers(2000000000)` returned a *working result set* after 12.65 seconds. The timer fired on schedule, found no handle to cancel, and did nothing — so the
+caller got a late success rather than a timeout, which is worse than either a timeout or a
+hang.
+
+The driver now treats an expired timeout as a deadline once the open returns: it closes the
+result set and raises `SQLTimeoutException` (SQLSTATE `57014`) naming why nothing was
+interrupted. The work is still spent — that part cannot be fixed from a client — but
+`setQueryTimeout` is no longer a setting that quietly does nothing. `Statement.cancel()` from
+another thread during the same window is handled the same way.
+
+**Suggested upstream fix:** a `chdb_cancel_query(chdb_connection)` that interrupts whatever the
+connection is currently executing, so a client can act before a handle exists.
+
+**Documented in:** `ChdbStatement.checkDeadlineSurvivedTheOpen`, `QueryTimeout`,
+`StreamingLifecycleIT.queryTimeoutDuringTheOpen`,
+`NonStreamableResultsIT.queryTimeoutOnTheMaterializedRoute`.
 
 ---
 

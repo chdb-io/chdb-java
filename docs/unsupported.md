@@ -122,10 +122,52 @@ which is worse than an error.
 
 | | |
 |---|---|
+| `?` parameters on `SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK` | throws (SQLSTATE `0A000`) |
 | `setMaxFieldSize(n)` for `n != 0` | throws; the driver does not truncate values |
 | `getMoreResults(KEEP_CURRENT_RESULT)` | throws; a statement has one result |
 | `Driver.getParentLogger()` | throws; the driver does not use `java.util.logging` |
 | `Connection.unwrap(x)` for an unrelated `x` | throws |
+
+A `SHOW`/`DESCRIBE`/`EXPLAIN`/`EXISTS`/`CHECK` statement goes through the engine's materialized
+Arrow entry point, because the streaming one accepts only a SELECT pipeline — and the engine
+exports `chdb_query_arrow_n` but no parameter-binding form of it. So those statements execute,
+with their full result set, but cannot carry server-side bindings; a `PreparedStatement` with a
+`?` in one is refused rather than having its values interpolated into the SQL, which is the
+injection server-side binding exists to avoid.
+
+**Instead: ask the `system` tables.** They answer every one of these questions, they are
+`SELECT`s, so they take parameters, and `DatabaseMetaData` already works this way:
+
+| instead of | use |
+|---|---|
+| `SHOW TABLES [FROM d] LIKE ?` | `SELECT name FROM system.tables WHERE database = ? AND name LIKE ?` |
+| `SHOW DATABASES LIKE ?` | `SELECT name FROM system.databases WHERE name LIKE ?` |
+| `DESCRIBE TABLE t` | `SELECT name, type FROM system.columns WHERE database = ? AND table = ? ORDER BY position` |
+| `SHOW COLUMNS FROM t LIKE ?` | the same, plus `AND name LIKE ?` |
+| `SHOW CREATE TABLE t` | `SELECT create_table_query FROM system.tables WHERE database = ? AND name = ?` |
+| `EXISTS TABLE t` | `SELECT count() > 0 FROM system.tables WHERE database = ? AND name = ?` |
+| `SHOW SETTINGS LIKE ?` | `SELECT name, value FROM system.settings WHERE name LIKE ?` |
+
+**Do not build the statement by pasting the value into the SQL of a plain `Statement`.** This
+document used to suggest that, and it was wrong: a `LIKE` pattern that closes the literal and
+comments out the rest injects whole clauses into a statement the caller did not write. Measured
+on v26.7.2-rc.2, with the pattern interpolated into `SHOW TABLES FROM d LIKE '<pattern>'`:
+
+| pattern | result |
+|---|---|
+| `%' LIMIT 1 -- ` | accepted; the result silently drops from 3 rows to 1 |
+| `%' FORMAT JSON -- ` | accepted |
+| `%' INTO OUTFILE '/tmp/x.tsv' TRUNCATE -- ` | accepted through `execute()`, **and it writes the file** |
+
+That last one is an arbitrary file write from a metadata query, which is the whole reason
+server-side binding exists. Escaping it correctly by hand is possible and is not advice this
+document is going to give, because the `system` table above is both safer and shorter.
+
+`EXPLAIN` is the one form with no `system` equivalent, since there is no table of query plans.
+Write the literal into the SQL there — but note what that means: an `EXPLAIN` is something a
+developer runs against a query they are debugging, with a value they chose. It is not a place to
+put input that came from somewhere else. If the value is not yours, there is nothing to explain
+that a parameterized `SELECT` cannot answer.
 
 ## Accepted but inert
 
@@ -147,6 +189,16 @@ These are supported, with a rule you have to know:
 
 **One storage path per JVM.** Many connections may share it; a second path is refused with a
 diagnostic. See the [README](../README.md#one-storage-path-per-jvm).
+
+**`setQueryTimeout` is a deadline, and for some statements only a deadline.** It normally stops
+the engine: a timeout during a result set's fetches cancels the query. But no cancel in the chDB
+C ABI applies before a query has returned a handle, so the call that opens a result set cannot
+be interrupted — which for a full aggregate, a `GROUP BY`, an `ORDER BY` without a `LIMIT`, or
+anything on the materialized route (`SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK`) is the
+whole statement. Those still raise `SQLTimeoutException` when the deadline passes, but the work
+has already been done by then and is discarded. The alternative — returning a result set after
+the caller's deadline, which is what happened before — is worse. `Statement.cancel()` during
+that same window behaves the same way. See [engine findings](upstream-findings.md).
 
 **One statement at a time per connection**, including a result set's fetches. A second
 statement waits for the first result set to close; a second one on the *same thread* raises

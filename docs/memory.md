@@ -33,6 +33,19 @@ docker run --memory=4g \
 jdbc:chdb:/data?max_memory_usage=2000000000
 ```
 
+That URL form works on the pinned v26.7.2-rc.2 baseline. Measured with
+`?max_threads=7&max_result_rows=13&max_block_size=4096`: `system.settings` reports 7, 13 and
+4096 with `changed = 1`, and the cap is enforced rather than merely reported — a 100-row
+`SELECT` under `max_result_rows=13` fails with ClickHouse error 396.
+
+**On v26.7.0 and v26.7.1-rc.1 it was silently inert**, if you are pointing the loader at one of
+those: settings in the connect argument vector never reached a session, so the same URL left
+`max_threads` at `auto(18)`, `max_result_rows` at 0 and `max_block_size` at 65409, and no cap
+was applied. `SET max_memory_usage = 2000000000` on the connection was the workaround, and still
+works. Fixed upstream in v26.7.2-rc.2 (chdb-core #191, commit `3231c03afca`); both measurements
+are in [findings §10](upstream-findings.md). The engine's automatic cgroup limit below applies
+regardless of either, which is what keeps this from being an OOM kill.
+
 The arithmetic: 4 GB limit − 1 GB heap − 0.4 GB library − JVM overhead leaves the engine about
 2 GB, which is what `max_memory_usage` should say.
 
@@ -75,6 +88,53 @@ Two things you have to do for that to hold:
 
 Reading one row of a huge result and closing is cheap and supported: the driver cancels the
 query rather than draining it.
+
+## One route is not bounded: `SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK`
+
+These cannot be streamed — the engine's streaming entry point accepts only a SELECT pipeline —
+so they run through `chdb_query_arrow_n`, which materializes the whole result.
+
+**The peak is inside the engine, before the driver has a handle.** Measured on v26.7.0, arm64,
+comparing the two routes on the same query and sampling RSS after the open with not one row
+read:
+
+| result payload | materialized, RSS at open | while reading | streamed, RSS at open |
+|---|---|---|---|
+| 108 MB | +234 MB | +0 | +48 KB |
+| 432 MB | +669 MB | +0 | +6.4 MB |
+| 864 MB | +896 MB | +0 | +6.5 MB |
+
+`RSS at open` is already the peak: it does not move while the caller iterates. `chdb-arrow-output.cpp`
+shows why — the engine collects every chunk, converts all of them into one `arrow::Table`, and
+only then exports a `TableBatchReader` over it, so both the ClickHouse chunks and the Arrow copy
+are live before the call returns.
+
+**So the JDBC knobs cannot help on this route, and the driver does not pretend otherwise.**
+`setMaxRows`, closing the `ResultSet` after one row, and any row cap the driver could impose all
+run after the memory has been spent. There is nothing left to save.
+
+**What does bound it is the engine's own per-query accounting**, which covers this path. Set it
+the same way as anywhere else — in the URL, or with `SET` on a connection you already have:
+
+```
+jdbc:chdb:/data?max_memory_usage=2000000000
+```
+
+```java
+statement.execute("SET max_memory_usage = 2000000000");
+```
+
+An oversized materialization then fails in milliseconds with ClickHouse error 241, which the
+driver maps to `SQLTransientException` (SQLSTATE `53200`) — not an OOM, and not a dead process.
+Measured: 15 out of 15 clean refusals under a 100 MB cap. Both forms take effect on the pinned
+baseline; only on engines before v26.7.2-rc.2 was the URL form inert, as described
+[above](#what-to-set) and in [findings §10](upstream-findings.md).
+
+**In practice the exposure is small, because the row count of each of these statements is a
+catalog or schema quantity rather than a data quantity.** `SHOW TABLES` over a 20,001-table
+catalog: 3 MB and 10 ms. `CHECK TABLE`: one row of a part path per active part, and ClickHouse's
+own `parts_to_throw_insert` keeps that in the thousands. `DESCRIBE`: one row per column.
+`EXPLAIN`: one row per plan line. None of them scales with the size of a table.
 
 ## Measuring it
 

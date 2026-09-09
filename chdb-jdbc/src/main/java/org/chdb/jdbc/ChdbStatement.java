@@ -3,6 +3,7 @@ package org.chdb.jdbc;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.Collections;
@@ -15,12 +16,19 @@ import org.chdb.internal.ChdbNativeException;
 /**
  * Executes one statement at a time on a {@link ChdbConnection}.
  *
- * <h2>Streaming or materialized</h2>
- * A statement with a result set goes through the Arrow streaming API and yields a {@link
- * ChdbResultSet} that holds one batch at a time. Everything else -- DDL, DML, session control
- * -- goes through {@code chdb_query_n}, because the streaming API only accepts statements
- * that have a result schema. {@link StatementShape} decides which, from the engine's
- * classifier where available.
+ * <h2>Three routes, not two</h2>
+ * A statement with a result set the engine will stream goes through {@code
+ * chdb_stream_query_arrow_n} and yields a {@link ChdbResultSet} that holds one batch at a
+ * time. A statement with a result set the engine refuses to stream -- {@code SHOW}, {@code
+ * DESCRIBE}, {@code EXPLAIN}, {@code EXISTS}, {@code CHECK}, none of which parse as a SELECT
+ * pipeline -- goes through {@code chdb_query_arrow_n}, which delivers the same Arrow C Data
+ * Interface materialized, and produces a {@link ChdbResultSet} indistinguishable from the
+ * first. Everything else -- DDL, DML, session control -- goes through {@code chdb_query_n}.
+ * {@link StatementShape} decides which, from the engine's classifier where available.
+ *
+ * <p>The route is decided once, before execution, and no statement is ever executed twice:
+ * {@link StatementShape} documents why a failed stream open is reported rather than retried
+ * on the materialized route.
  *
  * <h2>Cancellation</h2>
  * {@link #cancel()} is the one method that may be called from another thread while this one
@@ -31,6 +39,11 @@ import org.chdb.internal.ChdbNativeException;
  * <p>{@link #setQueryTimeout(int)} is built on the same mechanism: a timer thread calls the
  * same cancel path, so a timeout actually stops the engine rather than only abandoning the
  * Java-side wait (work plan section 5.8).
+ *
+ * <p>There is one window in which neither can interrupt anything, because there is no handle
+ * to cancel yet: the call that opens the result set. {@link
+ * #checkDeadlineSurvivedTheOpen(String)} is what keeps that window from turning a timeout into
+ * a late success.
  */
 public class ChdbStatement implements Statement {
 
@@ -49,12 +62,38 @@ public class ChdbStatement implements Statement {
     /** The stream currently executing, for {@link #cancel()}. Null when nothing is in flight. */
     private final AtomicReference<Long> inFlightStream = new AtomicReference<>(null);
 
+    /**
+     * Counts executions of this statement, so a query timeout can tell whether the execution
+     * it was armed for is still the one running.
+     *
+     * <p>{@link QueryTimeout#stop()} cannot promise a task will not run, so without this a
+     * timer armed for one statement could cancel the next one on the same {@code Statement} --
+     * which for a pooled connection running thousands of statements means an occasional valid
+     * query rejected as cancelled. Guarded by {@link #timeoutLock} rather than merely atomic:
+     * a compare that is not held across the act it guards is the same bug in a smaller window.
+     */
+    private long executions;
+
+    /**
+     * Serializes "start an execution" against "a timeout decides whether to act".
+     *
+     * <p>Held by {@link #queryTimeoutFired(QueryTimeout, long)} across both the staleness check
+     * and the cancel, so a timeout cannot pass the check and then land on an execution that
+     * began in between. Nothing native is called while acquiring it, and the executing thread
+     * holds it only to bump the counter and schedule, so it cannot deadlock against the
+     * engine's own locks.
+     */
+    private final Object timeoutLock = new Object();
+
     private ChdbResultSet currentResultSet;
     /**
      * Armed while a streaming statement is in flight and disarmed when its result set closes
      * or is exhausted, so the clock covers the fetches rather than only the open.
+     *
+     * <p>Volatile because a result set may be read on a different thread than the one that
+     * executed the statement, and {@link #timedOut()} is read from there.
      */
-    private QueryTimeout activeTimeout = QueryTimeout.NONE;
+    private volatile QueryTimeout activeTimeout = QueryTimeout.NONE;
     private long currentUpdateCount = -1;
     private int queryTimeoutSeconds;
     private int fetchSize = DEFAULT_FETCH_SIZE;
@@ -124,7 +163,19 @@ public class ChdbStatement implements Statement {
         // because closing it is what frees the slot the previous execution held.
         closeCurrentResultSet();
         currentUpdateCount = -1;
-        cancelled.set(false);
+
+        // Claims a new execution number and clears the cancel flag under the same lock a
+        // firing timeout takes, so a timer from the previous execution can no longer be
+        // between its own staleness check and its cancel while this one starts.
+        long thisExecution;
+        synchronized (timeoutLock) {
+            cancelled.set(false);
+            // Dropped rather than left pointing at the previous execution's timeout, so
+            // timedOut() cannot report a deadline that belonged to a statement already gone.
+            // Re-armed below for a statement that has a result set, and left NONE otherwise.
+            activeTimeout = QueryTimeout.NONE;
+            thisExecution = ++executions;
+        }
 
         // Held until the result set closes for a streaming statement, and only for the call
         // itself for one with no result set. The engine runs one statement per connection at a
@@ -132,7 +183,8 @@ public class ChdbStatement implements Statement {
         connection.statementSlot().acquire(sql);
         boolean handedOff = false;
         try {
-            boolean producesResultSet = producesResultSet(sql);
+            StatementShape.Route route = route(sql);
+            boolean producesResultSet = route != StatementShape.Route.NO_RESULT_SET;
             if (expectResultSet != null && expectResultSet && !producesResultSet) {
                 return false;
             }
@@ -141,11 +193,14 @@ public class ChdbStatement implements Statement {
                 // Armed before the open, because the open performs the first fetch, and
                 // disarmed by the result set rather than here -- the fetches that follow are
                 // where the time goes.
-                activeTimeout = QueryTimeout.start(this, queryTimeoutSeconds);
+                activeTimeout = QueryTimeout.start(this, queryTimeoutSeconds, thisExecution);
                 try {
-                    boolean opened = openStream(sql, parameterNames, parameterValues);
-                    // The result set now owns the slot and releases it when it closes.
-                    handedOff = opened;
+                    boolean opened = openStream(route, sql, parameterNames, parameterValues);
+                    if (opened) {
+                        // The result set now owns the slot and releases it when it closes.
+                        handedOff = true;
+                        checkDeadlineSurvivedTheOpen(sql);
+                    }
                     return opened;
                 } catch (RuntimeException | SQLException e) {
                     stopTimeout();
@@ -164,7 +219,71 @@ public class ChdbStatement implements Statement {
         }
     }
 
-    private boolean producesResultSet(String sql) throws SQLException {
+    /**
+     * Fails the execution if the query timeout expired, or {@link #cancel()} was called, while
+     * the open was in flight.
+     *
+     * <h2>Why this is needed at all</h2>
+     * {@link #cancel()} works by handing the in-flight stream handle to the engine -- and
+     * there is no handle until the call that creates it returns. Every exported cancel in the
+     * C ABI takes a result or stream handle ({@code chdb_stream_cancel_query}, {@code
+     * chdb_streaming_cancel_query}, {@code chdb_stream_cancel_insert}); there is no
+     * connection-level cancel. So the open is uninterruptible on both routes, and a timer that
+     * fires inside it finds {@code inFlightStream} still null and returns having done nothing.
+     *
+     * <p>Left there, the caller got the worst of both worlds: {@code executeQuery} came back
+     * <em>successfully</em>, with a usable result set, long after the deadline it set. Measured
+     * on v26.7.0 before this check: {@code setQueryTimeout(1)} on {@code SELECT
+     * max(sipHash64(number)) FROM numbers(2000000000)} returned a working result set after
+     * 12.65 seconds.
+     *
+     * <h2>How long that window is</h2>
+     * On the streaming route it is the pipeline init plus the first batch, which for a SELECT
+     * that emits as it scans is milliseconds -- but for a full aggregate, a {@code GROUP BY} or
+     * an {@code ORDER BY} without a {@code LIMIT} there is no first batch until the whole scan
+     * is done, so the window is the entire query. On the materialized route it is always the
+     * entire statement, because {@code chdb_query_arrow_n} runs it to completion before
+     * returning.
+     *
+     * <h2>What the caller gets instead</h2>
+     * A deadline, not an interrupt. The statement has already run to completion by the time
+     * this is reached and the engine cannot be told to stop, so the work is spent either way --
+     * but reporting {@link SQLTimeoutException} is what a caller can act on, and it keeps
+     * {@code setQueryTimeout} from being a setting that silently does nothing. The result set
+     * is closed first, so the stream and the connection's statement slot are released rather
+     * than pinned by a result nobody can reach.
+     */
+    private void checkDeadlineSurvivedTheOpen(String sql) throws SQLException {
+        boolean expired = activeTimeout.expired();
+        if (!expired && !cancelled.get()) {
+            return;
+        }
+        // Releases the stream and the statement slot; the caller set handedOff before calling
+        // here, so this close is the one release of that slot.
+        closeCurrentResultSet();
+        if (expired) {
+            throw new SQLTimeoutException(
+                    "The query exceeded the statement's query timeout of "
+                            + queryTimeoutSeconds
+                            + "s while "
+                            + describeStatement(sql)
+                            + " was still being executed. The engine could not be interrupted:"
+                            + " the chDB C ABI has no cancel that applies before a query returns"
+                            + " a handle, so the statement ran to completion and its result was"
+                            + " discarded.",
+                    "57014");
+        }
+        throw new SQLException(
+                "The statement was cancelled while "
+                        + describeStatement(sql)
+                        + " was still being executed. The engine could not be interrupted before"
+                        + " the query returned a handle, so it ran to completion and its result"
+                        + " was discarded.",
+                "57014",
+                394);
+    }
+
+    private StatementShape.Route route(String sql) throws SQLException {
         int[] analysis;
         try {
             // Null when the engine predates chdb_classify_query_n, which the v26.7.2-rc.2
@@ -176,23 +295,62 @@ public class ChdbStatement implements Statement {
             // message than anything this classification step could produce.
             analysis = null;
         }
-        return StatementShape.producesResultSet(analysis, sql);
+        return StatementShape.route(analysis, sql);
     }
 
-    private boolean openStream(String sql, List<String> parameterNames, List<String> parameterValues)
+    private boolean openStream(
+            StatementShape.Route route,
+            String sql,
+            List<String> parameterNames,
+            List<String> parameterValues)
             throws SQLException {
         ChdbUrl url = connection.chdbUrl();
+        boolean lowCardinalityAsDictionary =
+                url.booleanProperty(ChdbUrl.PROP_LOW_CARDINALITY_AS_DICTIONARY, false);
+        boolean unsupportedAsBinary = url.booleanProperty(ChdbUrl.PROP_UNSUPPORTED_AS_BINARY, false);
+        boolean stringAsString = url.booleanProperty(ChdbUrl.PROP_STRING_AS_STRING, true);
+
+        boolean materialize = route == StatementShape.Route.MATERIALIZED_RESULT_SET;
+        if (materialize && !parameterNames.isEmpty()) {
+            // The engine exports chdb_query_arrow_n but no _with_params_n variant of it, so
+            // there is no entry point that both accepts this statement and binds parameters.
+            // Reported rather than worked around: interpolating the values into the SQL is
+            // the injection this driver's server-side binding exists to avoid, and running
+            // the statement with the bindings dropped would answer the wrong question.
+            throw new SQLException(
+                    "Server-side parameters are not supported for "
+                            + describeStatement(sql)
+                            + ", because the engine has no parameter-binding form of the Arrow"
+                            + " entry point that accepts it (chdb_query_arrow_with_params_n is"
+                            + " not exported by engine "
+                            + ChdbNative.engineVersion()
+                            + "). Ask the system tables instead -- system.tables,"
+                            + " system.columns, system.databases and system.settings answer the"
+                            + " same questions with a SELECT, which does take parameters. Do not"
+                            + " paste the value into the SQL of a plain Statement: a LIKE"
+                            + " pattern that closes the literal can inject clauses, up to and"
+                            + " including INTO OUTFILE. See docs/unsupported.md.",
+                    "0A000");
+        }
+
         long stream;
         try {
             stream =
-                    ChdbNative.streamOpen(
-                            connection.handle(),
-                            Utf8.encode(sql),
-                            Utf8.encodeAll(parameterNames),
-                            Utf8.encodeAll(parameterValues),
-                            url.booleanProperty(ChdbUrl.PROP_LOW_CARDINALITY_AS_DICTIONARY, false),
-                            url.booleanProperty(ChdbUrl.PROP_UNSUPPORTED_AS_BINARY, false),
-                            url.booleanProperty(ChdbUrl.PROP_STRING_AS_STRING, true));
+                    materialize
+                            ? ChdbNative.streamOpenMaterialized(
+                                    connection.handle(),
+                                    Utf8.encode(sql),
+                                    lowCardinalityAsDictionary,
+                                    unsupportedAsBinary,
+                                    stringAsString)
+                            : ChdbNative.streamOpen(
+                                    connection.handle(),
+                                    Utf8.encode(sql),
+                                    Utf8.encodeAll(parameterNames),
+                                    Utf8.encodeAll(parameterValues),
+                                    lowCardinalityAsDictionary,
+                                    unsupportedAsBinary,
+                                    stringAsString);
         } catch (ChdbNativeException e) {
             throw ChdbExceptions.wrap("Query failed", e);
         }
@@ -248,6 +406,46 @@ public class ChdbStatement implements Statement {
     }
 
     // ------------------------------------------------------------------ cancellation
+
+    /**
+     * A query timeout's deadline passed. Cancels the statement only if the execution the
+     * timeout was armed for is still the one running.
+     *
+     * <p>{@link QueryTimeout#stop()} is {@code Future.cancel(false)}, so a task the scheduler
+     * has already begun runs whatever the statement does next -- and the task's only effect
+     * used to be a bare {@link #cancel()}, which sets a flag shared across executions and
+     * cancels whatever stream is in flight <em>now</em>. On a reused {@code Statement} that
+     * meant a timer armed for the previous query could cancel the next one, and since {@link
+     * #checkDeadlineSurvivedTheOpen(String)} fails an execution whose cancel flag is set, the
+     * visible result was an occasional valid statement rejected with SQLSTATE 57014.
+     *
+     * <p>The check and the cancel are both under {@link #timeoutLock}, which {@link
+     * #executeInternal} also takes to claim its execution number. Doing only the check under a
+     * lock, or only comparing an atomic, would leave the same bug in a shorter window: the
+     * timeout could pass the check and then be descheduled while the next execution starts.
+     *
+     * <p>This is deliberately <em>not</em> the path {@link #cancel()} takes. An application
+     * calling {@code Statement.cancel()} means "stop whatever is running now", which is never
+     * stale and must not be filtered by an execution number.
+     */
+    void queryTimeoutFired(QueryTimeout timeout, long execution) {
+        synchronized (timeoutLock) {
+            if (executions != execution) {
+                // Armed for an execution that has already finished. Its result set, if any, is
+                // long closed, and the stream this would reach belongs to somebody else.
+                return;
+            }
+            timeout.markExpired();
+            try {
+                cancel();
+            } catch (Exception ignored) {
+                // The statement may have finished or been closed in the meantime. A timeout's
+                // cancel is best-effort by definition, and there is no caller on this thread
+                // to report a failure to; the expired flag above is what the executing thread
+                // reads.
+            }
+        }
+    }
 
     /**
      * Asks the engine to abandon the statement in flight.
@@ -377,6 +575,11 @@ public class ChdbStatement implements Statement {
         try {
             closeCurrentResultSet();
         } finally {
+            // Unconditionally, not only via the result set: a closed statement must not leave a
+            // task sitting in the shared scheduler queue holding a reference to it, which for a
+            // long queryTimeout is a retention leak even though the execution number already
+            // makes the task harmless.
+            stopTimeout();
             connection.unregister(this);
         }
     }
@@ -386,7 +589,11 @@ public class ChdbStatement implements Statement {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
-        closeCurrentResultSet();
+        try {
+            closeCurrentResultSet();
+        } finally {
+            stopTimeout();
+        }
     }
 
     @Override

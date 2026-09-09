@@ -68,7 +68,7 @@
     <chdb.engine.version>26.7.2-rc.2</chdb.engine.version>
     <chdb.binding.revision>1</chdb.binding.revision>
     <!-- Bumped only on an incompatible change to the Java <-> JNI shim contract. -->
-    <chdb.jni.abi.version>1</chdb.jni.abi.version>
+    <chdb.jni.abi.version>2</chdb.jni.abi.version>
     <!-- Bumped only on an incompatible change to the public Java API. -->
     <chdb.java.api.version>1</chdb.java.api.version>
 
