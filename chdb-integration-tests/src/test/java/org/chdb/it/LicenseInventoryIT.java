@@ -47,8 +47,20 @@ class LicenseInventoryIT extends NativeTestBase {
     private static final String ENGINE_VERSION = System.getProperty("chdb.it.engine.version");
 
     private static Path inventoryPath() {
-        // Failsafe runs with the module directory as the working directory.
-        return Paths.get("..", "licenses", "engine-third-party-" + ENGINE_VERSION + ".tsv");
+        String name = "engine-third-party-" + ENGINE_VERSION + ".tsv";
+        // The working directory is not the same everywhere this suite runs: failsafe uses the
+        // module directory, while the sanitizer and oldest-platform jobs drive the JUnit
+        // console launcher from the repository root. Walking up for the file works from either
+        // without a system property that every call site would have to remember to set.
+        Path dir = Paths.get("").toAbsolutePath();
+        for (int up = 0; up < 5 && dir != null; up++, dir = dir.getParent()) {
+            Path candidate = dir.resolve("licenses").resolve(name);
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+        }
+        // Not found. Returned anyway so the assertion below can name what it looked for.
+        return Paths.get("licenses", name).toAbsolutePath();
     }
 
     /** {@code library<TAB>licence}, distinct and sorted, exactly as the committed file stores it. */
