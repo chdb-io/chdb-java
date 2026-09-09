@@ -220,7 +220,8 @@ would most regret missing.
 | **`noexec` /tmp** | The loader has a specific message for it that has never been executed. | an hour, in a container |
 | **Corrupted library, architecture mismatch** | Named in the plan; the checksum path is tested, these two are not. | half a day |
 | **JPMS module path** | `Automatic-Module-Name` is set; nothing has run on the module path. | half a day |
-| **ShardingSphere, Spring `JdbcTemplate`** | HikariCP is done and found the useful thing. These two are lower yield. | half a day |
+| **Spring `JdbcTemplate`** | HikariCP, MyBatis and jOOQ are done and each found something. This one is lower yield. | half a day |
+| **ShardingSphere** | Not closable here: `StandardJdbcUrlParser` rejects every `jdbc:chdb:` form, so no config reaches the driver. Pinned by `ShardingSphereIT` so it flips when upstream fixes it. | upstream |
 | **The §3.3 batch-access benchmark** | The plan requires three approaches measured before the data path is fixed. One was chosen by reasoning. | a day |
 | **Full-process ASan and LSan** | Blocked on a sanitizer build of chdb-core. Not ours to close. | upstream |
 
