@@ -103,6 +103,11 @@ public final class ChdbConnection implements Connection {
                 StoragePathRegistry.release(url);
             }
         }
+
+        // A JVM that exits with a streaming result set still open aborts inside the engine.
+        // Closing connections at shutdown closes their result sets, which is the state the
+        // engine tolerates. See ShutdownCleanup.
+        ShutdownCleanup.register(this);
     }
 
     // ------------------------------------------------------------------ internals
@@ -277,6 +282,7 @@ public final class ChdbConnection implements Connection {
             // Released even if the native close failed: the handle is gone from the registry
             // either way, so keeping the path pinned would strand the JVM.
             StoragePathRegistry.release(url);
+            ShutdownCleanup.unregister(this);
         }
 
         if (firstFailure != null) {
