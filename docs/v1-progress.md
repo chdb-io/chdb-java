@@ -28,7 +28,7 @@ otherwise. 26.7.2-rc.2 is also a chdb-core pre-release, which by [work plan §4.
 | ✅ | Four glibc/macOS platforms | `Platform`, with musl detected and refused |
 | ✅ | Direct JNI is the mainline, ADBC the experiment | no Arrow Java dependency anywhere |
 | ✅ | Engine release, dynamic-library checksum and symbol set pinned | `scripts/engine.properties`, SHA-256 per platform from the GitHub release digests |
-| ✅ | Consistency check across `chdb_version()`, tag and header version | all three agree on v26.7.2-rc.2; the header constant that read `26.5.1-rc.3` at tag `v26.7.0` is fixed upstream — [findings §2](upstream-findings.md). Still enforced against `engine.properties` rather than the header |
+| ✅ | Consistency check across `chdb_version()`, tag and header version | all three agree on v26.7.2-rc.2. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). Still enforced against `engine.properties` rather than the header |
 | ✅ | C API split into required and optional symbols | 18 required, linker- and load-checked; `chdb_classify_query_n` and `chdb_shutdown` optional via `dlsym`, and present on the current baseline |
 | ⬜ | C ABI version and compatibility promise confirmed with Core | needs upstream agreement |
 | 🟡 | Signal-handler requirement raised upstream | reproduced, measured and written up in [findings §1](upstream-findings.md); not yet filed |

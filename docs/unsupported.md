@@ -171,6 +171,21 @@ in flight is the one the hook cannot close. So **shut your executor down before 
 cost of the leaked-stream case above. See
 [upstream findings §9](upstream-findings.md).
 
+**A misspelled setting name in the URL is silent.** Properties after `?` that the driver does
+not recognize are handed to the engine as `--key=value`, and the engine accepts a name it has
+never heard of without complaint: `jdbc:chdb:/data?max_thread=4` connects, and nothing applies
+`max_threads`. The driver cannot help — it has no list of setting names to check against, and
+inventing one would refuse settings a newer engine added.
+
+An invalid *value* for a name the engine does know is caught, since engine 26.7.2-rc.2:
+`?max_threads=not-a-number`, `?max_threads=-5` and `?max_memory_usage=abc` raise `SQLException`
+rather than connecting. Engine 26.7.0 accepted those too, so this is stricter than it was. The
+exception names the arguments that were passed, because `chdb_connect()` itself reports nothing.
+
+If a setting matters, assert it took effect:
+`SELECT value FROM system.settings WHERE name = 'max_threads'`. See
+[upstream findings §5](upstream-findings.md).
+
 **A non-ASCII storage path needs the JVM to be under a UTF-8 locale.** The driver resolves the
 path with `java.nio.file` to decide whether two URLs name the same directory, and that encodes
 with `sun.jnu.encoding` — which follows the OS locale and is ASCII on a container started with

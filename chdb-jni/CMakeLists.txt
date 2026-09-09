@@ -131,8 +131,22 @@ add_library(chdb_java_jni SHARED
 
 target_include_directories(chdb_java_jni PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
-  # The engine header pinned to CHDB_ENGINE_VERSION, vendored under include/. The release
-  # tarball ships only the shared library, so the header has to travel with the binding.
+  # The engine header pinned to CHDB_ENGINE_VERSION, vendored under include/, so the shim can
+  # be compiled without a chdb-core checkout and so a bug report identifies which declarations
+  # it was built from.
+  #
+  # Two rules, both learned the hard way (upstream findings section 2):
+  #
+  #   1. Copy it from the release TARBALL -- the chdb.h beside libchdb.so -- not from
+  #      programs/local/chdb.h at the git tag. The release build stamps CHDB_VERSION and the
+  #      source tree does not, so the tag's copy misreports its own version. The v26.7.0
+  #      vendored header was the tag's, and read 26.5.1-rc.3.
+  #   2. Never edit it. Its value is being byte-identical to what upstream shipped: that is
+  #      what lets `diff` against the next release show only upstream's changes. An
+  #      improvement made here becomes indistinguishable from upstream drift, and the
+  #      26.5.1-rc.3 discovery depended on exactly that comparison working. Header text that
+  #      turns out to be wrong belongs in docs/upstream-findings.md and upstream, not in a
+  #      local edit.
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   ${CHDB_JNI_INCLUDE_DIRS})
 

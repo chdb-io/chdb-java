@@ -134,9 +134,14 @@ class StoragePathIT extends NativeTestBase {
         // were not released, every later connect to a different path would be refused on behalf
         // of a connection that does not exist -- and one bad connect would strand the JVM.
         //
-        // Not an invalid setting value: engine 26.7.2-rc.2 accepts --max_threads=not-a-number and
-        // connects anyway, despite what chdb.h says about invalid values failing the
-        // connection, so that would not exercise this path.
+        // A path naming a regular file, rather than an invalid setting value, for a historical
+        // reason worth recording: on engine 26.7.0 an invalid value did not fail the connect at
+        // all -- --max_threads=not-a-number connected with the setting ignored -- so it could
+        // not exercise this at all. On 26.7.2-rc.2 it does fail, and it releases the binding
+        // too: a bad-setting connect to one path followed by a good connect to another
+        // succeeds. Kept as it is because the bad path is the failure furthest inside the
+        // connect sequence, so it is the stronger of the two triggers, not because the other
+        // one no longer works.
         Path file = temp.resolve("a-file-not-a-directory");
         Files.write(file, new byte[] {1, 2, 3});
         assertThrows(SQLException.class, () -> DriverManager.getConnection("jdbc:chdb:" + file));

@@ -5,10 +5,19 @@ arm64 while implementing work-plan phases 0–8 against what was then the pinned
 **v26.7.0**. They are recorded here because every one of them is a decision the driver's code
 depends on, and because several belong upstream rather than in a Java driver.
 
-The baseline has since moved to **v26.7.2-rc.2** (issue #8, for `chdb_shutdown()`). Two of
-these findings changed with it and say so below: §2 is fixed upstream and §6 no longer
-applies to the baseline. The rest still hold, and the tests named against each are what
-demonstrates it — they are part of `mvn verify` on the new engine, not a claim carried over.
+The baseline has since moved to **v26.7.2-rc.2** (issue #8, for `chdb_shutdown()`), and four
+of these entries changed with it rather than being carried over:
+
+- **§2 was wrong about who was at fault** and is rewritten. The released header was always
+  correct; the stale version constant came from this repository vendoring the source tree's
+  copy instead of the tarball's.
+- **§5 is now half fixed upstream.** An invalid *value* for a known setting fails the connect,
+  as documented. An unrecognized setting *name* is still accepted and ignored.
+- **§6 no longer applies to the baseline**: both optional symbols are exported now.
+- **§9 is new**, from measuring what `chdb_shutdown()` does and does not do.
+
+The rest still hold on the new engine, and the tests named against each are what demonstrates
+that — they run in `mvn verify` against whichever engine is pinned.
 
 Reproduce any of them with `mvn verify` — each has a test named below.
 
@@ -80,32 +89,44 @@ NullPointerException after connecting, and would terminate the JVM if the guard 
 
 ---
 
-## 2. `CHDB_VERSION` in the v26.7.0 header says `26.5.1-rc.3` — FIXED in v26.7.2-rc.2
+## 2. `CHDB_VERSION` is stale in the source tree, correct in the release — the bug was ours
 
-**Severity: broke a documented release check. Fixed upstream; the workaround is kept anyway.**
+**Severity: none upstream, for anyone using a release. Was a wrong vendoring source here; now
+fixed.**
 
-The header at tag `v26.7.0` carried:
+This entry used to say the v26.7.0 header shipped `#define CHDB_VERSION "26.5.1-rc.3"` while
+`chdb_version()` returned `26.7.0`, and blamed upstream for not bumping the constant. Moving
+the baseline turned up the real cause, which is worth recording because the conclusion was
+inverted.
 
-```c
-#define CHDB_VERSION "26.5.1-rc.3"
-```
+`chdb.h` exists in two places and they do not agree:
 
-while `chdb_version()` from the same release's shared library returned `26.7.0`. The constant
-was not bumped for the release.
+| | v26.7.0 | v26.7.2-rc.2 |
+|---|---|---|
+| `programs/local/chdb.h` at the git tag | `26.5.1-rc.3` | `26.7.2` |
+| `chdb.h` inside the release tarball | `26.7.0` | `26.7.2-rc.2` |
+| `chdb_version()` from that tarball's library | `26.7.0` | `26.7.2-rc.2` |
 
-Work plan §5.1 asks for a consistency check across `chdb_version()`, the release tag and the
-header version. On v26.7.0 two of the three agreed and the header did not.
+The release build stamps the constant, and the released artifact has always been right. What
+was wrong was this repository's vendored copy: it was byte-identical to the *source tree* at
+tag v26.7.0, stale constant included, rather than to the header inside the release tarball.
 
-**Fixed on the current baseline.** The v26.7.2-rc.2 header carries `#define CHDB_VERSION
-"26.7.2-rc.2"`, and `chdb_version()` from the same release's library returns the same string.
-All three now agree, so §5.1's check is a real check rather than provenance only.
+**Consequence for this binding:** `chdb-jni/include/chdb.h` is now taken from the release
+tarball, which is the artifact this binding is built beside and ships against, and
+`shim.built.against.engine.header` reads `26.7.2-rc.2` accordingly. The rule is recorded in
+`chdb-jni/CMakeLists.txt` where the vendored header is included: copy it from the tarball, not
+from the source tree, and do not edit it — its value is being byte-identical to what upstream
+shipped, which is what makes the next comparison able to detect drift. This finding was made
+exactly that way.
 
-**Consequence for this binding, unchanged:** the loader still compares `chdb_version()` against
-`CHDB_JNI_EXPECTED_ENGINE_VERSION`, which comes from `scripts/engine.properties` via CMake, and
-still treats the header's `CHDB_VERSION` as build provenance reported by
-`ChdbNative.shimBuildInfo()` as `shim.built.against.engine.header`. Deliberately not changed
-back to trusting the header: one release getting it right is not a guarantee, and a constant
-compiled into the shim cannot describe the library that was actually loaded anyway.
+**What is left for upstream, and it is minor:** the in-tree constant is stale between releases,
+so anyone building chdb-core from a checkout gets a header that misreports its own version.
+Deriving it at configure time as well as at release time would close that.
+
+**Unchanged decision:** the loader still compares `chdb_version()` against
+`CHDB_JNI_EXPECTED_ENGINE_VERSION` from `scripts/engine.properties`, and still treats the
+header's constant as build provenance only. A constant compiled into the shim cannot describe
+the library that was actually loaded, however correct it is.
 
 ---
 
@@ -182,32 +203,41 @@ currently implies but does not deliver.
 
 ---
 
-## 5. Invalid setting values do not fail the connection
+## 5. Invalid setting *values* now fail the connection; unknown *names* still do not
 
-**Severity: documentation mismatch. Not worked around; nothing to work around.**
+**Severity: half fixed upstream between v26.7.0 and v26.7.2-rc.2. The remaining half is a
+silent typo, documented rather than worked around.**
 
 `chdb.h` says of `chdb_connect`:
 
 > An invalid value for a known setting fails the connection.
 
-It does not, on v26.7.0 or on the current v26.7.2-rc.2 baseline -- `StoragePathIT` asserts the
-first of these against whichever engine is pinned. All three connect successfully:
+On v26.7.0 it did not. On v26.7.2-rc.2 it does. Measured through the driver, one connection
+per URL:
 
-```
---max_threads=not-a-number
---max_threads=-5
---no_such_setting_at_all=1
-```
+| connection | v26.7.0 | v26.7.2-rc.2 |
+|---|---|---|
+| `?max_threads=4` | connects, `max_threads=4` | connects, `max_threads=4` |
+| `?max_threads=not-a-number` | connects, setting ignored | **connect fails** |
+| `?max_threads=-5` | connects, setting ignored | **connect fails** |
+| `?max_memory_usage=abc` | connects, setting ignored | **connect fails** |
+| `?no_such_setting_at_all=1` | connects, ignored | connects, ignored |
 
-A caller that mistypes a setting in a JDBC URL gets a working connection with the setting
-silently absent.
+So an invalid value is now reported, as documented. An unrecognized setting *name* is still
+accepted and silently dropped, which is the more common typo of the two: `max_thread=4` or
+`max_memmory_usage=...` gives a working connection with the setting absent.
 
-**Consequence for this binding:** the driver forwards unknown properties to the engine as
-`--key=value` and cannot validate them, so a typo is invisible. `docs/native-loading.md` says
-so rather than implying the engine checks.
+**Consequence for this binding:** the driver forwards unrecognized URL properties to the engine
+as `--key=value` and cannot tell a setting name from a misspelling, so it still cannot catch
+that case. Two things follow from the half that changed. The connect-failure diagnostic in
+`chdb_jni.cpp` now leads with "a setting below has a value the engine rejects", because
+`chdb_connect()` returns NULL with no message and the previous list named only storage-path
+causes — a user passing `--max_threads=not-a-number` was told to check disk space.
+`docs/unsupported.md` and `docs/native-loading.md` say which half is caught and which is not,
+and recommend `SELECT value FROM system.settings WHERE name = '...'` for the half that is not.
 
-**Suggested upstream fix:** either validate at connect as documented, or amend the
-documentation. Validating is the more useful of the two for every binding.
+**Suggested upstream fix:** fail, or at least warn, on a setting name the engine does not
+recognize. Validating values without validating names catches the rarer mistake.
 
 ---
 

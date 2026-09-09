@@ -22,15 +22,21 @@ global namespace, which is how the driver probes for optional entry points.
 
 ## Unpacking
 
-The cache directory is named after the SHA-256 of the pair it holds:
+The cache directory is named after the engine version, the platform and a digest of the pair
+it holds:
 
 ```
-$TMPDIR/chdb-java/26.7.2-rc.2-macos-aarch64-d5e24ccc6dd8b072/
+$TMPDIR/chdb-java/26.7.2-rc.2-macos-aarch64-a2152d4651113d10/
 ├── libchdb.so
 ├── libchdb_java_jni.dylib
 ├── manifest.properties
 └── .complete
 ```
+
+The digest is over the engine version and both libraries' recorded checksums, so it is specific
+to one build of one platform package: the value above is from a local build and a released
+package will differ. Print the real one with `NativeLibraryLoader.loadedRuntime()` rather than
+deriving it.
 
 Content-addressed, so the same bytes always land at the same absolute path — which is what lets
 several JVMs and several ClassLoaders share one 350 MB copy instead of each making a private
@@ -135,30 +141,34 @@ how ClickHouse settings are passed:
 jdbc:chdb:/data?max_threads=4&max_memory_usage=2000000000
 ```
 
-**A typo is silent.** On engine 26.7.2-rc.2, as on 26.7.0 before it, an unknown setting name
-and an invalid value for a known one both connect successfully with the setting ignored — despite what `chdb.h` says
-about invalid values failing the connection. There is nothing the driver can check on its
-behalf. Verify a setting took effect with `SELECT value FROM system.settings WHERE name = '...'`
-if it matters. See [upstream findings §5](upstream-findings.md).
+**A bad value is refused; a misspelled name is silent.** On engine 26.7.2-rc.2 an invalid
+value for a setting the engine knows fails the connection — `?max_threads=not-a-number`,
+`?max_threads=-5` and `?max_memory_usage=abc` all raise `SQLException` rather than connecting
+with the setting ignored, which is what 26.7.0 did. A setting *name* the engine does not
+recognize still connects successfully with nothing applied, so `?max_thread=4` is a working
+connection and a silently absent setting. The driver cannot tell a real setting name from a
+typo, so verify with `SELECT value FROM system.settings WHERE name = '...'` if it matters. See
+[upstream findings §5](upstream-findings.md).
 
 ## What the driver loaded
 
 ```java
 System.out.println(org.chdb.internal.NativeLibraryLoader.loadedRuntime());
 // chDB native runtime: platform=macos-aarch64 source=native-jar engine=26.7.2-rc.2 jniAbi=1
-//   enginePath=/var/folders/.../chdb-java/26.7.2-rc.2-macos-aarch64-d5e24ccc/libchdb.so
+//   enginePath=/var/folders/.../chdb-java/26.7.2-rc.2-macos-aarch64-a2152d4651113d10/libchdb.so
 //   jniPath=...
 
 System.out.println(org.chdb.internal.ChdbNative.shimBuildInfo());
 // jni.abi.version=1
-// shim.commit=ea2d84799c27
+// shim.commit=d1fa978823c8
 // shim.compiler=AppleClang 21.0.0.21000101
 // shim.built.against.engine.header=26.7.2-rc.2
 // shim.expected.engine.version=26.7.2-rc.2
 ```
 
 `shim.built.against.engine.header` is the `CHDB_VERSION` constant from the header the shim
-compiled against. It agrees with `shim.expected.engine.version` on the current baseline; on
-the v26.7.0 release it read `26.5.1-rc.3`, an upstream oversight since fixed. Either way the
-driver does not use it for any decision, only for diagnosis
-([upstream findings §2](upstream-findings.md)).
+compiled against, and it agrees with `shim.expected.engine.version` here. A build where the two
+disagree is a shim compiled against a header from a different release — which is what happened
+on v26.7.0, where this line read `26.5.1-rc.3` because the vendored header had been taken from
+chdb-core's source tree rather than from the release tarball. Either way the driver does not use
+it for any decision, only for diagnosis ([upstream findings §2](upstream-findings.md)).
