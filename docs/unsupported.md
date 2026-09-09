@@ -221,9 +221,9 @@ is being opened, before the user has typed anything, and it does so whether or n
 useful to it. One method throwing `SQLFeatureNotSupportedException` inside that sweep is reported
 as "could not connect", so the driver looks broken on first contact rather than merely limited.
 
-`DatabaseMetaDataSurfaceIT` reproduces the sweep: all 179 methods of JDBC 4.3's
-`DatabaseMetaData` (including the two from `Wrapper`) invoked reflectively with the arguments a
-tool would pass. On 26.7.0:
+`DatabaseMetaDataSurfaceIT` reproduces the sweep: every method the running JDK reports on
+`DatabaseMetaData`, invoked reflectively with the arguments a tool would pass. On engine 26.7.0,
+under JDK 11, 21 and 26 alike:
 
 | | |
 |---|---|
@@ -231,6 +231,18 @@ tool would pass. On 26.7.0:
 | Returned a result set with no rows | 19 |
 | Threw `SQLFeatureNotSupportedException` | **0** |
 | Threw anything else | **0** |
+| **Total** | **179** |
+
+How many methods that is belongs to the JDK rather than to this driver. `DatabaseMetaData`
+declares 177 — of which `getSchemas` and `supportsConvert` are overload pairs — and inherits
+`unwrap` and `isWrapperFor` from `Wrapper`, for 179 from `getMethods()`. Measured identical on
+JDK 11, 21 and 26; Java 11 is this driver's floor and gets the same sweep as the newest JDK, so
+the coverage above is not a claim that only holds on a recent runtime.
+
+The test therefore asserts *coverage* rather than that number: one classified result per method
+the running JDK reports, exactly once. A future JDBC revision may move the total without
+touching this driver, whereas a method quietly falling out of the sweep is a real regression and
+fails.
 
 `DatabaseMetaData` is the one interface in this driver with no refusal anywhere in it, and that
 is on purpose: it is the interface whose whole job is to be asked questions by software that
@@ -316,7 +328,8 @@ jOOQ resolves this driver to `SQLDialect.DEFAULT`, because `getDatabaseProductNa
 
 Not installed and driven, which is not practical in CI. Covered instead by the
 [full metadata sweep](#databasemetadata-nothing-on-it-throws), which is the part of a GUI's
-connect sequence that can fail: 179 methods, nothing throws, every result set well-formed.
+connect sequence that can fail: 179 methods on JDK 11 through 26, nothing throws, every result
+set well-formed.
 
 What that does not cover is a GUI's own SQL — the statements it runs to populate its navigator
 tree beyond `DatabaseMetaData`, its data editor's assumption that a result set can be updated,

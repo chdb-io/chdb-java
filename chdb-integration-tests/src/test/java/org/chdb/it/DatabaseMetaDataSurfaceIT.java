@@ -36,8 +36,10 @@ import org.junit.jupiter.api.Test;
  * answer -- it is one method throwing {@link SQLFeatureNotSupportedException} from inside that
  * sweep, because the tool reports it as "could not connect" and the driver looks broken on
  * first contact. Installing DBeaver in CI is not practical, so the sweep is reproduced here:
- * every declared method is invoked with arguments a tool would plausibly pass, and the outcome
- * is classified.
+ * every method the running JDK reports on the interface is invoked with arguments a tool would
+ * plausibly pass, and the outcome is classified. That is 179 methods on JDK 11, 21 and 26 alike
+ * -- the size of the surface is the JDK's business, so the test asserts it reached all of them
+ * rather than asserting the number.
  *
  * <p>The second thing this covers is the empty result set. Roughly half of the catalog queries
  * have no rows to return in this driver -- ClickHouse has no foreign keys, no indexes in the
@@ -105,16 +107,31 @@ class DatabaseMetaDataSurfaceIT extends NativeTestBase {
         List<String> errors = namesWithOutcome(results, Outcome.ERROR);
         assertTrue(errors.isEmpty(), "DatabaseMetaData methods throwing: " + errorDetail(results));
 
-        // A guard against the scan silently degrading into a no-op if reflection or the
-        // argument table stops matching the interface. JDBC 4.3's DatabaseMetaData has 168
-        // methods of its own plus the two inherited from Wrapper.
-        assertTrue(results.size() >= 165, "scanned only " + results.size() + " methods");
+        // Coverage, not a count.
+        //
+        // How many methods DatabaseMetaData has is a property of the JDK, not of this driver:
+        // measured at 179 on JDK 11, 21 and 26 alike (177 declared on the interface, of which
+        // getSchemas and supportsConvert are overload pairs, plus unwrap and isWrapperFor from
+        // Wrapper). Asserting 179 would make the test a hostage to the next JDBC revision, and
+        // asserting a floor -- which this used to do -- lets a method be skipped without anyone
+        // noticing, which is the one failure the assertion is here to catch.
+        //
+        // So it asserts the property the test actually means: every method the running JDK
+        // reports got invoked and classified, exactly once. That holds on any JDK, and fails if
+        // the scan silently stops reaching part of the interface or if two methods collapse
+        // into one signature.
+        assertEquals(
+                DatabaseMetaData.class.getMethods().length,
+                results.size(),
+                "every method on DatabaseMetaData must be scanned exactly once");
     }
 
     @Test
     @DisplayName("every metadata result set carries the column labels JDBC specifies, rows or not")
     void everyResultSetCarriesItsJdbcColumns() throws Exception {
         Map<String, List<String>> missing = new LinkedHashMap<>();
+        List<String> unspecified = new ArrayList<>();
+        int checked = 0;
         try (Connection connection = openMemory()) {
             createScanTarget(connection);
             DatabaseMetaData meta = connection.getMetaData();
@@ -124,8 +141,13 @@ class DatabaseMetaDataSurfaceIT extends NativeTestBase {
                 }
                 List<String> expected = JDBC_COLUMNS.get(method.getName());
                 if (expected == null) {
+                    // A catalog query with no transcribed column list would otherwise be
+                    // skipped in silence, so the gap is collected and failed on below rather
+                    // than shrinking the test's reach without saying so.
+                    unspecified.add(method.getName());
                     continue;
                 }
+                checked++;
                 try (ResultSet rs = (ResultSet) method.invoke(meta, argumentsFor(method))) {
                     List<String> actual = labels(rs.getMetaData());
                     // JDBC lets a driver append columns beyond the specified ones, but the
@@ -152,6 +174,23 @@ class DatabaseMetaDataSurfaceIT extends NativeTestBase {
             dropScanTarget(connection);
         }
         assertTrue(missing.isEmpty(), "metadata result sets missing JDBC columns: " + missing);
+        assertTrue(
+                unspecified.isEmpty(),
+                "ResultSet-returning methods with no transcribed column list: " + unspecified);
+        // Every ResultSet-returning method on the interface, and the count is derived from the
+        // interface rather than written down, for the reason in wholeSurfaceIsAnswerable().
+        assertEquals(resultSetMethodCount(), checked, "not every catalog query was checked");
+    }
+
+    /** How many methods on {@link DatabaseMetaData} return a {@link ResultSet}. */
+    private static int resultSetMethodCount() {
+        int count = 0;
+        for (Method method : DatabaseMetaData.class.getMethods()) {
+            if (ResultSet.class.equals(method.getReturnType())) {
+                count++;
+            }
+        }
+        return count;
     }
 
     @Test
@@ -195,14 +234,16 @@ class DatabaseMetaDataSurfaceIT extends NativeTestBase {
         }
     }
 
-    /** Every method of {@link DatabaseMetaData}, including the two from {@code Wrapper}. */
+    /**
+     * Every method the running JDK reports on {@link DatabaseMetaData}, in signature order.
+     *
+     * <p>No filtering: {@code getMethods()} on an interface does not report {@code Object}'s
+     * methods, checked at 0 on JDK 11, 21 and 26. Taking the array as it comes is what lets
+     * {@link #wholeSurfaceIsAnswerable()} assert an exact one-result-per-method equality rather
+     * than a threshold.
+     */
     private static List<Method> scannableMethods() {
-        List<Method> methods = new ArrayList<>();
-        for (Method method : DatabaseMetaData.class.getMethods()) {
-            if (method.getDeclaringClass() != Object.class) {
-                methods.add(method);
-            }
-        }
+        List<Method> methods = new ArrayList<>(Arrays.asList(DatabaseMetaData.class.getMethods()));
         methods.sort(Comparator.comparing(DatabaseMetaDataSurfaceIT::signature));
         return methods;
     }
@@ -572,7 +613,15 @@ class DatabaseMetaDataSurfaceIT extends NativeTestBase {
             counts.put(outcome, 0);
         }
         StringBuilder text = new StringBuilder();
-        text.append("\n=== DatabaseMetaData surface scan (issue #11) ===\n\n");
+        // The JDK is named because the size of the surface is its property, not the driver's,
+        // and a scan report that does not say which JDK produced it cannot be compared with
+        // another one.
+        text.append("\n=== DatabaseMetaData surface scan (issue #11) ===\n")
+                .append("JDK ")
+                .append(System.getProperty("java.version"))
+                .append(", ")
+                .append(DatabaseMetaData.class.getMethods().length)
+                .append(" methods on the interface\n\n");
         text.append("| Method | Outcome | Detail |\n|---|---|---|\n");
         results.forEach(
                 (name, result) -> {
