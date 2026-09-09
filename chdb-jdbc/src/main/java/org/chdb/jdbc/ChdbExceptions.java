@@ -2,6 +2,7 @@ package org.chdb.jdbc;
 
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLNonTransientConnectionException;
 import java.sql.SQLNonTransientException;
 import java.sql.SQLSyntaxErrorException;
 import java.sql.SQLTimeoutException;
@@ -55,13 +56,24 @@ final class ChdbExceptions {
                 return new SQLSyntaxErrorException(full, "42000", code, cause);
             case TYPE_MISMATCH:
             case ILLEGAL_TYPE_OF_ARGUMENT:
-                return new SQLNonTransientException(full, "42804", code, cause);
+                return new SQLSyntaxErrorException(full, "42804", code, cause);
             case TIMEOUT_EXCEEDED:
                 return new SQLTimeoutException(full, "57014", code, cause);
             case QUERY_WAS_CANCELLED:
-                // 57014 covers both timeout and cancel in the SQL standard; the error code
-                // distinguishes them.
-                return new SQLTimeoutException(full, "57014", code, cause);
+                // 57014 covers both timeout and cancel in the SQL standard, so the error code
+                // is what distinguishes them -- and the type follows the error code rather
+                // than the SQLSTATE, which is why 57014 is the one state here that is thrown
+                // as two types.
+                //
+                // Not SQLTimeoutException, though it used to be. The engine reports 394 for
+                // any cancel and cannot say who asked, so calling it a timeout would tell a
+                // caller that catches SQLTimeoutException to retry with a longer deadline --
+                // wrong advice for a cancel() somebody made deliberately. The driver's own two
+                // cancel sites (ChdbResultSet.failed, checkDeadlineSurvivedTheOpen) already
+                // report a known cancel as a plain SQLException; this makes the unknown case
+                // agree with them. A timeout the driver did arm still arrives as
+                // SQLTimeoutException, from those sites, which know it was theirs.
+                return new SQLException(full, "57014", code, cause);
             case MEMORY_LIMIT_EXCEEDED:
                 // Transient: the same query may well succeed when the machine is less busy,
                 // or with a higher max_memory_usage. That is what makes retry meaningful.
@@ -75,7 +87,8 @@ final class ChdbExceptions {
 
     /** Wraps a platform-detection failure as a connection error. */
     static SQLException wrap(String context, UnsupportedPlatformException cause) {
-        return new SQLNonTransientException(context + ": " + cause.getMessage(), "08001", cause);
+        return new SQLNonTransientConnectionException(
+                context + ": " + cause.getMessage(), "08001", cause);
     }
 
     /** The ClickHouse error code in a message, or 0 if it carries none. */
@@ -127,9 +140,16 @@ final class ChdbExceptions {
      * <p>{@code 08003} rather than {@code HY010}: the connection is gone, not merely misused,
      * and a caller retrying against a new connection is doing the right thing — although in
      * this case there will be no new connection, because the JVM is on its way out.
+     *
+     * <p>{@link SQLNonTransientConnectionException} because that is the subtype JDBC 4 defines
+     * for SQLSTATE class {@code 08}, and code that catches it rather than reading the SQLSTATE
+     * string would otherwise not see this. Note that a pool is not the caller that needs it:
+     * HikariCP evicts on {@code getSQLState().startsWith("08")} — checked against
+     * {@code ProxyConnection.checkException} in 5.1.0 — so it already handled this correctly
+     * from the SQLSTATE alone.
      */
     static SQLException shuttingDown() {
-        return new SQLNonTransientException(
+        return new SQLNonTransientConnectionException(
                 "The JVM is shutting down and the chDB driver's shutdown hook is closing this"
                         + " Connection, so no statement can be started on it. Stop the threads"
                         + " that query chDB before returning from main, or disable the hook with"

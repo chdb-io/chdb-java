@@ -2,7 +2,9 @@ package org.chdb.jdbc;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.SQLDataException;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLTimeoutException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
@@ -357,7 +359,7 @@ public class ChdbStatement implements Statement {
             // Reported rather than worked around: interpolating the values into the SQL is
             // the injection this driver's server-side binding exists to avoid, and running
             // the statement with the bindings dropped would answer the wrong question.
-            throw new SQLException(
+            throw new SQLFeatureNotSupportedException(
                     "Server-side parameters are not supported for "
                             + describeStatement(sql)
                             + ", because the engine has no parameter-binding form of the Arrow"
@@ -665,7 +667,7 @@ public class ChdbStatement implements Statement {
     public void setQueryTimeout(int seconds) throws SQLException {
         checkOpen();
         if (seconds < 0) {
-            throw new SQLException("query timeout must not be negative", "22023");
+            throw new SQLDataException("query timeout must not be negative", "22023");
         }
         this.queryTimeoutSeconds = seconds;
     }
@@ -680,7 +682,7 @@ public class ChdbStatement implements Statement {
     public void setMaxRows(int max) throws SQLException {
         checkOpen();
         if (max < 0) {
-            throw new SQLException("maxRows must not be negative", "22023");
+            throw new SQLDataException("maxRows must not be negative", "22023");
         }
         this.maxRows = max;
     }
@@ -708,7 +710,7 @@ public class ChdbStatement implements Statement {
     public void setFetchSize(int rows) throws SQLException {
         checkOpen();
         if (rows < 0) {
-            throw new SQLException("fetchSize must not be negative", "22023");
+            throw new SQLDataException("fetchSize must not be negative", "22023");
         }
         // Recorded but inert: batch size is the engine's block size, which the driver does not
         // control. Throwing here would break frameworks that set a fetch size as a matter of
@@ -874,7 +876,7 @@ public class ChdbStatement implements Statement {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+        throw new SQLFeatureNotSupportedException("Not a wrapper for " + iface.getName(), "0A000");
     }
 
     @Override

@@ -1,6 +1,8 @@
 package org.chdb.jdbc;
 
+import java.sql.SQLDataException;
 import java.sql.SQLException;
+import java.sql.SQLSyntaxErrorException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -105,7 +107,7 @@ final class SqlParameterLexer {
      */
     static SqlParameterLexer parse(String sql) throws SQLException {
         if (sql == null) {
-            throw new SQLException("SQL must not be null", "22023");
+            throw new SQLDataException("SQL must not be null", "22023");
         }
 
         StringBuilder out = new StringBuilder(sql.length() + 16);
@@ -201,7 +203,7 @@ final class SqlParameterLexer {
             out.append(c);
             i++;
         }
-        throw new SQLException(
+        throw new SQLSyntaxErrorException(
                 "Unterminated " + describe(delimiter) + " starting at offset " + start
                         + ". A statement that ends inside a literal would hide a ? placeholder, so the"
                         + " driver refuses it rather than guessing where it should have closed.",
@@ -245,7 +247,7 @@ final class SqlParameterLexer {
             out.append(sql.charAt(i));
             i++;
         }
-        throw new SQLException(
+        throw new SQLSyntaxErrorException(
                 "Unterminated block comment starting at offset " + start
                         + ". Everything after it would be treated as commented out, including any ?"
                         + " placeholder, so the driver refuses the statement.",
@@ -272,7 +274,7 @@ final class SqlParameterLexer {
         int bodyStart = i + 1;
         int close = sql.indexOf(tag, bodyStart);
         if (close < 0) {
-            throw new SQLException(
+            throw new SQLSyntaxErrorException(
                     "Unterminated dollar-quoted string starting at offset " + start
                             + " (opening tag " + tag + ").",
                     "42601");

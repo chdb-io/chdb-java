@@ -18,8 +18,10 @@ import java.sql.Ref;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.RowId;
+import java.sql.SQLDataException;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLSyntaxErrorException;
 import java.sql.SQLTimeoutException;
 import java.sql.SQLWarning;
 import java.sql.SQLXML;
@@ -218,7 +220,7 @@ public final class ChdbResultSet implements ResultSet {
     /** Translates a 1-based JDBC column index into a 0-based one, or fails precisely. */
     private int columnIndex(int jdbcIndex) throws SQLException {
         if (jdbcIndex < 1 || jdbcIndex > schema.columnCount()) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Column index "
                             + jdbcIndex
                             + " is out of range. This result set has "
@@ -383,7 +385,7 @@ public final class ChdbResultSet implements ResultSet {
             return 0;
         }
         if (value < min || value > max) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Value "
                             + value
                             + " in column "
@@ -428,14 +430,14 @@ public final class ChdbResultSet implements ResultSet {
                     return batch.getLong(column, (int) rowInBatch);
             }
         } catch (ArithmeticException e) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Value in column " + columnIndex + " (" + schema.columnName(column) + ", "
                             + type.typeName() + ") does not fit a Java long: " + e.getMessage()
                             + ". Read it with getBigDecimal() or getObject().",
                     "22003",
                     e);
         } catch (NumberFormatException e) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Column " + columnIndex + " (" + schema.columnName(column)
                             + ") holds text that is not an integer: " + e.getMessage(),
                     "22018",
@@ -477,7 +479,7 @@ public final class ChdbResultSet implements ResultSet {
                     return batch.getLong(column, (int) rowInBatch);
             }
         } catch (NumberFormatException e) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Column " + columnIndex + " (" + schema.columnName(column)
                             + ") holds text that is not a number: " + e.getMessage(),
                     "22018",
@@ -503,7 +505,7 @@ public final class ChdbResultSet implements ResultSet {
             }
             return batch.getBigDecimal(column, (int) rowInBatch);
         } catch (NumberFormatException e) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Column " + columnIndex + " (" + schema.columnName(column)
                             + ") holds text that is not a decimal: " + e.getMessage(),
                     "22018",
@@ -582,7 +584,7 @@ public final class ChdbResultSet implements ResultSet {
             }
             return batch.getLocalDate(column, (int) rowInBatch);
         } catch (java.time.format.DateTimeParseException e) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Column " + columnIndex + " (" + schema.columnName(column)
                             + ") holds text that is not an ISO-8601 date: " + e.getMessage(),
                     "22007",
@@ -670,7 +672,7 @@ public final class ChdbResultSet implements ResultSet {
             }
             return Timestamp.valueOf(LocalDateTime.ofInstant(instant, zone));
         } catch (java.time.format.DateTimeParseException e) {
-            throw new SQLException(
+            throw new SQLDataException(
                     "Column " + columnIndex + " (" + schema.columnName(column)
                             + ") holds text that is not an ISO-8601 timestamp: " + e.getMessage(),
                     "22007",
@@ -742,7 +744,7 @@ public final class ChdbResultSet implements ResultSet {
     @Override
     public <T> T getObject(int columnIndex, Class<T> targetType) throws SQLException {
         if (targetType == null) {
-            throw new SQLException("target type must not be null", "22023");
+            throw new SQLDataException("target type must not be null", "22023");
         }
         int column = columnIndex(columnIndex);
         if (readNull(column)) {
@@ -857,7 +859,7 @@ public final class ChdbResultSet implements ResultSet {
     public int findColumn(String columnLabel) throws SQLException {
         checkOpen();
         if (columnLabel == null) {
-            throw new SQLException("column label must not be null", "22023");
+            throw new SQLDataException("column label must not be null", "22023");
         }
         if (nameIndex == null) {
             Map<String, Integer> index = new HashMap<>();
@@ -870,7 +872,7 @@ public final class ChdbResultSet implements ResultSet {
         }
         Integer found = nameIndex.get(columnLabel.toLowerCase(Locale.ROOT));
         if (found == null) {
-            throw new SQLException(
+            throw new SQLSyntaxErrorException(
                     "No column named \""
                             + columnLabel
                             + "\" in this result set. Available: "
@@ -1820,7 +1822,7 @@ public final class ChdbResultSet implements ResultSet {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+        throw new SQLFeatureNotSupportedException("Not a wrapper for " + iface.getName(), "0A000");
     }
 
     @Override

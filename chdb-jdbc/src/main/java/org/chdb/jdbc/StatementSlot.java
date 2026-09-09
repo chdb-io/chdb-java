@@ -59,6 +59,12 @@ final class StatementSlot {
     void acquire(String sql) throws SQLException {
         Holder current = holder.get();
         if (current != null && current.thread == Thread.currentThread()) {
+            // Plain SQLException on purpose: JDBC 4 defines no subtype for SQLSTATE class 25,
+            // so there is nothing more specific to throw. The state itself is the loosest fit
+            // in the driver -- 25000 is "invalid transaction state" and chDB has no
+            // transactions -- but it is what the README, docs/unsupported.md and
+            // sameThreadReuseIsRefused all pin, so changing it belongs in its own change
+            // rather than in an exception-type audit.
             throw new SQLException(
                     "This Connection already has a statement in progress on this thread, and chDB"
                             + " runs one statement per connection at a time.\n\n  still open: "
@@ -76,6 +82,10 @@ final class StatementSlot {
         } catch (InterruptedException e) {
             // Restored because swallowing it would strand a caller that is being shut down.
             Thread.currentThread().interrupt();
+            // Not SQLTransientException, although a retry could well succeed. An interrupt is
+            // almost always somebody shutting this thread down, and telling a framework's
+            // retry logic that the operation is worth repeating is the opposite of what the
+            // interrupt asked for. Class 70 has no JDBC subtype either way.
             throw new SQLException(
                     "Interrupted while waiting for the Connection to become free", "70100", e);
         }

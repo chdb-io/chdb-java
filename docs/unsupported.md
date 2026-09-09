@@ -15,6 +15,26 @@ Two sections at the end are about frameworks rather than the API: what
 [`DatabaseMetaData`](#databasemetadata-nothing-on-it-throws) does when a GUI sweeps it, and
 [what each framework hits](#under-a-framework).
 
+## What to catch
+
+Every SQLSTATE the driver throws carries the `SQLException` subclass JDBC 4 defines for its
+class, so `catch` on the type and a check of `getSQLState()` agree:
+
+| SQLSTATE | thrown as | when |
+|---|---|---|
+| `08001`, `08003`, `08004` | `SQLNonTransientConnectionException` | bad URL or unusable platform; a statement started after the shutdown hook claimed the connection; a second storage path in one JVM |
+| `0A000` | `SQLFeatureNotSupportedException` | everything in this document, plus `?` parameters on the statements listed under [Other](#other) |
+| `22xxx` | `SQLDataException` | a value that does not fit the requested type, an unparseable date, a negative `setQueryTimeout` |
+| `42xxx` | `SQLSyntaxErrorException` | the engine rejected the SQL; a `?` the driver's lexer cannot place; no such column in the result set |
+| `53200` | `SQLTransientException` | `max_memory_usage` exceeded — the one failure where retrying is meaningful |
+| `57014` | `SQLTimeoutException` for a timeout, `SQLException` for a cancel | `setQueryTimeout` expired, or `cancel()` was called |
+| `25000`, `70100`, `HY010`, `HY000`, `07xxx`, `24000` | `SQLException`, or `SQLNonTransientException` for `HY010` | JDBC defines no subclass for these classes, so the driver claims nothing more |
+
+`getErrorCode()` carries ClickHouse's own error number whenever the engine supplied one, which
+is what to branch on for a specific engine condition; it is stable across engine versions in a
+way message text is not. An engine error the driver does not recognise deliberately arrives with
+**no** SQLSTATE rather than a guessed one.
+
 ## Transactions
 
 | Method | |

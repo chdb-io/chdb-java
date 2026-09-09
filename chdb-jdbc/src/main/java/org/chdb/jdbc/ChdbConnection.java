@@ -9,7 +9,9 @@ import java.sql.DatabaseMetaData;
 import java.sql.NClob;
 import java.sql.PreparedStatement;
 import java.sql.SQLClientInfoException;
+import java.sql.SQLDataException;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLWarning;
 import java.sql.SQLXML;
 import java.sql.Savepoint;
@@ -403,7 +405,7 @@ public final class ChdbConnection implements Connection {
     @Override
     public boolean isValid(int timeout) throws SQLException {
         if (timeout < 0) {
-            throw new SQLException("timeout must not be negative", "22023");
+            throw new SQLDataException("timeout must not be negative", "22023");
         }
         if (closed.get()) {
             return false;
@@ -614,7 +616,7 @@ public final class ChdbConnection implements Connection {
     public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
         checkOpen();
         if (milliseconds < 0) {
-            throw new SQLException("timeout must not be negative", "22023");
+            throw new SQLDataException("timeout must not be negative", "22023");
         }
         // Recorded for getNetworkTimeout, but there is no network: chDB runs in this process.
         // Statement.setQueryTimeout is the timeout that does something.
@@ -695,7 +697,7 @@ public final class ChdbConnection implements Connection {
         if (iface.isInstance(this)) {
             return iface.cast(this);
         }
-        throw new SQLException("Not a wrapper for " + iface.getName(), "0A000");
+        throw new SQLFeatureNotSupportedException("Not a wrapper for " + iface.getName(), "0A000");
     }
 
     @Override
