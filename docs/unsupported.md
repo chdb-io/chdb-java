@@ -149,6 +149,17 @@ statement waits for the first result set to close; a second one on the *same thr
 `SQLException` (SQLSTATE `25000`) rather than deadlocking. See the
 [README](../README.md#one-statement-at-a-time-per-connection).
 
+**A non-ASCII storage path needs the JVM to be under a UTF-8 locale.** The driver resolves the
+path with `java.nio.file` to decide whether two URLs name the same directory, and that encodes
+with `sun.jnu.encoding` — which follows the OS locale and is ASCII on a container started with
+no `LANG`, the default for most base images. The connection is then refused with SQLSTATE
+`08001` and a message naming the encoding.
+
+This is the JVM's limit rather than chDB's: the driver hands the engine UTF-8 bytes and the
+engine creates the directory correctly, so the same URL works in the same container under
+`LANG=C.UTF-8`. Set a UTF-8 locale, or use an ASCII path. Spaces, and names up to the
+filesystem's own length limit, work regardless.
+
 **`PreparedStatement.getMetaData()` before execution** throws. chDB's C ABI cannot describe a
 statement without running it, and running the caller's query as a side effect of asking about it
 is not something a metadata call may do. Call it on the `ResultSet` after `executeQuery()`.

@@ -1,11 +1,11 @@
 package org.chdb.jdbc;
 
-import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Closes connections the application forgot, at JVM shutdown.
@@ -39,6 +39,16 @@ import java.util.WeakHashMap;
  *
  * <p>Disable with {@code -Dchdb.shutdownHook=false} if the host manages its own teardown and
  * does not want a hook it did not install.
+ *
+ * <h2>Concurrency</h2>
+ * A shutdown hook runs concurrently with application threads, which the JVM does not stop
+ * first. Everything here is written for that: registration can happen while the hook is
+ * draining, and a connection can be mid-{@code close()} on another thread when the hook reaches
+ * it. Both cases end with the stream closed, or the hook has not done its job.
+ *
+ * <p>What draining cannot fix is a connection opened after the hook has already returned —
+ * from a competing shutdown hook, say. Nothing can: the hook would have to wait for a
+ * connection that may never come. The budget below bounds how long it tries.
  */
 final class ShutdownCleanup {
 
@@ -49,11 +59,27 @@ final class ShutdownCleanup {
      * Open connections, weakly held.
      *
      * <p>Weak so the registry never keeps a connection alive that the application has dropped;
-     * a collected one had no live stream to close anyway. Synchronized rather than concurrent
-     * because it is touched twice per connection, not per query.
+     * a collected one had no live stream to close anyway.
+     *
+     * <p>Kept as the synchronized {@code Map} rather than a {@code newSetFromMap} view over it.
+     * The mutex of a {@code Collections.synchronizedMap} is the wrapper object itself, and a set
+     * view does not share it — so synchronizing on the set would leave the hook's iteration
+     * unguarded against a concurrent {@link #register}, and the hook is the one thread that
+     * must not die of a {@code ConcurrentModificationException}.
      */
-    private static final Set<ChdbConnection> OPEN =
-            Collections.newSetFromMap(Collections.synchronizedMap(new WeakHashMap<>()));
+    private static final Map<ChdbConnection, Boolean> OPEN =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
+    /**
+     * How long the hook keeps re-checking for connections opened while it was running.
+     *
+     * <p>Bounded by time rather than by a number of passes: a thread still opening connections
+     * makes each pass short and there is no useful count to pick, whereas the thing actually
+     * being protected is how long the JVM takes to exit. Five seconds is far longer than a real
+     * teardown needs, and an application still connecting after that is one no hook can win
+     * against — hanging would be the worse failure.
+     */
+    private static final long DRAIN_BUDGET_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     private static volatile boolean hookInstalled;
     private static volatile boolean shuttingDown;
@@ -63,15 +89,27 @@ final class ShutdownCleanup {
 
     /** Notes a connection as open, installing the hook on first use. */
     static void register(ChdbConnection connection) {
-        if (!Boolean.parseBoolean(System.getProperty(PROP_ENABLED, "true"))) {
-            return;
+        // Nothing here may fail a connection whose native handle is already open: the caller
+        // is past the point where it can unwind cleanly, so a throw would leak the handle and
+        // the storage-path binding. A safety net that breaks what it is catching is worse than
+        // no net. The concrete case is a security manager denying the property read.
+        try {
+            if (!Boolean.parseBoolean(System.getProperty(PROP_ENABLED, "true"))) {
+                return;
+            }
+            installHook();
+            synchronized (OPEN) {
+                OPEN.put(connection, Boolean.TRUE);
+            }
+        } catch (Throwable ignored) {
+            // Registered or not, the connection itself is fine.
         }
-        installHook();
-        OPEN.add(connection);
     }
 
     static void unregister(ChdbConnection connection) {
-        OPEN.remove(connection);
+        synchronized (OPEN) {
+            OPEN.remove(connection);
+        }
     }
 
     /**
@@ -106,22 +144,40 @@ final class ShutdownCleanup {
     private static void closeAll() {
         shuttingDown = true;
 
-        // Copied out first: close() calls unregister(), which would otherwise mutate the set
-        // being iterated.
-        List<ChdbConnection> connections;
-        synchronized (OPEN) {
-            connections = new ArrayList<>(OPEN);
-        }
-
-        for (ChdbConnection connection : connections) {
-            try {
-                if (!connection.isClosed()) {
-                    connection.close();
+        // Drained rather than snapshotted once. A thread that connects and opens a stream
+        // after a single snapshot was taken would be missed, leaving exactly the state this
+        // hook exists to prevent -- and shutdown hooks run alongside application threads, so
+        // that race is ordinary rather than exotic.
+        long deadline = System.nanoTime() + DRAIN_BUDGET_NANOS;
+        while (true) {
+            List<ChdbConnection> batch;
+            synchronized (OPEN) {
+                if (OPEN.isEmpty()) {
+                    return;
                 }
-            } catch (Throwable ignored) {
-                // A shutdown hook has nobody to report to, and a failure here must not stop the
-                // remaining connections from being closed. The worst case is the abort this
-                // hook exists to avoid, which is no worse than not having tried.
+                batch = new ArrayList<>(OPEN.keySet());
+                OPEN.clear();
+            }
+
+            // Outside the lock: close() reaches the engine, and holding the registry's monitor
+            // across that would block every thread still trying to register or unregister.
+            for (ChdbConnection connection : batch) {
+                try {
+                    // Unconditionally, rather than guarded by isClosed(). A connection whose
+                    // close() is in flight on another thread already reports itself closed
+                    // while its streams are still open; skipping it would let the hook finish,
+                    // the JVM exit, and that thread be halted mid-close. close() is idempotent
+                    // and blocks until an in-flight close finishes, so this waits instead.
+                    connection.close();
+                } catch (Throwable ignored) {
+                    // A shutdown hook has nobody to report to, and a failure here must not stop
+                    // the remaining connections from being closed. The worst case is the abort
+                    // this hook exists to avoid, which is no worse than not having tried.
+                }
+            }
+
+            if (System.nanoTime() - deadline >= 0) {
+                return;
             }
         }
     }

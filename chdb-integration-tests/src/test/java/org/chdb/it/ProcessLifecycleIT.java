@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.File;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +20,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -154,11 +157,79 @@ class ProcessLifecycleIT extends NativeTestBase {
                 0, fork(ExitsCleanly.class.getName(), List.of("-Dchdb.shutdownHook=false")).exitCode);
     }
 
+    /**
+     * A JVM that exits while several threads are still opening connections and leaking streams.
+     *
+     * <p>This is the shape a single snapshot of the registry gets wrong. Shutdown hooks run
+     * alongside application threads rather than after them, so a thread part-way through
+     * {@code connect()} registers after the hook has already read the set — and its stream is
+     * then open at exit, which is the abort the hook exists to prevent. Threads open a bounded
+     * number so the registry converges; an application that connects forever during shutdown is
+     * not something a hook can win against.
+     */
+    public static final class ExitsWhileThreadsAreConnecting {
+        public static void main(String[] args) throws Exception {
+            for (int t = 0; t < 4; t++) {
+                Thread thread =
+                        new Thread(
+                                () -> {
+                                    for (int n = 0; n < 30; n++) {
+                                        try {
+                                            Connection connection =
+                                                    DriverManager.getConnection("jdbc:chdb::memory:");
+                                            Statement statement = connection.createStatement();
+                                            ResultSet rs =
+                                                    statement.executeQuery(
+                                                            "SELECT number FROM numbers(100000000)");
+                                            rs.next();
+                                            // Left open deliberately: an unclosed stream is the
+                                            // only state the engine aborts on.
+                                            Thread.sleep(10);
+                                        } catch (Throwable stop) {
+                                            return;
+                                        }
+                                    }
+                                },
+                                "chdb-it-connector-" + t);
+                thread.setDaemon(true);
+                thread.start();
+            }
+
+            // Returns while the threads are barely started, so most of their work overlaps
+            // the hook and the registry is being written to throughout the drain. A wider
+            // overlap is what makes this catch the single-snapshot bug reliably rather than
+            // one run in three.
+            Thread.sleep(150);
+            System.out.println("exiting while threads are still opening connections");
+        }
+    }
+
+    @Test
+    @DisplayName("exiting while other threads are still connecting is still clean")
+    @Timeout(value = 3, unit = TimeUnit.MINUTES)
+    void exitDuringConcurrentConnectIsClean() throws Exception {
+        ForkResult result = fork(ExitsWhileThreadsAreConnecting.class.getName(), List.of());
+        assertTrue(result.output.contains("exiting while threads"), result.output);
+        assertEquals(
+                0,
+                result.exitCode,
+                "expected a clean exit; a connection registered after the hook read the"
+                        + " registry was left with its stream open.\n"
+                        + result.output);
+    }
+
     /** A JVM whose storage path contains characters that trip naive path handling. */
     public static final class QueriesAwkwardPath {
         public static void main(String[] args) throws Exception {
-            String url = "jdbc:chdb:" + args[0];
-            try (Connection connection = DriverManager.getConnection(url);
+            // The path arrives base64-encoded. ProcessBuilder encodes program arguments with
+            // sun.jnu.encoding, which is ASCII on a JVM started without a locale, so a Unicode
+            // name passed directly would arrive as question marks and this would silently test
+            // the wrong path.
+            String path =
+                    new String(Base64.getDecoder().decode(args[0]), StandardCharsets.UTF_8);
+            System.out.println("sun.jnu.encoding=" + System.getProperty("sun.jnu.encoding"));
+
+            try (Connection connection = DriverManager.getConnection("jdbc:chdb:" + path);
                     Statement statement = connection.createStatement()) {
                 statement.execute("CREATE TABLE t (x UInt32) ENGINE = MergeTree ORDER BY x");
                 statement.executeUpdate("INSERT INTO t VALUES (7)");
@@ -166,6 +237,12 @@ class ProcessLifecycleIT extends NativeTestBase {
                     rs.next();
                     System.out.println("sum=" + rs.getLong(1));
                 }
+            } catch (SQLException e) {
+                // Printed rather than thrown, because whether a refusal is the right answer
+                // depends on the platform and the parent is what knows. A stack trace through
+                // an ASCII stdout would be unreadable anyway.
+                System.out.println(
+                        "refused sqlstate=" + e.getSQLState() + " message=" + e.getMessage());
             }
         }
     }
@@ -185,10 +262,53 @@ class ProcessLifecycleIT extends NativeTestBase {
         };
 
         for (String name : names) {
-            Path path = base.resolve(name);
-            ForkResult result = fork(QueriesAwkwardPath.class.getName(), List.of(), path.toString());
+            // Concatenated rather than base.resolve(name): resolve() encodes with
+            // sun.jnu.encoding and throws InvalidPathException on an ASCII-locale JVM before
+            // the driver is reached at all, which would make this a test of java.nio.file.
+            String path = base + File.separator + name;
+            ForkResult result =
+                    fork(
+                            QueriesAwkwardPath.class.getName(),
+                            List.of(),
+                            Base64.getEncoder()
+                                    .encodeToString(path.getBytes(StandardCharsets.UTF_8)));
             assertEquals(0, result.exitCode, "path " + name + " -> " + result.output);
-            assertTrue(result.output.contains("sum=7"), "path " + name + " -> " + result.output);
+
+            if (representableOnThisPlatform(path)) {
+                assertTrue(result.output.contains("sum=7"), "path " + name + " -> " + result.output);
+                continue;
+            }
+
+            // A container started with no LANG gives the JVM an ASCII filesystem encoding, and
+            // then no Java program can create this file -- Paths.get refuses it. The driver
+            // has to refuse it too, since the path it resolves for the storage-path registry
+            // goes through java.nio.file. What is being asserted is that the refusal names the
+            // real cause, because the failure otherwise reads as a chDB problem: the engine
+            // itself takes UTF-8 bytes and handles the name, and the same URL works in the
+            // same container under LANG=C.UTF-8.
+            assertTrue(
+                    result.output.contains("refused sqlstate=08001"),
+                    "an unrepresentable path should be refused, not crashed on:\n" + result.output);
+            assertTrue(
+                    result.output.contains("sun.jnu.encoding="),
+                    "the refusal should name the encoding that cannot hold the path:\n"
+                            + result.output);
+            assertTrue(
+                    result.output.contains("LANG=C.UTF-8"),
+                    "the refusal should say how to fix it:\n" + result.output);
+        }
+    }
+
+    /** Whether this JVM's filesystem encoding can express the name at all. */
+    private static boolean representableOnThisPlatform(String path) {
+        String encoding = System.getProperty("sun.jnu.encoding");
+        if (encoding == null) {
+            return true;
+        }
+        try {
+            return Charset.forName(encoding).newEncoder().canEncode(path);
+        } catch (RuntimeException e) {
+            return true;
         }
     }
 

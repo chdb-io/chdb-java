@@ -56,6 +56,17 @@ public final class ChdbConnection implements Connection {
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     /**
+     * Held for the whole of {@link #close()}, so a second caller waits for the first to finish
+     * rather than returning as soon as the flag is set.
+     *
+     * <p>The caller that needs this is the shutdown hook: it closes connections that may
+     * already be closing on an application thread, and the JVM does not wait for that thread
+     * once the hooks return. Without the wait the hook can finish while a stream is still open
+     * in the engine, which is the abort {@link ShutdownCleanup} exists to prevent.
+     */
+    private final Object closeLock = new Object();
+
+    /**
      * Serializes statement execution on this connection, for as long as a statement is live.
      * Not taken by {@code cancel}: the whole point of cancel is to interrupt the holder.
      */
@@ -243,6 +254,12 @@ public final class ChdbConnection implements Connection {
 
     @Override
     public void close() throws SQLException {
+        synchronized (closeLock) {
+            doClose();
+        }
+    }
+
+    private void doClose() throws SQLException {
         if (!closed.compareAndSet(false, true)) {
             return;  // JDBC requires close() to be idempotent.
         }

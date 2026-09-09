@@ -2,6 +2,7 @@ package org.chdb.jdbc;
 
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
+import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.SQLException;
@@ -127,11 +128,47 @@ public final class ChdbUrl {
             resolved = Paths.get(pathPart).toAbsolutePath().normalize();
         } catch (RuntimeException e) {
             throw new SQLException(
-                    "Cannot resolve the storage path \"" + pathPart + "\" from URL " + url + ": " + e,
+                    "Cannot resolve the storage path \"" + pathPart + "\" from URL " + url + ": " + e
+                            + localeHint(pathPart),
                     "08001",
                     e);
         }
         return new ChdbUrl(url, pathPart, false, resolved, properties);
+    }
+
+    /**
+     * Explains the one path failure whose real cause is nowhere in the exception: a JVM whose
+     * filesystem encoding cannot represent the name.
+     *
+     * <p>{@code Paths.get} encodes with {@code sun.jnu.encoding}, which follows the OS locale
+     * and is ASCII on a container started with no {@code LANG} — the default for most base
+     * images. A path holding any non-ASCII character then fails with "Malformed input or input
+     * contains unmappable characters" and, because the same encoding is used for stdout, prints
+     * as question marks. Nothing in that tells the reader it is a locale problem.
+     *
+     * <p>It is also not a chDB limitation. The driver hands the engine UTF-8 bytes and the
+     * engine creates the directory correctly; the same URL works in the same container with
+     * {@code LANG=C.UTF-8}. Only this resolution step, which exists to compare two spellings of
+     * one path, cannot be done.
+     */
+    private static String localeHint(String pathPart) {
+        String encoding = System.getProperty("sun.jnu.encoding");
+        if (encoding == null) {
+            return "";
+        }
+        try {
+            if (Charset.forName(encoding).newEncoder().canEncode(pathPart)) {
+                return "";
+            }
+        } catch (RuntimeException e) {
+            return "";
+        }
+        return ". This JVM's filesystem encoding (sun.jnu.encoding=" + encoding + ") cannot"
+                + " represent that path, which is the JVM's reading of the OS locale rather than"
+                + " a chDB limitation -- the engine itself stores paths as UTF-8 bytes and"
+                + " handles this name. Start the JVM under a UTF-8 locale (LANG=C.UTF-8 or"
+                + " LC_ALL=C.UTF-8; a container with no locale set defaults to ASCII), or use an"
+                + " ASCII storage path";
     }
 
     private static void parseQuery(String url, String query, Map<String, String> into) throws SQLException {
