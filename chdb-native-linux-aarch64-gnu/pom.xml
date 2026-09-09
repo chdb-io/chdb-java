@@ -92,6 +92,22 @@
                 <configuration>
                   <target>
                     <mkdir dir="${project.build.directory}/empty-for-central"/>
+                    <!--
+                      A release must not ship an empty native package. The two libraries are
+                      staged by scripts/build-native.sh, not by Maven, so `mvn -Prelease deploy`
+                      on a clean checkout would otherwise package a jar with no engine in it and
+                      publish it to Central, where it cannot be taken back.
+                    -->
+                    <fail message="${project.artifactId} has not been staged: no ${chdb.native.staging}/META-INF/chdb/native/${chdb.platform.os}/${chdb.platform.arch}/libchdb.so. Run scripts/build-native.sh ${chdb.platform.id} on a ${chdb.platform.id} machine first; see docs/publishing.md.">
+                      <condition>
+                        <not>
+                          <and>
+                            <available file="${chdb.native.staging}/META-INF/chdb/native/${chdb.platform.os}/${chdb.platform.arch}/libchdb.so"/>
+                            <available file="${chdb.native.staging}/META-INF/chdb/native/${chdb.platform.os}/${chdb.platform.arch}/libchdb_java_jni.${chdb.jni.suffix}"/>
+                          </and>
+                        </not>
+                      </condition>
+                    </fail>
                   </target>
                 </configuration>
               </execution>

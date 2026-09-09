@@ -349,9 +349,12 @@ This package redistributes two shared libraries:
   ${LIBNAME}
       The chDB engine, redistributed verbatim from the chdb-io/chdb-core release
       ${ENGINE_VERSION}, which is itself Apache-2.0. It statically links ClickHouse
-      (Apache-2.0) and ${INVENTORY_COUNT} third-party components.
+      (Apache-2.0).
 
-      engine-third-party.tsv in this directory lists every one of them with its licence.
+      engine-third-party.tsv in this directory is the engine's own component and licence
+      inventory: ${INVENTORY_COUNT} entries. It is not an assertion that all of them are
+      linked into this binary -- it includes build-time tooling and components for other
+      platforms -- but it is the complete set from which the linked subset is drawn.
       It is generated from the engine's own system.licenses table -- that is, from the
       binary shipped here rather than from a source checkout -- and a test fails if it
       stops matching.

@@ -15,7 +15,8 @@ needs one DNS record, and one licence question needs somebody with authority to 
 | GPG signing | **done and verified** — signs jar, sources, javadoc and pom |
 | Publishing plugin | **done** — `central-publishing-maven-plugin`, `autoPublish=false` |
 | Third-party licence inventory | **done** — generated from the engine, shipped in the package, drift-tested |
-| `org.chdb` namespace | **not started** — needs a DNS TXT record |
+| `org.chdb` namespace | **not started** — needs a DNS TXT record, and there is no fallback |
+| A way to stage all four platforms for one release | **not started** — issue #15 |
 | GPG key for the project | **not started** — needs a decision about whose key |
 | Position on the LGPL components | **not started** — needs chdb-io |
 
@@ -24,11 +25,36 @@ needs one DNS record, and one licence question needs somebody with authority to 
 ## 1. The release profile
 
 ```bash
+# On each platform's own machine, in one shared checkout:
+scripts/build-native.sh macos-aarch64                     # on an Apple Silicon Mac
+scripts/build-native.sh macos-x86_64                      # on an Intel Mac
+scripts/build-native-in-container.sh linux-x86_64-gnu     # manylinux_2_28
+scripts/build-native-in-container.sh linux-aarch64-gnu
+
 mvn versions:set -DnewVersion=26.7.0.1     # a release, not the -SNAPSHOT in the POM
 mvn -Prelease deploy
 ```
 
-The version matters: `deploy` on the `26.7.0.1-SNAPSHOT` currently in the POM publishes a
+**Staging is not optional and Maven does not do it.** The two shared libraries are put into
+`target/native/` by `scripts/build-native.sh`, and the native modules pick them up as a resource
+directory. Run `mvn -Prelease deploy` on a clean checkout and each native module packages an
+empty jar — which would then be published to Central, where nothing can be unpublished. The
+release profile now fails the build rather than allowing that:
+
+```
+chdb-native-macos-x86_64 has not been staged: no .../macos/x86_64/libchdb.so.
+Run scripts/build-native.sh macos-x86_64 on a macos-x86_64 machine first
+```
+
+**And no single machine can stage all four.** `build-native.sh` refuses to cross-build, on
+purpose: a shim linked for another architecture fails at `System.load()` in a user's JVM rather
+than at build time. Linux is covered from either host by the container helper, but macOS x86_64
+needs an Intel Mac. CI already builds all four on their own runners and does not currently
+upload the packaged jars, so assembling a release means either four machines or a release
+workflow. That gap is issue #15 and should be closed before the first release rather than
+worked around by hand.
+
+The version matters too: `deploy` on the `26.7.0.1-SNAPSHOT` currently in the POM publishes a
 snapshot, which goes to a different place and is never validated or promoted. A Central release
 bundle needs a non-`SNAPSHOT` version.
 
@@ -101,10 +127,18 @@ returns zero artifacts for all four. There is no conflict to resolve, only a cla
 
 The `id` must be `central` — that is what `publishingServerId` in the release profile expects.
 
-**Fallback if DNS access is awkward:** `io.github.chdb-io` is verified by creating a repository
-under the `chdb-io` org whose name is the verification code, no DNS involved. It is a fallback,
-not a preference: `org.chdb` is the coordinate in every POM, README and document here, and
-changing it later is a breaking change for consumers.
+**There is no GitHub fallback for an organisation.** An earlier version of this document
+offered `io.github.chdb-io`, verified by creating a repository under the `chdb-io` org. That is
+not available — Sonatype's wording:
+
+> Currently, we only support the GitHub username that you used to sign up, so
+> `io.github.<github organization name>` is not available as an automatically registered
+> namespace.
+
+GitHub verification would give `io.github.<maintainer-username>`, which is a personal
+coordinate and the wrong thing to publish an organisation's driver under. **DNS access to
+`chdb.org` is therefore a hard prerequisite**, not a convenience, and it is worth confirming
+who has it before anything else in this document is started.
 
 ## 4. Publishing limits — check before the first release
 
