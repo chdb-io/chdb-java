@@ -261,6 +261,11 @@ jobs:
           path: |
             chdb-jdbc/target/surefire-reports/
             chdb-integration-tests/target/failsafe-reports/
+            chdb-integration-tests/target/hs_err_pid*.log
+            chdb-integration-tests/target/replay_pid*.log
+            chdb-integration-tests/*.dump
+            chdb-integration-tests/*.dumpstream
+          if-no-files-found: ignore
           retention-days: 14
 
   # The version floor, proven rather than measured.

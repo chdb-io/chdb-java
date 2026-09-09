@@ -119,7 +119,14 @@
           -->
           <forkCount>1</forkCount>
           <reuseForks>true</reuseForks>
-          <argLine>-Xmx512m -Dchdb.library.path=${chdb.it.library.path}</argLine>
+          <!--
+            ErrorFile points into target/ so a JVM crash leaves its report somewhere
+            predictable and archivable. By default it lands in the forked JVM's working
+            directory, which is this module, and CI's artifact step only collects target/ —
+            so the one file that explains a SIGSEGV was the one file being thrown away.
+          -->
+          <argLine>-Xmx512m -XX:ErrorFile=${project.build.directory}/hs_err_pid%p.log
+            -Dchdb.library.path=${chdb.it.library.path}</argLine>
           <systemPropertyVariables>
             <chdb.it.engine.version>${chdb.engine.version}</chdb.it.engine.version>
             <chdb.it.jni.abi.version>${chdb.jni.abi.version}</chdb.it.jni.abi.version>
