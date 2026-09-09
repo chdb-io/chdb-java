@@ -3,6 +3,7 @@ package org.chdb.jdbc;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.Collections;
@@ -38,6 +39,11 @@ import org.chdb.internal.ChdbNativeException;
  * <p>{@link #setQueryTimeout(int)} is built on the same mechanism: a timer thread calls the
  * same cancel path, so a timeout actually stops the engine rather than only abandoning the
  * Java-side wait (work plan section 5.8).
+ *
+ * <p>There is one window in which neither can interrupt anything, because there is no handle
+ * to cancel yet: the call that opens the result set. {@link
+ * #checkDeadlineSurvivedTheOpen(String)} is what keeps that window from turning a timeout into
+ * a late success.
  */
 public class ChdbStatement implements Statement {
 
@@ -152,8 +158,11 @@ public class ChdbStatement implements Statement {
                 activeTimeout = QueryTimeout.start(this, queryTimeoutSeconds);
                 try {
                     boolean opened = openStream(route, sql, parameterNames, parameterValues);
-                    // The result set now owns the slot and releases it when it closes.
-                    handedOff = opened;
+                    if (opened) {
+                        // The result set now owns the slot and releases it when it closes.
+                        handedOff = true;
+                        checkDeadlineSurvivedTheOpen(sql);
+                    }
                     return opened;
                 } catch (RuntimeException | SQLException e) {
                     stopTimeout();
@@ -170,6 +179,70 @@ public class ChdbStatement implements Statement {
                 connection.statementSlot().release();
             }
         }
+    }
+
+    /**
+     * Fails the execution if the query timeout expired, or {@link #cancel()} was called, while
+     * the open was in flight.
+     *
+     * <h2>Why this is needed at all</h2>
+     * {@link #cancel()} works by handing the in-flight stream handle to the engine -- and
+     * there is no handle until the call that creates it returns. Every exported cancel in the
+     * C ABI takes a result or stream handle ({@code chdb_stream_cancel_query}, {@code
+     * chdb_streaming_cancel_query}, {@code chdb_stream_cancel_insert}); there is no
+     * connection-level cancel. So the open is uninterruptible on both routes, and a timer that
+     * fires inside it finds {@code inFlightStream} still null and returns having done nothing.
+     *
+     * <p>Left there, the caller got the worst of both worlds: {@code executeQuery} came back
+     * <em>successfully</em>, with a usable result set, long after the deadline it set. Measured
+     * on v26.7.0 before this check: {@code setQueryTimeout(1)} on {@code SELECT
+     * max(sipHash64(number)) FROM numbers(2000000000)} returned a working result set after
+     * 12.65 seconds.
+     *
+     * <h2>How long that window is</h2>
+     * On the streaming route it is the pipeline init plus the first batch, which for a SELECT
+     * that emits as it scans is milliseconds -- but for a full aggregate, a {@code GROUP BY} or
+     * an {@code ORDER BY} without a {@code LIMIT} there is no first batch until the whole scan
+     * is done, so the window is the entire query. On the materialized route it is always the
+     * entire statement, because {@code chdb_query_arrow_n} runs it to completion before
+     * returning.
+     *
+     * <h2>What the caller gets instead</h2>
+     * A deadline, not an interrupt. The statement has already run to completion by the time
+     * this is reached and the engine cannot be told to stop, so the work is spent either way --
+     * but reporting {@link SQLTimeoutException} is what a caller can act on, and it keeps
+     * {@code setQueryTimeout} from being a setting that silently does nothing. The result set
+     * is closed first, so the stream and the connection's statement slot are released rather
+     * than pinned by a result nobody can reach.
+     */
+    private void checkDeadlineSurvivedTheOpen(String sql) throws SQLException {
+        boolean expired = activeTimeout.expired();
+        if (!expired && !cancelled.get()) {
+            return;
+        }
+        // Releases the stream and the statement slot; the caller set handedOff before calling
+        // here, so this close is the one release of that slot.
+        closeCurrentResultSet();
+        if (expired) {
+            throw new SQLTimeoutException(
+                    "The query exceeded the statement's query timeout of "
+                            + queryTimeoutSeconds
+                            + "s while "
+                            + describeStatement(sql)
+                            + " was still being executed. The engine could not be interrupted:"
+                            + " the chDB C ABI has no cancel that applies before a query returns"
+                            + " a handle, so the statement ran to completion and its result was"
+                            + " discarded.",
+                    "57014");
+        }
+        throw new SQLException(
+                "The statement was cancelled while "
+                        + describeStatement(sql)
+                        + " was still being executed. The engine could not be interrupted before"
+                        + " the query returned a handle, so it ran to completion and its result"
+                        + " was discarded.",
+                "57014",
+                394);
     }
 
     private StatementShape.Route route(String sql) throws SQLException {

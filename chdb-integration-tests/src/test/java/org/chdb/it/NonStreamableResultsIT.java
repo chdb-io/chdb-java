@@ -6,17 +6,22 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Result sets the engine refuses to stream -- issue #12.
@@ -489,6 +494,104 @@ class NonStreamableResultsIT extends NativeTestBase {
                     failure.getMessage().contains("Server-side parameters are not supported"),
                     () -> "unexpected message: " + failure.getMessage());
             assertEquals("0A000", failure.getSQLState());
+        }
+    }
+
+    /**
+     * A query timeout has to be reported even though the materialized route cannot be
+     * interrupted.
+     *
+     * <p>{@code chdb_query_arrow_n} runs the statement to completion before it returns, and
+     * every cancel the C ABI exports takes a handle the call is still producing -- so there is
+     * nothing for the timer thread to cancel. Before this was handled, {@code executeQuery}
+     * came back <em>successfully</em>, with a full result set, after the deadline had passed.
+     *
+     * <p>The assertion is on the invariant rather than on the clock, so it cannot go flaky on a
+     * machine of any speed: either the statement beat the deadline, in which case a result set
+     * is the right answer, or it did not, in which case a result set is never the right answer.
+     *
+     * <p>Schema inference is the only non-streamable statement whose cost the test can dial:
+     * measured at ~10.7 ms per megabyte of input on v26.7.0, independent of row and column
+     * count, so 180 MB buys about 1.5 s against a 1 s deadline.
+     */
+    @Test
+    @DisplayName("a query timeout on the materialized route is reported, not silently ignored")
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void queryTimeoutOnTheMaterializedRoute(@TempDir Path tempDir) throws Exception {
+        Path jsonl = tempDir.resolve("infer.jsonl");
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement()) {
+            statement.execute(
+                    "INSERT INTO FUNCTION file('"
+                            + jsonl
+                            + "', 'JSONEachRow') SELECT number AS n, toString(number) AS s"
+                            + " FROM numbers(6000000)");
+
+            // Raised past their defaults on purpose: inference reads only 25k rows otherwise,
+            // and the point is a statement that takes real time inside the open.
+            String describe =
+                    "DESCRIBE file('"
+                            + jsonl
+                            + "', 'JSONEachRow') SETTINGS"
+                            + " input_format_max_rows_to_read_for_schema_inference = 6000000,"
+                            + " input_format_max_bytes_to_read_for_schema_inference = 100000000000";
+
+            statement.setQueryTimeout(1);
+            long start = System.nanoTime();
+            try (ResultSet rs = statement.executeQuery(describe)) {
+                long millis = (System.nanoTime() - start) / 1_000_000;
+                assertTrue(
+                        millis < 1_000,
+                        () -> "executeQuery returned a result set " + millis
+                                + " ms after a 1 s query timeout");
+                assertTrue(rs.next());
+            } catch (SQLTimeoutException expected) {
+                assertEquals("57014", expected.getSQLState());
+                assertTrue(
+                        expected.getMessage().contains("could not be interrupted"),
+                        () -> "the message should say why nothing was cancelled: "
+                                + expected.getMessage());
+            }
+        }
+    }
+
+    /**
+     * A materialized result of tens of thousands of rows arrives whole.
+     *
+     * <p>Every other test here reads a handful of rows, which would not notice a result
+     * truncated at the point the engine's Arrow export changes shape. Measured on v26.7.0: the
+     * engine builds each of these statements as a single block, so 30,001 rows of {@code SHOW
+     * TABLES} and 24,005 rows of {@code EXPLAIN AST} both come back as exactly one Arrow batch
+     * -- the multi-batch path {@code chdb_query_arrow_n} does take for a large SELECT (16
+     * batches at a million rows) is not reachable from any statement that needs this route.
+     * That is worth knowing rather than assuming, and this test is what pins the row count.
+     */
+    @Test
+    @DisplayName("a materialized result of tens of thousands of rows is not truncated")
+    void largeMaterializedResult() throws Exception {
+        int unions = 8000;
+        StringBuilder sql = new StringBuilder("EXPLAIN AST SELECT 0");
+        for (int i = 1; i <= unions; i++) {
+            sql.append(" UNION ALL SELECT ").append(i);
+        }
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement();
+                ResultSet rs = statement.executeQuery(sql.toString())) {
+            assertEquals("explain", rs.getMetaData().getColumnName(1));
+            long rows = 0;
+            long literals = 0;
+            while (rs.next()) {
+                String line = rs.getString("explain");
+                assertNotNull(line, "row " + rows + " of the plan was null");
+                rows++;
+                if (line.contains("Literal UInt64_")) {
+                    literals++;
+                }
+            }
+            // One AST literal per branch of the union: the row count is the engine's, but the
+            // literals are ours to count, and a truncated result loses them.
+            assertEquals(unions + 1, literals, "the plan lost branches; it had " + rows + " rows");
+            assertTrue(rows > 20_000, "expected a five-figure plan, got " + rows + " rows");
         }
     }
 

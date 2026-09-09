@@ -76,12 +76,50 @@ Two things you have to do for that to hold:
 Reading one row of a huge result and closing is cheap and supported: the driver cancels the
 query rather than draining it.
 
-**One exception, and it is bounded by the schema rather than by the data.** `SHOW`, `DESCRIBE`,
-`DESC`, `EXPLAIN`, `EXISTS` and `CHECK` cannot be streamed — the engine's streaming entry point
-accepts only a SELECT pipeline — so they run through `chdb_query_arrow_n`, which materializes
-the whole result before the first `next()`. What they return is a table's column list, a query
-plan or a one-row answer, so this is bytes to kilobytes, not a size a caller chooses. Nothing
-that reads user data takes that route.
+## One route is not bounded: `SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK`
+
+These cannot be streamed — the engine's streaming entry point accepts only a SELECT pipeline —
+so they run through `chdb_query_arrow_n`, which materializes the whole result.
+
+**The peak is inside the engine, before the driver has a handle.** Measured on v26.7.0, arm64,
+comparing the two routes on the same query and sampling RSS after the open with not one row
+read:
+
+| result payload | materialized, RSS at open | while reading | streamed, RSS at open |
+|---|---|---|---|
+| 108 MB | +234 MB | +0 | +48 KB |
+| 432 MB | +669 MB | +0 | +6.4 MB |
+| 864 MB | +896 MB | +0 | +6.5 MB |
+
+`RSS at open` is already the peak: it does not move while the caller iterates. `chdb-arrow-output.cpp`
+shows why — the engine collects every chunk, converts all of them into one `arrow::Table`, and
+only then exports a `TableBatchReader` over it, so both the ClickHouse chunks and the Arrow copy
+are live before the call returns.
+
+**So the JDBC knobs cannot help on this route, and the driver does not pretend otherwise.**
+`setMaxRows`, closing the `ResultSet` after one row, and any row cap the driver could impose all
+run after the memory has been spent. There is nothing left to save.
+
+**What does bound it is the engine's own per-query accounting**, which covers this path:
+
+```java
+statement.execute("SET max_memory_usage = 2000000000");
+```
+
+An oversized materialization then fails in milliseconds with ClickHouse error 241, which the
+driver maps to `SQLTransientException` (SQLSTATE `53200`) — not an OOM, and not a dead process.
+Measured: 15 out of 15 clean refusals under a 100 MB cap.
+
+**Set it with `SET`, not in the JDBC URL.** Measured on v26.7.0, no setting passed in the
+connect argument vector reaches the session — `max_memory_usage`, `max_threads`,
+`max_result_rows` and `max_block_size` all keep their defaults when given as URL properties, and
+all take effect via `SET`. See [engine findings](upstream-findings.md).
+
+**In practice the exposure is small, because the row count of each of these statements is a
+catalog or schema quantity rather than a data quantity.** `SHOW TABLES` over a 20,001-table
+catalog: 3 MB and 10 ms. `CHECK TABLE`: one row of a part path per active part, and ClickHouse's
+own `parts_to_throw_insert` keeps that in the thousands. `DESCRIBE`: one row per column.
+`EXPLAIN`: one row per plan line. None of them scales with the size of a table.
 
 ## Measuring it
 

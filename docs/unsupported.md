@@ -156,6 +156,16 @@ These are supported, with a rule you have to know:
 **One storage path per JVM.** Many connections may share it; a second path is refused with a
 diagnostic. See the [README](../README.md#one-storage-path-per-jvm).
 
+**`setQueryTimeout` is a deadline, and for some statements only a deadline.** It normally stops
+the engine: a timeout during a result set's fetches cancels the query. But no cancel in the chDB
+C ABI applies before a query has returned a handle, so the call that opens a result set cannot
+be interrupted — which for a full aggregate, a `GROUP BY`, an `ORDER BY` without a `LIMIT`, or
+anything on the materialized route (`SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK`) is the
+whole statement. Those still raise `SQLTimeoutException` when the deadline passes, but the work
+has already been done by then and is discarded. The alternative — returning a result set after
+the caller's deadline, which is what happened before — is worse. `Statement.cancel()` during
+that same window behaves the same way. See [engine findings](upstream-findings.md).
+
 **One statement at a time per connection**, including a result set's fetches. A second
 statement waits for the first result set to close; a second one on the *same thread* raises
 `SQLException` (SQLSTATE `25000`) rather than deadlocking. See the

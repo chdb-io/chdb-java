@@ -23,6 +23,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Statements with no result set run through {@code chdb_query_n}, which is synchronous and
  * has no cancellation handle in the C ABI. There is nothing to interrupt, so the timeout does
  * not apply to DDL or DML, and {@code ChdbStatement} does not arm one for them.
+ *
+ * <p>Nor can it interrupt the call that <em>opens</em> a result set, for the same reason: every
+ * cancel the C ABI exports takes a result or stream handle, and that handle is what the open is
+ * still producing. So the cancel this fires during an open reaches nothing. How long that
+ * window lasts depends on the statement, not on the driver -- milliseconds for a SELECT that
+ * emits as it scans, the whole query for a full aggregate or an {@code ORDER BY} without a
+ * {@code LIMIT}, and the whole statement for anything on the materialized Arrow route. {@code
+ * ChdbStatement} therefore also treats an expired timeout as a deadline once the open returns:
+ * the work is already spent, but the caller is told, rather than handed a result set that
+ * arrived after the time it allowed.
  */
 final class QueryTimeout {
 

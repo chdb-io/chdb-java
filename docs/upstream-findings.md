@@ -547,7 +547,77 @@ Two things are worth noting for upstream:
 initialisation a machine-readable "this statement is not streamable" state so a client can
 route on it instead of on a keyword scan.
 
-**Documented in:** `NonStreamableResultsIT`, `StatementShape`, issue #12.
+### The materialized route's peak is entirely engine-side
+
+Worth recording separately, because it decides what a client can and cannot do about it.
+`chdb_query_arrow_n` has already allocated the whole result by the time it returns: measured
+RSS after the open, with not one row read, is +234 MB for a 108 MB result and +896 MB for an
+864 MB one, and it does not move while the caller iterates. The streaming route grows by
+48 KB–6.5 MB for the same queries. `chdb-arrow-output.cpp` shows why: `runMaterializedArrowQuery`
+collects every chunk, converts all of them into one `arrow::Table`, and exports a
+`TableBatchReader` over that — so the ClickHouse chunks and their Arrow copy are both live
+before the function returns.
+
+The consequence for any client is that a row cap applied on its side of the ABI is too late by
+construction. What does work is the engine's own per-query accounting, which does cover this
+path: under `SET max_memory_usage`, an oversized materialization fails in milliseconds with
+`Code: 241` and leaves no handles behind (15/15 clean refusals under a 100 MB cap).
+
+Two smaller observations from measuring it:
+
+- **No setting passed in the connect argument vector reaches the session.** Given as
+  `--max_memory_usage=…`, `--max_threads=…`, `--max_result_rows=…` or `--max_block_size=…`,
+  `getSetting()` reports the default in every case; the same values via `SET` all take effect.
+  This is not specific to the Arrow routes and predates them, but it means a memory cap cannot
+  currently be set from a JDBC URL, only with `SET`. Related to finding 5 above, and the reason
+  `ChdbUrl.toConnectArguments`'s promise that "every ClickHouse query setting [is] reachable
+  from a JDBC URL" does not hold today.
+- **Errors on this path arrive wrapped two or three times**: `Code: 241. DB::Exception: Code:
+  241. DB::Exception: Code: 241. DB::Exception: Query memory limit exceeded: …`, with the
+  nesting depth varying between runs. Cosmetic — `ChdbExceptions` still extracts 241 from the
+  first occurrence — but the message a user sees is worse than the streaming path's single
+  wrap.
+
+**Documented in:** `NonStreamableResultsIT`, `StatementShape`, `docs/memory.md`, issue #12.
+
+---
+
+## 10. Nothing can be cancelled until a query has returned a handle
+
+**Severity: made `setQueryTimeout` silently ineffective for a whole class of statements. Worked
+around; needs an upstream API to fix properly.**
+
+Every cancel the C ABI exports takes a result or stream handle — `chdb_stream_cancel_query`,
+`chdb_streaming_cancel_query`, `chdb_stream_cancel_insert` — and there is no connection-level
+cancel. So the call that *produces* the handle cannot be interrupted: there is nothing to pass
+to a cancel function while it runs.
+
+How long that window is depends entirely on the statement:
+
+| statement | where the time goes |
+|---|---|
+| `SELECT` that emits as it scans | milliseconds in the open, the rest in the fetches |
+| full aggregate, `GROUP BY`, `ORDER BY` without `LIMIT` | **the whole query is in the open** — there is no first batch until the scan finishes |
+| anything on the materialized Arrow route | **the whole statement is in the open** |
+
+Measured on v26.7.0 before the driver handled it: `setQueryTimeout(1)` on `SELECT
+max(sipHash64(number)) FROM numbers(2000000000)` returned a *working result set* after 12.65
+seconds. The timer fired on schedule, found no handle to cancel, and did nothing — so the
+caller got a late success rather than a timeout, which is worse than either a timeout or a
+hang.
+
+The driver now treats an expired timeout as a deadline once the open returns: it closes the
+result set and raises `SQLTimeoutException` (SQLSTATE `57014`) naming why nothing was
+interrupted. The work is still spent — that part cannot be fixed from a client — but
+`setQueryTimeout` is no longer a setting that quietly does nothing. `Statement.cancel()` from
+another thread during the same window is handled the same way.
+
+**Suggested upstream fix:** a `chdb_cancel_query(chdb_connection)` that interrupts whatever the
+connection is currently executing, so a client can act before a handle exists.
+
+**Documented in:** `ChdbStatement.checkDeadlineSurvivedTheOpen`, `QueryTimeout`,
+`StreamingLifecycleIT.queryTimeoutDuringTheOpen`,
+`NonStreamableResultsIT.queryTimeoutOnTheMaterializedRoute`.
 
 ---
 

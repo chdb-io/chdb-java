@@ -199,6 +199,50 @@ class StreamingLifecycleIT extends NativeTestBase {
         }
     }
 
+    /**
+     * The same timeout, but expiring inside the call that opens the result set rather than
+     * during the fetches.
+     *
+     * <p>{@link #queryTimeout()} above covers a SELECT that emits as it scans, where the open
+     * costs milliseconds and the clock runs out in {@code next()}. A full aggregate has no
+     * first batch until the whole scan is done, so the entire query happens inside {@code
+     * streamOpen} -- and nothing can be cancelled there, because the handle {@code cancel()}
+     * would need is what the call is still producing. Measured on v26.7.0 before this was
+     * handled: {@code setQueryTimeout(1)} returned a working result set after 12.65 seconds.
+     *
+     * <p>Asserted as an invariant rather than against the clock: a result set is the right
+     * answer only if the statement beat its deadline.
+     */
+    @Test
+    @DisplayName("a timeout that expires while the result set is opening is still reported")
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void queryTimeoutDuringTheOpen() throws SQLException {
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement()) {
+            statement.setQueryTimeout(1);
+            long start = System.nanoTime();
+            // Sized so the scan runs for a few seconds against a 1 s deadline: the timeout
+            // cannot stop it, so the test pays the whole scan either way and there is no
+            // reason to make it longer than the margin needs.
+            try (ResultSet rs =
+                    statement.executeQuery(
+                            "SELECT max(sipHash64(number)) FROM numbers(500000000)")) {
+                long millis = (System.nanoTime() - start) / 1_000_000;
+                assertTrue(
+                        millis < 1_000,
+                        () -> "executeQuery returned a result set " + millis
+                                + " ms after a 1 s query timeout");
+                assertTrue(rs.next());
+            } catch (SQLTimeoutException expected) {
+                assertEquals("57014", expected.getSQLState());
+            }
+            // The slot has to have come back, or nothing else could run on this connection.
+            try (ResultSet rs = statement.executeQuery("SELECT 1")) {
+                assertTrue(rs.next());
+            }
+        }
+    }
+
     @Test
     @DisplayName("cancel from another thread stops an in-flight query")
     @Timeout(value = 2, unit = TimeUnit.MINUTES)
