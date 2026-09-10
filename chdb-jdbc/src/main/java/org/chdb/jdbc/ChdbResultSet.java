@@ -21,6 +21,8 @@ import java.sql.RowId;
 import java.sql.SQLDataException;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLNonTransientConnectionException;
+import java.sql.SQLNonTransientException;
 import java.sql.SQLSyntaxErrorException;
 import java.sql.SQLTimeoutException;
 import java.sql.SQLWarning;
@@ -71,7 +73,16 @@ public final class ChdbResultSet implements ResultSet {
     private long rowInBatch = -1;
     private long rowsReturned;
     private boolean exhausted;
-    private boolean closed;
+
+    /**
+     * Volatile because a result set can be closed by a thread other than the one reading it:
+     * {@link ChdbConnection#close()} closes its statements, and JDBC allows {@code
+     * Connection.abort()} from another thread outright. A reader that does not see this flag
+     * proceeds into the shim with a stream whose connection is going away, which is a native
+     * error message where "the result set is closed" is the answer.
+     */
+    private volatile boolean closed;
+
     private boolean lastValueWasNull;
 
     /** Lazily built lowercase name -> 1-based index, for {@link #findColumn(String)}. */
@@ -186,13 +197,38 @@ public final class ChdbResultSet implements ResultSet {
     }
 
     /**
-     * Reports a mid-stream failure as a timeout or a cancellation when that is what it was.
+     * Reports a mid-stream failure as a timeout, a cancellation or a close when that is what it
+     * was.
      *
      * <p>The engine's message for a cancelled query says the query was cancelled, which is
      * accurate but hides the cause the caller cares about: whether their own {@code cancel()}
      * or their {@code setQueryTimeout} ended it.
+     *
+     * <p>The two close cases are here for the same reason and are not hypothetical. This result
+     * set, or the connection under it, can be closed by another thread while this one is in
+     * {@code next()} — which is what {@code Connection.abort()} is defined to do, and what a
+     * pool being closed does to a connection it has lent out. What came back before was the
+     * shim's account of the handles involved ("stream handle 18801 does not belong to connection
+     * handle 18576"), which describes an ownership mix-up that did not happen and says nothing
+     * a caller can act on. Both are checked before the generic path so the answer names the
+     * close.
      */
     private SQLException cancellationAware(String context, ChdbNativeException cause) {
+        if (closed) {
+            return new SQLNonTransientException(
+                    context + ": the ResultSet was closed while it was being read", "HY010", 0, cause);
+        }
+        if (statement.connection.isClosed()) {
+            return new SQLNonTransientConnectionException(
+                    context
+                            + ": the Connection this ResultSet was opened on was closed while it"
+                            + " was being read, so the rest of the result is gone."
+                            + " Connection.abort(), and a connection pool shutting down while it"
+                            + " has this connection lent out, both do this.",
+                    "08003",
+                    0,
+                    cause);
+        }
         if (statement.timedOut()) {
             return new SQLTimeoutException(
                     context + ": the query exceeded the statement's query timeout and was cancelled",
@@ -1190,13 +1226,19 @@ public final class ChdbResultSet implements ResultSet {
                 // must not stop the close below.
             }
         }
+
+        // Deregistered before the handle is destroyed. A cancel() on another thread reads this
+        // registration, so the other order leaves a window in which it is handed an id that
+        // streamClose() has already removed, and hands the caller a native failure for a
+        // cancel that simply lost its race. See ChdbStatement.cancel().
+        statement.clearInFlight(stream);
+
         try {
             ChdbNative.streamClose(stream);
         } catch (ChdbNativeException e) {
             failure = ChdbExceptions.wrap("Failed to close the result set", e);
         }
 
-        statement.clearInFlight(stream);
         statement.resultSetClosed(this);
 
         if (failure != null) {

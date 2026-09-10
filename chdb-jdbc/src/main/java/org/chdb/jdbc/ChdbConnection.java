@@ -356,6 +356,22 @@ public final class ChdbConnection implements Connection {
 
         SQLException firstFailure = null;
 
+        // Shut before the statements are walked, and waiting for any statement start already
+        // under way. Closing a connection while another thread is running a statement on it is
+        // not a misuse to be diagnosed: JDBC defines Connection.abort() as precisely that, and
+        // HikariCP calls it on every connection still in use when the pool is closed
+        // (HikariPool.abortActiveConnections, 5.1.0). The window this removes is the statement
+        // start itself -- between the shim registering a stream and
+        // ChdbStatement assigning it to a result set, the loop below cannot see it, so the
+        // close went ahead and took the connection handle out of the shim's registry with a
+        // live stream still pointing at it. The reading thread then got
+        //
+        //   stream handle 18801 does not belong to connection handle 18576
+        //
+        // on its next fetch: not an ownership mix-up, which is what it says, but this. See
+        // ExecutionGate.closeToNewEntrantsWaiting() for why waiting here costs nothing.
+        executionGate.closeToNewEntrantsWaiting();
+
         // Statements first, so their streams and batches are released before the connection
         // they were opened on. The shim keeps a strong reference from stream to connection,
         // so the other order would leak rather than crash -- but leaking is still wrong.

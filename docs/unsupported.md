@@ -225,6 +225,21 @@ statement waits for the first result set to close; a second one on the *same thr
 `SQLException` (SQLSTATE `25000`) rather than deadlocking. See the
 [README](../README.md#one-statement-at-a-time-per-connection).
 
+**Closing a connection from another thread waits for a statement that is starting on it.**
+`Connection.close()` — and `abort()`, which JDBC defines as a close from another thread while
+the connection is in use, and which HikariCP calls on every connection still in use when the
+pool is closed — closes the statements under the connection first, and a statement whose result set
+is still being created has to finish being created before it can be closed. So the close blocks
+until the engine call that starts the statement returns. That is not a new wait:
+`chdb_close_conn()` on a connection whose statement is running blocks for the same query
+anyway, measured at 0.85 s of a 1.5 s aggregate when the close arrived 0.7 s in. What changed
+is that the wait now happens before the connection handle is retired rather than after, because
+the other order left the statement's stream pointing at a connection that no longer existed —
+and the failure that produced named handle numbers rather than the close: `stream handle 18801
+does not belong to connection handle 18576`, once in 11 860 soak iterations. A read whose
+connection is closed underneath it now says so, with SQLSTATE `08003`; a read whose result set
+was closed underneath it says that, with `HY010`.
+
 **Stop your query threads before the JVM exits.** The driver installs a shutdown hook that
 closes connections the application forgot, which covers a leaked result set: without it, a JVM
 exiting with a streaming `ResultSet` open aborts inside the engine (SIGABRT, exit 134) rather

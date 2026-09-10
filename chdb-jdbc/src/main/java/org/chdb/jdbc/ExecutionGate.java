@@ -3,8 +3,14 @@ package org.chdb.jdbc;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Decides, for one connection, whether the shutdown hook may close it or an application thread
- * may start a statement on it — never both.
+ * Decides, for one connection, whether it may be closed or a thread may start a statement on
+ * it — never both.
+ *
+ * <p>Two closers ask. The shutdown hook takes it with {@link #closeToNewEntrants()} and skips
+ * the connection if it loses, because the alternative is holding the JVM open for the length of
+ * a query. {@code Connection.close()} takes it with {@link #closeToNewEntrantsWaiting()} and
+ * waits, because a close cannot decline: it has to release the connection's streams, and it
+ * cannot find one that is still being created. Both move one word with a compare-and-set.
  *
  * <h2>Why this is not a counter and a check</h2>
  * The two questions look independent and are not. The hook must not close a connection whose
@@ -48,6 +54,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * closing that connection is the whole purpose of the hook (a leaked streaming result set) and
  * is measured clean: exit 0 over eight runs, against 134 over four with no hook. Only starting
  * a statement is gated.
+ *
+ * <p>That is enough for the closing side as well, and worth spelling out because it is the
+ * whole argument. What a close needs is not "nobody is in the engine" but "every stream that
+ * exists is reachable from the statement that owns it" — and a stream becomes reachable inside
+ * the gated region, because {@code ChdbStatement.openStream()} assigns the result set before
+ * {@code executeInternal()} returns and releases the gate. A thread that is only fetching has
+ * long since published its result set, so the close finds and closes it.
  */
 final class ExecutionGate {
 
@@ -105,6 +118,59 @@ final class ExecutionGate {
      */
     boolean closeToNewEntrants() {
         return state.compareAndSet(IDLE, CLOSED_TO_NEW_ENTRANTS);
+    }
+
+    /**
+     * Shuts the gate, waiting for any statement start already inside it to finish.
+     *
+     * <p>For {@code Connection.close()}, which unlike the shutdown hook cannot decline: a
+     * connection that reports itself closed must have released its streams, and it cannot
+     * find them all while a thread is still between "the shim registered my stream" and "my
+     * statement knows about it". Once this returns, no statement can start and every stream
+     * that exists on this connection has been published to the statement that owns it.
+     *
+     * <p>Waiting is not a new cost. {@code chdb_close_conn()} on a connection whose statement
+     * is running blocks until that statement finishes anyway — measured at up to 79 s, see
+     * {@link ShutdownCleanup} — so the close was going to wait for the same query either way.
+     * What changes is that it now waits <em>before</em> taking the handle out of the shim's
+     * registry rather than after, which is the part that made the wait unsafe.
+     *
+     * <p>{@code Thread.onSpinWait()} then a millisecond sleep, rather than a monitor: the two
+     * sides of this gate are a compare-and-set precisely so that neither has to hold a lock
+     * across an engine call, and a close is not on any hot path.
+     *
+     * @return {@code false} if the shutdown hook owns this connection, which also means no
+     *     statement can start on it -- so the caller may close it either way
+     */
+    boolean closeToNewEntrantsWaiting() {
+        // Held and re-applied at the end rather than re-applied inside the loop: an interrupt
+        // flag set while sleeping would make every later sleep throw at once and turn this
+        // into a spin. A close that abandoned the wait would close the connection under the
+        // statement it was waiting for, which is the failure this exists to prevent.
+        boolean interrupted = false;
+        try {
+            for (int spins = 0; ; spins++) {
+                if (state.compareAndSet(IDLE, CLOSED_TO_NEW_ENTRANTS)) {
+                    return true;
+                }
+                if (state.get() == CLOSED_TO_NEW_ENTRANTS) {
+                    return false;
+                }
+                if (spins < 64) {
+                    Thread.onSpinWait();
+                } else {
+                    try {
+                        Thread.sleep(1);
+                    } catch (InterruptedException e) {
+                        interrupted = true;
+                    }
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     /** Whether {@link #closeToNewEntrants()} has succeeded. For diagnostics and tests. */
