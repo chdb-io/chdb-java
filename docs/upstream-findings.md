@@ -5,8 +5,8 @@ arm64 while implementing work-plan phases 0–8 against what was then the pinned
 **v26.7.0**. They are recorded here because every one of them is a decision the driver's code
 depends on, and because several belong upstream rather than in a Java driver.
 
-The baseline has since moved to **v26.7.2-rc.2** (issue #8, for `chdb_shutdown()`), and four
-of these entries changed with it rather than being carried over:
+The baseline has since moved twice. First to **v26.7.2-rc.2** (issue #8, for
+`chdb_shutdown()`), and four of these entries changed with it rather than being carried over:
 
 - **§2 was wrong about who was at fault** and is rewritten. The released header was always
   correct; the stale version constant came from this repository vendoring the source tree's
@@ -18,6 +18,15 @@ of these entries changed with it rather than being carried over:
 - **§10 and §11 are new**, from measuring which statements the streaming Arrow entry
   point accepts, and what a query timeout can actually interrupt.
 
+Then to **v26.7.3**, the first stable release the binding has been pinned to, which closed the
+oldest entry here:
+
+- **§1 and §1a are fixed upstream.** chdb-core #224 stopped chDB resetting handlers it did not
+  install, which closes both the original complaint and the concurrency window reported as
+  chdb-core #221 and tracked here as issue #14. The shim's guard now reports nothing to
+  repair, and `measure` reports zero. §2's table also gained a third column, because the
+  release re-demonstrated the vendoring rule it records.
+
 The rest still hold on the new engine, and the tests named against each are what demonstrates
 that — they run in `mvn verify` against whichever engine is pinned.
 
@@ -27,7 +36,19 @@ Reproduce any of them with `mvn verify` — each has a test named below.
 
 ## 1. Opting out of chDB's signal handlers resets the JVM's
 
-**Severity: would crash any embedding JVM. Worked around; needs an upstream API.**
+**Severity: would crash any embedding JVM. Was worked around here; fixed upstream in v26.7.3
+by chdb-core #224.**
+
+**Resolved on the current baseline.** The code and measurements below describe v26.7.2-rc.2 and
+earlier, and are kept because they are what made the case. On v26.7.3 the reset is no longer
+unconditional: `chdb_reset_signal_handlers()` touches only signals chDB installed a handler
+for, which the v26.7.3 header now states as the contract. The observable change is that the
+shim's guard has nothing left to repair —
+`SignalHandlerIT.protectHostSignalHandlers()` reports the list of signals chDB reset and the
+shim put back as **empty** on v26.7.3, where on v26.7.2-rc.2 it reported `SIGSEGV, SIGILL,
+SIGBUS, SIGFPE, SIGTSTP`. The `SignalGuard` stays anyway: it is what keeps the driver correct
+if the loader is pointed at an older `libchdb`, and an empty report is only meaningful because
+something is still watching.
 
 `chdb_set_signal_handlers_enabled(0)` does two things, and the second is not implied by its
 name:
@@ -57,7 +78,7 @@ stack banging and safepoint polling all run through them — so a JVM that opts 
 handlers loses the ability to service its own null dereference. The crash that follows names
 neither chDB nor the opt-out.
 
-Measured on this baseline, `protectHostSignalHandlers()` reports the shim restoring:
+Measured on v26.7.2-rc.2, `protectHostSignalHandlers()` reported the shim restoring:
 
 ```
 SIGSEGV, SIGILL, SIGBUS, SIGFPE, SIGTSTP
@@ -82,8 +103,19 @@ whatever changed, under a process-wide lock.
 
 ### 1a. The workaround cannot be made correct under concurrency
 
-**Severity: kills the JVM, intermittently, with no crash report. Not worked around — it cannot
-be from outside the engine.** This is issue #14.
+**Severity: was killing the JVM, intermittently, with no crash report, and could not be worked
+around from outside the engine. Fixed upstream in v26.7.3 by chdb-core #224.** This is issue
+#14, reported upstream as chdb-core #221.
+
+**Resolved on the current baseline.** Everything below describes v26.7.2-rc.2 and earlier and
+is kept because it is the measurement that made the case upstream. On v26.7.3 the window is
+gone: `scripts/run-signal-window-test.sh measure` reports `hostHandlersAtSigDfl=0` on every
+run, against 688, 613 and 724 on v26.7.2-rc.2, and `stress` — which killed the JVM in 8 of 8
+runs before — survives 6 of 6. The fix is the second of the two options this entry proposed:
+`chdb_connect()` no longer resets a handler the embedding process owns, so its two reset
+branches cannot disturb HotSpot's. The shim's `SignalGuard` stays, because it is what keeps the
+driver correct on any older engine a user might point it at, and because the guard is what
+proves the window is closed rather than merely unobserved.
 
 Signal dispositions are process-wide, so "snapshot, call, restore" is not atomic with respect
 to the *other* threads in the JVM. The lock `SignalGuard` holds serialises guard against guard;
@@ -121,18 +153,20 @@ All the driver can do is reduce the number of windows, and it has: the opt-out i
 per process rather than once per `Connection.open()`, which took the macOS figure from 233–260
 down to 179–184 over the same 200 connects. The window inside `chdb_connect()` is upstream's.
 
-**What would remove it:** the same API as §1 — a way to set the opt-out flag without resetting
-the incumbent handlers. With that, `chdb_connect()`'s two reset branches never fire and the
-window disappears. Alternatively, `chdb_connect()` could stop resetting handlers even when the
-flag is set: the flag's documented purpose is to suppress *future installs*, and re-resetting on
-every connect is not needed for that.
+**What removed it:** this entry proposed two fixes — an API to set the opt-out flag without
+resetting the incumbent handlers, or `chdb_connect()` no longer resetting handlers even when
+the flag is set, on the grounds that the flag's documented purpose is to suppress *future
+installs* and re-resetting on every connect is not needed for that. chdb-core #224 took the
+second, and the v26.7.3 header now documents the contract to match: while the opt-out is in
+force "no chDB entry point changes the disposition of any signal", and
+`chdb_reset_signal_handlers()` touches "only signals chDB installed a handler for".
 
 **Tests:** `SignalHandlerIT` — including `jvmStillOwnsSegv`, which triggers a real
 NullPointerException after connecting, and would terminate the JVM if the guard regressed, and
 `concurrentConnectsNeverExposeAChdbHandler`, which is the only case that watches the
 dispositions from a *different* thread than the one making the call. `scripts/run-signal-window-test.sh`
-is the standalone reproducer; its `measure` count reaching zero is how an upstream fix gets
-verified.
+is the standalone reproducer; its `measure` count reaching zero is how the upstream fix was
+verified, and re-running it on a new baseline is how a regression would be caught.
 
 ---
 
@@ -148,11 +182,17 @@ inverted.
 
 `chdb.h` exists in two places and they do not agree:
 
-| | v26.7.0 | v26.7.2-rc.2 |
-|---|---|---|
-| `programs/local/chdb.h` at the git tag | `26.5.1-rc.3` | `26.7.2` |
-| `chdb.h` inside the release tarball | `26.7.0` | `26.7.2-rc.2` |
-| `chdb_version()` from that tarball's library | `26.7.0` | `26.7.2-rc.2` |
+| | v26.7.0 | v26.7.2-rc.2 | v26.7.3 |
+|---|---|---|---|
+| `programs/local/chdb.h` at the git tag | `26.5.1-rc.3` | `26.7.2` | `26.7.2` |
+| `chdb.h` inside the release tarball | `26.7.0` | `26.7.2-rc.2` | `26.7.3` |
+| `chdb_version()` from that tarball's library | `26.7.0` | `26.7.2-rc.2` | `26.7.3` |
+
+Three releases, three disagreements, and the v26.7.3 column is the cleanest demonstration yet:
+the in-tree constant did not move at all between v26.7.2-rc.2 and v26.7.3, so a header vendored
+from the git tag would have declared `26.7.2` for an engine whose `chdb_version()` returns
+`26.7.3` — a mismatch the loader refuses. Vendoring from the tarball is therefore not a
+tidiness preference but the only source that is ever right.
 
 The release build stamps the constant, and the released artifact has always been right. What
 was wrong was this repository's vendored copy: it was byte-identical to the *source tree* at
@@ -160,7 +200,7 @@ tag v26.7.0, stale constant included, rather than to the header inside the relea
 
 **Consequence for this binding:** `chdb-jni/include/chdb.h` is now taken from the release
 tarball, which is the artifact this binding is built beside and ships against, and
-`shim.built.against.engine.header` reads `26.7.2-rc.2` accordingly. The rule is recorded in
+`shim.built.against.engine.header` reads `26.7.3` accordingly. The rule is recorded in
 `chdb-jni/CMakeLists.txt` where the vendored header is included: copy it from the tarball, not
 from the source tree, and do not edit it — its value is being byte-identical to what upstream
 shipped, which is what makes the next comparison able to detect drift. This finding was made
@@ -292,7 +332,8 @@ recognize. Validating values without validating names catches the rarer mistake.
 
 **Severity: expected; still handled as optional symbols.**
 
-Neither is in v26.7.0 or v26.7.1-rc.1. Both are in v26.7.2-rc.2, which is now the baseline.
+Neither is in v26.7.0 or v26.7.1-rc.1. Both are in v26.7.2-rc.2, and in v26.7.3, which is now
+the baseline.
 Checked in the release library rather than in the source's export list, because the two are not
 the same claim:
 
@@ -582,7 +623,7 @@ else
 ```
 
 Every other row-returning statement is refused. First measured on v26.7.0 and re-measured
-unchanged on the v26.7.2-rc.2 baseline, macOS arm64: `SHOW TABLES`, `SHOW DATABASES`, `SHOW
+unchanged on v26.7.2-rc.2, macOS arm64: `SHOW TABLES`, `SHOW DATABASES`, `SHOW
 CREATE TABLE`, `SHOW COLUMNS`, `SHOW SETTINGS`, `DESCRIBE`, `DESC`, `DESCRIBE (subquery)`,
 `EXISTS TABLE`, `EXISTS DATABASE`, `CHECK TABLE` and all seven `EXPLAIN` forms — all with
 `Code: 36 ... Streaming query is not supported`. So this did not move with the baseline.
@@ -710,7 +751,7 @@ Two smaller observations from measuring it:
   Measured through JDBC on macOS arm64, same code and URL against both engines,
   `jdbc:chdb::memory:?max_threads=7&max_result_rows=13&max_block_size=4096`:
 
-  | setting | v26.7.0 | v26.7.2-rc.2 (baseline) |
+  | setting | v26.7.0 | v26.7.2-rc.2 |
   |---|---|---|
   | `max_threads` | `auto(18)` — ignored | `7` |
   | `max_result_rows` | `0` — ignored | `13` |
@@ -751,8 +792,8 @@ How long that window is depends entirely on the statement:
 | full aggregate, `GROUP BY`, `ORDER BY` without `LIMIT` | **the whole query is in the open** — there is no first batch until the scan finishes |
 | anything on the materialized Arrow route | **the whole statement is in the open** |
 
-Measured on v26.7.0 before the driver handled it, and the ABI has not changed on the
-v26.7.2-rc.2 baseline: `setQueryTimeout(1)` on `SELECT max(sipHash64(number)) FROM
+Measured on v26.7.0 before the driver handled it, and the ABI has not changed since:
+`setQueryTimeout(1)` on `SELECT max(sipHash64(number)) FROM
 numbers(2000000000)` returned a *working result set* after 12.65 seconds. The timer fired on schedule, found no handle to cancel, and did nothing — so the
 caller got a late success rather than a timeout, which is worse than either a timeout or a
 hang.

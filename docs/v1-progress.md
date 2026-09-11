@@ -11,11 +11,17 @@ macOS arm64 and x86_64 — each running the full suite on **Java 11, 17, 21 and 
 sanitizer runs on one Linux and one macOS toolchain. Sixteen platform-and-JDK combinations, all
 green.
 
-The baseline has since moved to **engine 26.7.2-rc.2** (issue #8). That run has not happened
-yet: the move was verified on macOS arm64 only, so the sixteen-way result above describes
-26.7.0 and the three other platforms are unverified on the current engine until CI says
-otherwise. 26.7.2-rc.2 is also a chdb-core pre-release, which by [work plan §4.3
-](../CHDB_JAVA_V1_WORK_PLAN.md) makes anything built on it a preview rather than the V1 GA.
+The baseline has since moved twice, to **engine 26.7.2-rc.2** (issue #8) and then to **engine
+26.7.3**. Neither run has happened yet: both moves were verified on macOS arm64 only, so the
+sixteen-way result above describes 26.7.0 and the three other platforms are unverified on the
+current engine until CI says otherwise.
+
+26.7.3 is a **stable** chdb-core release, which clears the [work plan §4.3
+](../CHDB_JAVA_V1_WORK_PLAN.md) bar that 26.7.2-rc.2 could not: a binding built on an engine
+pre-release is a preview and cannot be the V1 GA, so the RC baseline was itself a release
+blocker. It also carries chdb-core #224, the fix for the signal-handler window reported as
+chdb-core #221 — `scripts/run-signal-window-test.sh measure` reports zero on it, against 688,
+613 and 724 on 26.7.2-rc.2.
 
 ---
 
@@ -28,10 +34,10 @@ otherwise. 26.7.2-rc.2 is also a chdb-core pre-release, which by [work plan §4.
 | ✅ | Four glibc/macOS platforms | `Platform`, with musl detected and refused |
 | ✅ | Direct JNI is the mainline, ADBC the experiment | no Arrow Java dependency anywhere |
 | ✅ | Engine release, dynamic-library checksum and symbol set pinned | `scripts/engine.properties`, SHA-256 per platform from the GitHub release digests |
-| ✅ | Consistency check across `chdb_version()`, tag and header version | all three agree on v26.7.2-rc.2. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). Still enforced against `engine.properties` rather than the header |
+| ✅ | Consistency check across `chdb_version()`, tag and header version | all three agree on v26.7.3. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). The v26.7.3 bump re-confirmed that rule the hard way: `programs/local/chdb.h` at the git tag still says `26.7.2`, while the header in the release tarball says `26.7.3`. Still enforced against `engine.properties` rather than the header |
 | ✅ | C API split into required and optional symbols | 18 required, linker- and load-checked; `chdb_classify_query_n` and `chdb_shutdown` optional via `dlsym`, and present on the current baseline |
 | ⬜ | C ABI version and compatibility promise confirmed with Core | needs upstream agreement |
-| 🟡 | Signal-handler requirement raised upstream | reproduced, measured and written up in [findings §1](upstream-findings.md); not yet filed |
+| ✅ | Signal-handler requirement raised upstream | reproduced, measured and written up in [findings §1](upstream-findings.md), filed as chdb-core #221, and fixed by chdb-core #224 in engine v26.7.3 — the shim's guard now reports no handler to repair, and `run-signal-window-test.sh measure` reports zero |
 
 ## Phase 1 — Rebuild the repository and build skeleton
 
@@ -247,9 +253,9 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 
 ## What to do next, in order
 
-1. **File the two upstream issues.** The signal-handler API (§1) is the one release gate whose
-   workaround depends on upstream behaviour not changing underneath it. A sanitizer build of
-   chdb-core (§8) is what unblocks the other half of the sanitizer gate.
+1. **A sanitizer build of chdb-core (§8)**, which is what unblocks the other half of the
+   sanitizer gate. The signal-handler API (§1) that used to head this list is done: filed as
+   chdb-core #221, fixed by #224, and in the baseline as of engine v26.7.3.
 2. **Framework smoke tests.** HikariCP ✅, because it is where the one-statement-per-connection
    rule meets real pooling; MyBatis ✅ and jOOQ ✅, because they are what read `DatabaseMetaData`
    heavily; and every method of that interface swept reflectively ✅ — 179 of them on JDK 11

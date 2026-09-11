@@ -280,11 +280,13 @@ The file is generated on whichever platform the person doing the bump has, but i
 on all four: `LicenseInventoryIT` runs in every platform job and queries that job's own engine,
 so a component set that differs between platforms fails CI rather than shipping.
 
-Done once so far. The v26.7.0 → v26.7.2-rc.2 bump produced a **byte-identical** inventory —
-same 968 entries, same licence strings, same SHA-256 — so the redistribution position did not
-move, and the count above still describes the engine we ship. That is the expected shape of a
-patch-level bump, not something to rely on: the whole point of keying the file by version is
-that the next one may differ.
+Done twice so far, and both times the inventory came out **byte-identical** to its predecessor
+— same 968 entries, same licence strings, same SHA-256 for v26.7.0, v26.7.2-rc.2 and v26.7.3
+alike — so the redistribution position has not moved, and the count above still describes the
+engine we ship. The twelve copyleft components below are still exactly twelve. That is the
+expected shape of a patch-level bump, not something to rely on: the whole point of keying the
+file by version is that the next one may differ, which is why the file is regenerated and
+compared rather than copied forward.
 
 ### The one open question
 

@@ -28,8 +28,8 @@ import java.util.Set;
  *
  * <ol>
  *   <li>{@code chdb_classify_query_n}, which parses the SQL with the engine's own parser and
- *       settings and executes nothing. Available from engine v26.7.2-rc.2 -- the pinned
- *       baseline -- so it is asked in practice. Authoritative about <em>whether</em> there is a
+ *       settings and executes nothing. Available from engine v26.7.2-rc.2, so present on the
+ *       pinned v26.7.3 baseline and asked in practice. Authoritative about <em>whether</em> there is a
  *       result set, but silent on <em>which door</em> delivers it: {@code
  *       CHDB_QUERY_READ_ONLY} covers a {@code SELECT} and a {@code SHOW} alike, so it cannot
  *       tell the two Arrow entry points apart. See {@link #route(int[], String)}.
@@ -65,7 +65,7 @@ import java.util.Set;
  * the streaming door in the first place.
  *
  * <p>The residual gap was a write whose leading keyword is a result-set keyword -- the {@code
- * WITH ... INSERT} form above. The classifier closes it: measured on the v26.7.2-rc.2 baseline,
+ * WITH ... INSERT} form above. The classifier closes it: measured on v26.7.2-rc.2,
  * {@code chdb_classify_query_n} reports that statement {@code MUTATING}, so it is routed to
  * {@code chdb_query_n} and simply works. It only reaches the streaming door, and only fails
  * there, on an engine that does not export the classifier.
