@@ -412,7 +412,7 @@ class NonStreamableResultsIT extends NativeTestBase {
      * pinned -- which matters, because the answer for the dangerous statement below does.
      *
      * <p>{@code WITH q AS (...) INSERT INTO t SELECT ...} parses, writes, and has a leading
-     * keyword the scan calls a result set. On the v26.7.2-rc.2 baseline {@code
+     * keyword the scan calls a result set. On v26.7.2-rc.2 {@code
      * chdb_classify_query_n} reports it MUTATING, so it is routed to {@code chdb_query_n} and
      * simply works. Without the classifier the keyword scan sends it to the streaming door,
      * which refuses it, and it is reported rather than retried -- which is the whole reason

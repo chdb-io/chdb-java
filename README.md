@@ -39,11 +39,11 @@ and is loaded from a real packaged JAR, in CI:
   engine does. Each package records the figure it was built against in its
   `manifest.properties`, and CI runs the whole test suite on AlmaLinux 8 to demonstrate the
   floor rather than infer it from symbol versions.
-- **Engine:** chDB Core **26.7.2-rc.2**, pinned. The C ABI is version-locked, so the driver
+- **Engine:** chDB Core **26.7.3**, pinned. The C ABI is version-locked, so the driver
   refuses to run against a different engine build rather than risking a struct-layout mismatch.
-  That release is a chdb-core *pre-release*, pinned because it is the first to export
-  `chdb_shutdown()`; a binding on an engine RC is itself a preview and is not the V1 GA
-  ([work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md)).
+  That release is a stable chdb-core release, which is what [work plan
+  §4.3](CHDB_JAVA_V1_WORK_PLAN.md) requires of a V1 GA engine: the previous baseline,
+  `26.7.2-rc.2`, was a pre-release and made every binding built on it a preview.
 - **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
   [work plan §2.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
@@ -58,7 +58,7 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 <dependency>
   <groupId>org.chdb</groupId>
   <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
-  <version>26.7.2-rc.2.1</version>
+  <version>26.7.3.1</version>
 </dependency>
 ```
 
@@ -71,7 +71,7 @@ architecture — declare the driver plus each native package you need:
     <dependency>
       <groupId>org.chdb</groupId>
       <artifactId>chdb-bom</artifactId>
-      <version>26.7.2-rc.2.1</version>
+      <version>26.7.3.1</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
@@ -102,10 +102,11 @@ unpacked. There is no all-platforms package, on purpose: it would be the sum of 
 
 ### Versioning
 
-`<engine version>.<binding revision>`, so `26.7.2-rc.2.1` is the first Java release built
-against engine 26.7.2-rc.2 — the engine version is carried through verbatim, `rc` qualifier
-included. A new engine always means a new version, and moving from one RC to another, or from
-an RC to the stable release, counts as a new engine and resets the binding revision to `1`.
+`<engine version>.<binding revision>`, so `26.7.3.1` is the first Java release built
+against engine 26.7.3 — the engine version is carried through verbatim, `rc` qualifier
+included when there is one. A new engine always means a new version, and moving from one RC to
+another, or from an RC to a stable release, counts as a new engine and resets the binding
+revision to `1`: that is why the move off `26.7.2-rc.2.1` is `26.7.3.1` and not `26.7.2-rc.2.2`.
 This is not SemVer; see [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
 ## Connecting

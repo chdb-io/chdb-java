@@ -26,7 +26,7 @@ The cache directory is named after the engine version, the platform and a digest
 it holds:
 
 ```
-$TMPDIR/chdb-java/26.7.2-rc.2-macos-aarch64-a2152d4651113d10/
+$TMPDIR/chdb-java/26.7.3-macos-aarch64-f1ae22e828a2a847/
 ├── libchdb.so
 ├── libchdb_java_jni.dylib
 ├── manifest.properties
@@ -153,7 +153,7 @@ how ClickHouse settings are passed:
 jdbc:chdb:/data?max_threads=4&max_memory_usage=2000000000
 ```
 
-**A bad value is refused; a misspelled name is silent.** On engine 26.7.2-rc.2 an invalid
+**A bad value is refused; a misspelled name is silent.** On engine 26.7.3 an invalid
 value for a setting the engine knows fails the connection — `?max_threads=not-a-number`,
 `?max_threads=-5` and `?max_memory_usage=abc` all raise `SQLException` rather than connecting
 with the setting ignored, which is what 26.7.0 did. A setting *name* the engine does not
@@ -166,16 +166,16 @@ typo, so verify with `SELECT value FROM system.settings WHERE name = '...'` if i
 
 ```java
 System.out.println(org.chdb.internal.NativeLibraryLoader.loadedRuntime());
-// chDB native runtime: platform=macos-aarch64 source=native-jar engine=26.7.2-rc.2 jniAbi=1
-//   enginePath=/var/folders/.../chdb-java/26.7.2-rc.2-macos-aarch64-a2152d4651113d10/libchdb.so
+// chDB native runtime: platform=macos-aarch64 source=native-jar engine=26.7.3 jniAbi=2
+//   enginePath=/var/folders/.../chdb-java/26.7.3-macos-aarch64-f1ae22e828a2a847/libchdb.so
 //   jniPath=...
 
 System.out.println(org.chdb.internal.ChdbNative.shimBuildInfo());
-// jni.abi.version=1
-// shim.commit=d1fa978823c8
+// jni.abi.version=2
+// shim.commit=afedcd4ebada
 // shim.compiler=AppleClang 21.0.0.21000101
-// shim.built.against.engine.header=26.7.2-rc.2
-// shim.expected.engine.version=26.7.2-rc.2
+// shim.built.against.engine.header=26.7.3
+// shim.expected.engine.version=26.7.3
 ```
 
 `shim.built.against.engine.header` is the `CHDB_VERSION` constant from the header the shim

@@ -271,7 +271,7 @@ class SignalHandlerIT extends NativeTestBase {
     @DisplayName("the disposition report covers every signal chDB touches")
     void reportCoversUpstreamsSignalList() {
         String report = ChdbNative.signalDispositions();
-        // chdb_reset_signal_handlers()'s own list, as of engine 26.7.2-rc.2.
+        // chdb_reset_signal_handlers()'s own list, as of engine 26.7.3.
         for (String signal :
                 new String[] {
                     "SIGABRT", "SIGSEGV", "SIGILL", "SIGBUS", "SIGSYS", "SIGFPE", "SIGTSTP", "SIGTRAP"

@@ -355,7 +355,7 @@ jobs:
               ldd '"$LIBS"'/libchdb_java_jni.so
 
               echo
-              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.7.2-rc.2                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
+              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.7.3                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
             '
 
       - name: A query over the memory limit returns an exception, not an OOM kill

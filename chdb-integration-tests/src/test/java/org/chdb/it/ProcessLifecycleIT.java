@@ -146,7 +146,7 @@ class ProcessLifecycleIT extends NativeTestBase {
      * exiting with a Connection open is fine, and closing the Connection while a stream is open
      * is fine, because that closes the stream. Only an open stream at exit does it.
      *
-     * <p>Still true on engine 26.7.2-rc.2, which is the baseline that added {@code
+     * <p>Still true on engine 26.7.2-rc.2, the release that added {@code
      * chdb_shutdown()}: that call declines to do anything while a connection is open, so it
      * does not replace the hook's drain. See {@link #chdbShutdownStopsTheEngine()}.
      */

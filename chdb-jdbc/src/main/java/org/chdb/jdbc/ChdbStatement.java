@@ -358,7 +358,7 @@ public class ChdbStatement implements Statement {
     private StatementShape.Route route(String sql) throws SQLException {
         int[] analysis;
         try {
-            // Null when the engine predates chdb_classify_query_n, which the v26.7.2-rc.2
+            // Null when the engine predates chdb_classify_query_n, which the v26.7.3
             // baseline does not -- but a loader pointed at another libchdb still can, in which
             // case StatementShape falls back to its keyword scan.
             analysis = ChdbNative.classifyQuery(connection.handle(), Utf8.encode(sql));

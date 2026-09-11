@@ -1,12 +1,13 @@
 // chDB C API entry points the shim resolves at runtime rather than linking.
 //
-// The baseline is chdb-core v26.7.2-rc.2 (work plan section 2.1), which is the release both
-// of these arrived in -- neither is in v26.7.0 or v26.7.1-rc.1, whose export lists and
-// headers have neither name:
+// The baseline is chdb-core v26.7.3 (work plan section 2.1). Both of these arrived in
+// v26.7.2-rc.2 -- neither is in v26.7.0 or v26.7.1-rc.1, whose export lists and headers have
+// neither name -- and both are exported by the current baseline, checked in its release
+// library rather than in an export list:
 //
-//   chdb_classify_query_n   v26.7.2-rc.2  says whether a statement has a result set,
-//                                         using the engine's own parser
-//   chdb_shutdown           v26.7.2-rc.2  joins every engine thread before host teardown
+//   chdb_classify_query_n   since v26.7.2-rc.2  says whether a statement has a result set,
+//                                               using the engine's own parser
+//   chdb_shutdown           since v26.7.2-rc.2  joins every engine thread before host teardown
 //
 // They stay here, resolved with dlsym and absent-but-fine, rather than moving to the linked
 // set now that the baseline has them. Work plan section 5.1 asks for the C API to be split
@@ -43,7 +44,7 @@ struct QueryAnalysisV1
     uint32_t query_class;
 };
 
-// chdb_query_class values, as of v26.7.2-rc.2. Kept in sync with ChdbNative.classifyQuery's
+// chdb_query_class values, as of v26.7.3. Kept in sync with ChdbNative.classifyQuery's
 // documented return contract.
 enum QueryClass : uint32_t
 {
