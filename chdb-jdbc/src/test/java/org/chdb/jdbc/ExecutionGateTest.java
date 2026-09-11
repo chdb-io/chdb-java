@@ -99,6 +99,56 @@ class ExecutionGateTest {
     }
 
     @Test
+    @DisplayName("the waiting claim does not return until the entrant has left")
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void theWaitingClaimWaits() throws Exception {
+        // What Connection.close() uses, and it cannot decline the way the hook does: a
+        // connection that reports itself closed must have released its streams, and it cannot
+        // find them all while a thread is still between "the shim registered my stream" and
+        // "my statement knows about it".
+        ExecutionGate gate = new ExecutionGate();
+        assertTrue(gate.enter());
+
+        AtomicBoolean claimReturned = new AtomicBoolean(false);
+        AtomicBoolean claimWon = new AtomicBoolean(false);
+        Thread closer =
+                new Thread(
+                        () -> {
+                            claimWon.set(gate.closeToNewEntrantsWaiting());
+                            claimReturned.set(true);
+                        },
+                        "gate-closer");
+        closer.setDaemon(true);
+        closer.start();
+
+        // Long enough to be past the spin and into the sleeping part of the wait.
+        Thread.sleep(50);
+        assertFalse(
+                claimReturned.get(),
+                "the claim returned while a statement was still starting on the connection");
+        assertEquals(1, gate.inFlight());
+
+        gate.exit();
+        closer.join(TimeUnit.SECONDS.toMillis(10));
+        assertTrue(claimReturned.get(), "the claim never returned after the entrant left");
+        assertTrue(claimWon.get(), "the claim should have been won once the gate went idle");
+        assertTrue(gate.isClosedToNewEntrants());
+        assertFalse(gate.enter(), "nothing may start on a connection that is being closed");
+    }
+
+    @Test
+    @DisplayName("the waiting claim reports a gate the hook already owns rather than hanging on it")
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void theWaitingClaimYieldsToTheHook() {
+        // The hook claims and then calls close(), which comes back through here. Waiting for a
+        // state that is terminal would hang the JVM's shutdown; and there is nothing to wait
+        // for, because a claimed gate already admits nobody.
+        ExecutionGate gate = new ExecutionGate();
+        assertTrue(gate.closeToNewEntrants());
+        assertFalse(gate.closeToNewEntrantsWaiting(), "the hook owns it; the close may proceed");
+    }
+
+    @Test
     @DisplayName("under contention, no statement ever starts after the hook has claimed")
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     void noEntrantWinsAfterTheClaim() throws Exception {

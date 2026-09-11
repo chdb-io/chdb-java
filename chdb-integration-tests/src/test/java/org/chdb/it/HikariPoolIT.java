@@ -226,6 +226,75 @@ class HikariPoolIT extends NativeTestBase {
     }
 
     @Test
+    @DisplayName("a cancel that arrives after the statement finished is silent through the pool")
+    @Timeout(value = 2, unit = TimeUnit.MINUTES)
+    void aLateCancelIsSilentThroughThePool() throws Exception {
+        // Statement.cancel() is defined to be callable from another thread, so "the statement
+        // finished a moment before you asked" is an ordinary outcome of the race rather than an
+        // error -- and the driver reported it as one: "stream handle N is not open", because the
+        // in-flight stream registration was compared by boxed identity and so was never cleared
+        // for handle ids past the Long cache.
+        //
+        // Through the pool rather than on a bare connection, because an exception on a pooled
+        // connection is not only the caller's problem: it is what the pool inspects to decide
+        // whether the connection is still fit to lend out. HikariCP 5.1.0 keeps it for this one
+        // -- it evicts on a SQLSTATE of class 08, on SQLTimeoutException and on its own error
+        // lists (ProxyConnection.checkException) -- so the identity check below is the sanity
+        // half and the assertion at the end is the property. It is asserted at the end rather
+        // than at the cancel so that a regression shows both facts.
+        try (HikariDataSource dataSource = pool(1)) {
+            org.chdb.jdbc.ChdbConnection physical;
+            SQLException cancelFailure = null;
+            try (Connection pooled = dataSource.getConnection()) {
+                physical = pooled.unwrap(org.chdb.jdbc.ChdbConnection.class);
+
+                // Past 127 handles, which is where Long.valueOf stops handing out cached boxes
+                // and the identity comparison the registration used stopped matching. Under
+                // that number this test passes with the defect in place.
+                for (int i = 0; i < 140; i++) {
+                    try (Statement statement = pooled.createStatement();
+                            ResultSet rs = statement.executeQuery("SELECT 1")) {
+                        assertTrue(rs.next());
+                    }
+                }
+
+                Statement statement = pooled.createStatement();
+                try (ResultSet rs = statement.executeQuery("SELECT number FROM numbers(5)")) {
+                    while (rs.next()) {
+                        rs.getLong(1);
+                    }
+                }
+                try {
+                    statement.cancel();
+                } catch (SQLException e) {
+                    cancelFailure = e;
+                }
+                statement.close();
+            }
+
+            try (Connection again = dataSource.getConnection()) {
+                assertTrue(
+                        again.unwrap(org.chdb.jdbc.ChdbConnection.class) == physical,
+                        "the pool threw away a working connection. A cancel with nothing to"
+                                + " cancel reported "
+                                + (cancelFailure == null
+                                        ? "success"
+                                        : cancelFailure.getSQLState() + " / "
+                                                + cancelFailure.getMessage()));
+                try (Statement statement = again.createStatement();
+                        ResultSet rs = statement.executeQuery("SELECT 1")) {
+                    assertTrue(rs.next());
+                }
+            }
+            assertEquals(
+                    null,
+                    cancelFailure,
+                    "cancel() after the statement finished must be a no-op, not a failure a pool"
+                            + " has to interpret");
+        }
+    }
+
+    @Test
     @DisplayName("a connection the shutdown hook has claimed is evicted, not handed on")
     @Timeout(value = 2, unit = TimeUnit.MINUTES)
     void aClaimedConnectionIsEvictedFromThePool() throws SQLException {

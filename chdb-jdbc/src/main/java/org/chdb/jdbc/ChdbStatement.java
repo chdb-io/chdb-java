@@ -11,7 +11,7 @@ import java.sql.Statement;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 import org.chdb.internal.ChdbNative;
 import org.chdb.internal.ChdbNativeException;
 
@@ -36,7 +36,7 @@ import org.chdb.internal.ChdbNativeException;
  * {@link #cancel()} is the one method that may be called from another thread while this one
  * is executing, and it deliberately does not take the connection's statement slot -- taking it
  * would mean waiting for the query it is meant to interrupt. It reads the in-flight stream
- * handle from an {@link AtomicReference} and asks the engine to cancel it.
+ * handle from an {@link AtomicLong} and asks the engine to cancel it.
  *
  * <p>{@link #setQueryTimeout(int)} is built on the same mechanism: a timer thread calls the
  * same cancel path, so a timeout actually stops the engine rather than only abandoning the
@@ -69,8 +69,23 @@ public class ChdbStatement implements Statement {
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
-    /** The stream currently executing, for {@link #cancel()}. Null when nothing is in flight. */
-    private final AtomicReference<Long> inFlightStream = new AtomicReference<>(null);
+    /** {@link #inFlightStream} when nothing is running. The shim's ids start at 1. */
+    private static final long NO_STREAM = 0;
+
+    /**
+     * The stream currently executing, for {@link #cancel()}. {@link #NO_STREAM} when nothing is.
+     *
+     * <p>A {@code long} rather than an {@code AtomicReference<Long>}, which is what this was:
+     * {@link #clearInFlight(long)} compares before clearing, and {@code
+     * AtomicReference.compareAndSet} compares boxes by identity. The expected value it was
+     * given had been autoboxed a second time, so it matched only while {@code Long.valueOf}
+     * returned a cached box — ids -128..127. Measured: {@code cancel()} after the result set
+     * ended is silent for the first 127 handles a process opens and then throws {@code stream
+     * handle 135 is not open} for the rest of its life, because the registration was never
+     * cleared. That is why every test passed: a test opens a handful of handles, a soak opens
+     * tens of thousands. {@link AtomicLong#compareAndSet(long, long)} compares values.
+     */
+    private final AtomicLong inFlightStream = new AtomicLong(NO_STREAM);
 
     /**
      * Counts executions of this statement, so a query timeout can tell whether the execution
@@ -95,7 +110,15 @@ public class ChdbStatement implements Statement {
      */
     private final Object timeoutLock = new Object();
 
-    private ChdbResultSet currentResultSet;
+    /**
+     * The result set this statement handed out, or null.
+     *
+     * <p>Volatile because {@link ChdbConnection#close()} reads it from whichever thread closes
+     * the connection, which need not be this one: {@code Connection.abort()} is defined as a
+     * close from another thread. It has to see the result set the executing thread assigned, or
+     * it closes the connection with that stream still live.
+     */
+    private volatile ChdbResultSet currentResultSet;
     /**
      * Armed while a streaming statement is in flight and disarmed when its result set closes
      * or is exhausted, so the clock covers the fetches rather than only the open.
@@ -219,7 +242,14 @@ public class ChdbStatement implements Statement {
             // finally below releasing the slot is the whole of the unwinding needed.
             entered = connection.executionStarted();
             if (!entered) {
-                throw ChdbExceptions.shuttingDown();
+                // Two closers shut this gate now. A Connection.close() on another thread --
+                // which JDBC allows outright through abort() -- is not the shutdown hook, and
+                // telling the caller the JVM is going down when their connection was simply
+                // closed sends them looking in the wrong place. The check above is the same
+                // one, a moment earlier; this is the case where the close landed in between.
+                throw connection.isClosed()
+                        ? ChdbExceptions.closed("Connection")
+                        : ChdbExceptions.shuttingDown();
             }
 
             StatementShape.Route route = route(sql);
@@ -271,7 +301,7 @@ public class ChdbStatement implements Statement {
      * C ABI takes a result or stream handle ({@code chdb_stream_cancel_query}, {@code
      * chdb_streaming_cancel_query}, {@code chdb_stream_cancel_insert}); there is no
      * connection-level cancel. So the open is uninterruptible on both routes, and a timer that
-     * fires inside it finds {@code inFlightStream} still null and returns having done nothing.
+     * fires inside it finds {@code inFlightStream} still unset and returns having done nothing.
      *
      * <p>Left there, the caller got the worst of both worlds: {@code executeQuery} came back
      * <em>successfully</em>, with a usable result set, long after the deadline it set. Measured
@@ -401,9 +431,11 @@ public class ChdbStatement implements Statement {
         try {
             currentResultSet = new ChdbResultSet(this, stream, maxRows);
         } catch (RuntimeException | SQLException e) {
+            // Deregistered before the handle is destroyed, not after: cancel() runs on another
+            // thread and must never be handed an id the shim is in the middle of freeing.
+            inFlightStream.compareAndSet(stream, NO_STREAM);
             // The stream is ours until a ResultSet takes ownership of it.
             safeCloseStream(stream);
-            inFlightStream.compareAndSet(stream, null);
             throw e;
         }
         return true;
@@ -494,13 +526,22 @@ public class ChdbStatement implements Statement {
      *
      * <p>Called from another thread, by design, and therefore without the connection's
      * execution lock. Safe to call when nothing is running, or after the stream has already
-     * ended: the shim treats cancelling a finished stream as a no-op.
+     * ended: nothing is registered in either case, and the shim treats cancelling a stream it
+     * no longer knows about as a no-op.
+     *
+     * <p>Both halves of that sentence had to be made true, because neither was. This method
+     * reached the shim with the id of a destroyed stream — see {@link #inFlightStream} — and
+     * the shim rejected an unknown id rather than ignoring it, so a {@code cancel()} that
+     * arrived a moment after the statement ended threw {@code SQLException}: {@code stream
+     * handle 135 is not open}. There is nothing a caller can do with that. Losing the race is
+     * the ordinary outcome of the race this method exists for, and the loser of it has, by
+     * definition, nothing left to cancel.
      */
     @Override
     public void cancel() throws SQLException {
-        Long stream = inFlightStream.get();
+        long stream = inFlightStream.get();
         cancelled.set(true);
-        if (stream == null) {
+        if (stream == NO_STREAM) {
             return;
         }
         try {
@@ -520,8 +561,15 @@ public class ChdbStatement implements Statement {
         return activeTimeout.expired();
     }
 
+    /**
+     * Deregisters a stream, so a later {@link #cancel()} has nothing to reach for.
+     *
+     * <p>Compare-and-set rather than a plain clear: the caller may be a result set from an
+     * execution this statement has already moved on from, and clearing unconditionally would
+     * disarm the cancel of the one that is running now.
+     */
     void clearInFlight(long stream) {
-        inFlightStream.compareAndSet(stream, null);
+        inFlightStream.compareAndSet(stream, NO_STREAM);
     }
 
     /** Disarms the query timeout. Called by the result set once it closes or hits its end. */

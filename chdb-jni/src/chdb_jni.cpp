@@ -1286,7 +1286,30 @@ Java_org_chdb_internal_ChdbNative_streamAdvance(JNIEnv * env, jclass, jlong conn
 
         // Owner check (work plan section 5.5): a stream may only be driven by the
         // connection it was opened on.
-        if (!handle->owner || HandleRegistry::instance().get(connection_id, kKindConnection) != handle->owner)
+        //
+        // The two ways this fails are told apart, because they are not the same finding and
+        // the caller can only act on one of them. An id that is absent from the registry is a
+        // connection that has been closed -- which the caller may not have done itself, since
+        // Connection.abort() is defined to be called from another thread and a pool being shut
+        // down calls it on connections it has lent out. Reporting that as "does not belong"
+        // described a mix-up
+        // of two live connections that had not happened, in a sentence about handle numbers
+        // the caller has never seen. A live id that is a different connection is the real
+        // ownership violation, and only then is the ownership message the answer.
+        if (!handle->owner)
+        {
+            throwNative(env, "the stream has no connection to read from; it was closed");
+            return -1;
+        }
+        auto connection = HandleRegistry::instance().get(connection_id, kKindConnection);
+        if (!connection)
+        {
+            throwNative(env, "the connection this stream was opened on (handle "
+                             + std::to_string(connection_id) + ") has been closed, so the rest of "
+                             "the result cannot be read");
+            return -1;
+        }
+        if (connection != handle->owner)
         {
             throwNative(env, "stream handle " + std::to_string(stream_id)
                              + " does not belong to connection handle " + std::to_string(connection_id));
@@ -1499,12 +1522,27 @@ Java_org_chdb_internal_ChdbNative_streamCancel(JNIEnv * env, jclass, jlong conne
 {
     try
     {
-        auto handle = requireStream(env, stream_id);
-        if (!handle)
+        // A cancel is a request to stop something, so anything already stopped is success, not
+        // an error -- including a stream or a connection this registry no longer has. That is
+        // sound here and nowhere else because ids are never reused within a process (see
+        // HandleRegistry and "ids are not reused" in the shim's tests): an absent id can only
+        // mean "that one is gone", never "that one is now somebody else's", so ignoring it
+        // cannot cancel the wrong query. Rejecting it instead is what a caller cannot use --
+        // Statement.cancel() may be called from another thread, so "it finished a moment
+        // before you asked" is an ordinary outcome of the race the method exists for, and
+        // reporting it as a failure is what got a pooled connection evicted mid-query.
+        auto base = HandleRegistry::instance().get(stream_id, kKindStream);
+        if (!base)
             return;
+        auto handle = std::static_pointer_cast<StreamHandle>(base);
+
         auto connection = HandleRegistry::instance().get(connection_id, kKindConnection);
-        if (!connection || connection != handle->owner)
+        if (!connection)
+            return;  // The connection is closed, which closed the query too.
+        if (connection != handle->owner)
         {
+            // A live connection that is not this stream's: a genuine ownership violation, and
+            // the only case the message is about.
             throwNative(env, "stream handle " + std::to_string(stream_id)
                              + " does not belong to connection handle " + std::to_string(connection_id));
             return;
