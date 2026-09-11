@@ -18,8 +18,8 @@ The baseline has since moved twice. First to **v26.7.2-rc.2** (issue #8, for
 - **§10 and §11 are new**, from measuring which statements the streaming Arrow entry
   point accepts, and what a query timeout can actually interrupt.
 
-Then to **v26.7.3**, the first stable release the binding has been pinned to, which closed the
-oldest entry here:
+Then to **v26.7.3**, the first stable release pinned since the RC baseline — v26.7.0 was
+stable too — which closed the oldest entry here:
 
 - **§1 and §1a are fixed upstream.** chdb-core #224 stopped chDB resetting handlers it did not
   install, which closes both the original complaint and the concurrency window reported as
@@ -169,6 +169,23 @@ is the standalone reproducer; its `measure` count reaching zero is how the upstr
 verified, and re-running it on a new baseline is how a regression would be caught.
 
 ---
+
+### What #224 left behind, and why it does not reach this driver
+
+`chdb_reset_signal_handlers()` now walks `HandledSignals::handled_signals` rather than a fixed
+list of eight deadly signals, so it only touches signals chDB installed a handler for, and it
+returns before touching anything when chDB installed none. What that record holds is signal
+*numbers*, not the disposition each signal had before chDB replaced it — so the reset hands back
+`SIG_DFL` rather than the host's previous handler, and it does not check whether the handler
+currently installed is still chDB's. A host that lets chDB install its handlers and then installs
+its own over one of them gets `SIG_DFL` back, not what it had.
+
+That is narrower than the finding above and it cannot reach this driver: the loader calls
+`chdb_set_signal_handlers_enabled(0)` before the first connect, so `handled_signals` is empty and
+the loop walks nothing. Measured on v26.7.3 — `SignalHandlerIT` reports the reset set as `[]`, and
+`scripts/run-signal-window-test.sh measure` reports zero exposures over ~334,000 samples per run.
+Recorded because it is what remains of the gap between the contract `chdb.h` documents and what
+the code can deliver, not because anything here depends on it.
 
 ## 2. `CHDB_VERSION` is stale in the source tree, correct in the release — the bug was ours
 
