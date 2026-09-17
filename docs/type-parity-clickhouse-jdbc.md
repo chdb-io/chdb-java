@@ -166,22 +166,74 @@ Not everything that differs is ours to fix.
 
 ---
 
+## Why we are on the Arrow path at all, and what it would take to leave it
+
+**Not because chdb-core hides the types.** Two separate facts, both checked:
+
+- There is **no structured column-metadata API**. Of 65 exported functions, none returns a
+  column name or type; `chdb_result_*` gives the buffer, its length, timing, row and byte
+  counts, and the error string. So there is nothing to call if you want types as data.
+- But **the types are in the wire format, and the ABI lets you pick the format.**
+  `chdb_query_n(conn, sql, format)` with `Native`, `RowBinaryWithNamesAndTypes` or
+  `TabSeparatedWithNamesAndTypes` returns a buffer whose header carries the exact ClickHouse
+  types, Enum members included:
+
+  ```
+  e  ip    dt        big     fs              n
+  Enum8('a' = 6, 'b' = 7)  IPv4  DateTime  Int128  FixedString(6)  Nullable(Int32)
+  ```
+
+  And streaming those formats exists too — `chdb_stream_query(conn, query, format)` with
+  `chdb_stream_fetch_result` (`chdb.h:438`, `chdb.h:572`).
+
+So clickhouse-jdbc has no privileged access. It reads the native protocol because that is the
+only thing a network client *can* read, and that protocol happens to carry a header. We had a
+choice a network client does not have, and took it.
+
+**Why Arrow was the choice.** The work plan records it in §3.3: prefer the Arrow streaming C
+API for "typed, bounded batches", with the JNI layer owning the stream, schema and batch and
+the `ResultSet` holding only an opaque handle. The engineering behind that is sound:
+
+- **One JNI crossing per column per batch** instead of one per cell. Measured: 1.28 ns/cell
+  through the current direct-buffer path against 4.29 ns/cell for a per-cell getter.
+- **A defined ownership contract.** The Arrow C Data Interface specifies who releases what and
+  when, and the handle-lifetime design is built on it.
+- **No decoder to write.** `RowBinary` would need a hand-written per-type decoder in Java.
+  That decoder is a large part of what `clickhouse-data` is in clickhouse-java — and a large
+  part of where their type bugs have been.
+
+**What was mispriced** is the word "typed". Arrow's types are not ClickHouse's types, and the
+projection between them is lossy in the engine's writer. §3.3 required benchmarking three
+*batch-access* mechanisms before settling on one; it never asked whether the format preserved
+the type system. That is the gap, and it is a decision-record gap rather than an implementation
+mistake.
+
 ## What would fix S1
 
-The information is missing from the stream, so the fix has to put it there or fetch it
-separately.
+Three options, in increasing order of how much they cost someone else:
 
-1. **Have chDB emit the ClickHouse type name in the Arrow field metadata.** The writer already
-   attaches `PARQUET:field_id`; adding the declared type alongside it is a small, contained
-   change in `CHColumnToArrowColumn.cpp`, and it fixes every row of the table above at once.
-   This is the change to propose upstream, and it is the only one that recovers `Enum` labels.
-2. **Or expose the result header through the C ABI.** `chdb_result` carries metrics but not
-   column types. A `chdb_result_column_type(result, i)` would serve the driver without
-   touching the Arrow path.
-3. **Settings help only at the margin.** `chdb_arrow_options` today has
-   `low_cardinality_as_dictionary`, `string_as_string` and `unsupported_as_binary`. There is no
-   knob for `output_fixed_string_as_fixed_byte_array`, which is what makes `FixedString` arrive
-   as binary — adding one would fix that single row without any of the others.
+1. **Read the header separately and use it to label the Arrow columns.** Both of these return
+   the exact types today, with no upstream change:
 
-S2 is ours and needs no upstream anything: the `java.sql` return types, the unchecked
-exceptions, precision and scale, and `getLong` saturation are all driver-side.
+   ```sql
+   DESCRIBE (SELECT ...)         -- name/type rows
+   SELECT ... LIMIT 0            -- header only, in *WithNamesAndTypes
+   ```
+
+   Keeps the Arrow fast path and the existing lifetime design. Costs one extra analyze per
+   statement, which is not free for short queries, and needs care where the shape of a
+   statement makes `DESCRIBE` inapplicable — `INSERT ... SELECT`, for one. This is the option
+   that is available now and it is the right first move.
+
+2. **Switch the data path to `Native` or `RowBinaryWithNamesAndTypes` streaming.** Full
+   fidelity from one execution and no second analyze, at the cost of a per-type decoder to
+   write and maintain and the loss of the measured columnar advantage. It is the design
+   clickhouse-jdbc has, along with the maintenance burden that comes with it.
+
+3. **Have the engine carry the type in-band with the Arrow data** — the ClickHouse type name in
+   each Arrow field's metadata, where `PARQUET:field_id` already goes, or a
+   `chdb_result_column_type(result, i)` on the ABI. One execution, no extra analyze, fast path
+   intact. A small, contained upstream change, and the right end state.
+
+S2 needs none of this. The `java.sql` return types, the unchecked exceptions, precision and
+scale, and `getLong` saturating are all driver-side today.
