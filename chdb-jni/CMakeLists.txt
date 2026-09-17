@@ -125,7 +125,6 @@ endif()
 
 add_library(chdb_java_jni SHARED
   src/chdb_jni.cpp
-  src/chdb_jni_arrow.cpp
   src/chdb_jni_signals.cpp
   src/chdb_optional_api.cpp)
 
@@ -177,8 +176,7 @@ if(CHDB_JNI_BUILD_TESTS)
   # entire point -- its allocator is what makes a preloaded ASan crash.
   add_executable(chdb_jni_test
     test/chdb_jni_test.cpp
-    src/chdb_jni_arrow.cpp
-    src/chdb_jni_signals.cpp)
+      src/chdb_jni_signals.cpp)
   target_include_directories(chdb_jni_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_compile_options(chdb_jni_test PRIVATE -Wall -Wextra -Wpedantic -g)
   if(CHDB_JNI_SANITIZE)

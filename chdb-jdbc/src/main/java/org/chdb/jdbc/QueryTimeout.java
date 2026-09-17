@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * still producing. So the cancel this fires during an open reaches nothing. How long that
  * window lasts depends on the statement, not on the driver -- milliseconds for a SELECT that
  * emits as it scans, the whole query for a full aggregate or an {@code ORDER BY} without a
- * {@code LIMIT}, and the whole statement for anything on the materialized Arrow route. {@code
+ * {@code LIMIT}, and the whole statement for anything on the materialized route. {@code
  * ChdbStatement} therefore also treats an expired timeout as a deadline once the open returns:
  * the work is already spent, but the caller is told, rather than handed a result set that
  * arrived after the time it allowed.

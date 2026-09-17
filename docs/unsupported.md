@@ -203,6 +203,17 @@ honouring them is not possible:
 | `setClientInfo(...)` | stored and returned; not sent anywhere. |
 | `setCatalog(name)` | stored and returned. ClickHouse has one namespace level and it is mapped to JDBC's *schema*, so use `setSchema`. |
 
+## Accepted and ignored since the move off Arrow
+
+`lowCardinalityAsDictionary`, `unsupportedAsBinary` and `stringAsString` configured the Arrow
+export the driver used to read results through. It reads `RowBinaryWithNamesAndTypes` now, where
+the engine names every type as it declared it, so there is nothing for them to configure.
+
+They are still accepted, and still swallowed rather than forwarded to the engine. A property the
+driver stopped recognising would be passed on as `--<key>=<value>` and fail the connection on an
+unknown setting, which is a worse answer than "accepted and ignored" for a URL somebody already
+has.
+
 ## Constraints, not refusals
 
 These are supported, with a rule you have to know:
@@ -239,6 +250,19 @@ and the failure that produced named handle numbers rather than the close: `strea
 does not belong to connection handle 18576`, once in 11 860 soak iterations. A read whose
 connection is closed underneath it now says so, with SQLSTATE `08003`; a read whose result set
 was closed underneath it says that, with `HY010`.
+
+**A column this driver cannot decode fails the row, not just the column.** `AggregateFunction`
+states are the case that remains: an opaque per-function blob with no documented layout. The
+error arrives from `next()` rather than from the accessor, and it has to — a row-wise format
+gives no way to skip a value whose length cannot be worked out, so the rest of the row is
+unreachable too. Cast it in the query; `toString(col)` always works.
+
+**The `Calendar` overloads of `getDate`, `getTime` and `getTimestamp` do not shift the value.**
+Those overloads exist to interpret a value whose zone is unknown. A ClickHouse `DateTime` either
+declares its zone or takes the engine's session zone, so the wall clock a caller is given is
+already the column's own; shifting it by the caller's calendar would move a moment that was
+never ambiguous. The calendar is accepted and ignored. `getObject(column, Instant.class)` gives
+the instant when that is what is wanted.
 
 **Stop your query threads before the JVM exits.** The driver installs a shutdown hook that
 closes connections the application forgot, which covers a leaked result set: without it, a JVM

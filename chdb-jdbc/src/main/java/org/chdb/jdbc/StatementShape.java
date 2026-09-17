@@ -12,12 +12,12 @@ import java.util.Set;
  * <p>The driver has to know before it executes, and the engine offers three doors, not two:
  *
  * <ul>
- *   <li>{@code chdb_stream_query_arrow_n} -- a result set delivered one Arrow batch at a
+ *   <li>{@code chdb_stream_query} -- a result set delivered one chunk at a
  *       time. Accepts a SELECT pipeline and nothing else: {@code
  *       ClientBase::processTextAsSingleQuery} admits a statement only if it parses as an
  *       {@code ASTSelectWithUnionQuery} and otherwise raises {@code Streaming query is not
  *       supported for query: ...}.
- *   <li>{@code chdb_query_arrow_n} -- the whole result set through the same Arrow C Data
+ *   <li>{@code chdb_query} -- the whole result set in one buffer, in the same
  *       Interface, materialized. Accepts everything the streaming door does plus every
  *       non-SELECT read: {@code SHOW}, {@code DESCRIBE}, {@code EXPLAIN}, {@code EXISTS},
  *       {@code CHECK}.
@@ -32,7 +32,7 @@ import java.util.Set;
  *       pinned v26.7.3 baseline and asked in practice. Authoritative about <em>whether</em> there is a
  *       result set, but silent on <em>which door</em> delivers it: {@code
  *       CHDB_QUERY_READ_ONLY} covers a {@code SELECT} and a {@code SHOW} alike, so it cannot
- *       tell the two Arrow entry points apart. See {@link #route(int[], String)}.
+ *       tell the two entry points apart. See {@link #route(int[], String)}.
  *   <li>the leading-keyword scan below, which answers the half the classifier does not, and
  *       answers both halves for an engine that does not export it. Nothing older than the
  *       baseline is supported, but the loader can be pointed at another {@code libchdb} of the
@@ -72,7 +72,7 @@ import java.util.Set;
  *
  * <h2>Why the keyword scan is not a stopgap</h2>
  * The classifier being present does not make the keyword scan temporary, because it does not
- * answer the question the two Arrow doors need answered. Measured on v26.7.2-rc.2, {@code
+ * answer the question the two doors need answered. Measured on v26.7.2-rc.2, {@code
  * chdb_classify_query_n} returns {@code CHDB_QUERY_READ_ONLY} for all of these, with no field
  * distinguishing them:
  *
@@ -108,7 +108,7 @@ import java.util.Set;
  *       silently.
  *   <li>The materialized door <em>executes</em> what it is given before it checks that there
  *       is a result header to export. Handed a write it reports {@code Missing result header
- *       for Arrow output} <em>and leaves the row in the table</em> (findings §10). So guessing
+ *       for streaming output} <em>and leaves the row in the table</em> (findings §10). So guessing
  *       "materialize" for a statement the driver could not read is the one guess that can
  *       change data; guessing "stream" cannot, because the streaming door refuses anything
  *       that is not a SELECT pipeline before executing it.
@@ -124,7 +124,7 @@ final class StatementShape {
     enum Route {
         /** {@code chdb_query_n}: no result set to deliver. */
         NO_RESULT_SET,
-        /** {@code chdb_stream_query_arrow_n}: a result set, one batch at a time. */
+        /** {@code chdb_stream_query}: a result set, one chunk at a time. */
         STREAMED_RESULT_SET,
         /** {@code chdb_query_arrow_n}: a result set the engine will not stream. */
         MATERIALIZED_RESULT_SET,

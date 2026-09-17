@@ -60,36 +60,29 @@ public final class ChdbDriver implements Driver {
     public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) throws SQLException {
         List<DriverPropertyInfo> properties = new ArrayList<>();
 
-        DriverPropertyInfo lowCardinality =
-                new DriverPropertyInfo(
-                        ChdbUrl.PROP_LOW_CARDINALITY_AS_DICTIONARY,
-                        valueOf(info, ChdbUrl.PROP_LOW_CARDINALITY_AS_DICTIONARY, "false"));
-        lowCardinality.description =
-                "Emit LowCardinality columns as Arrow dictionary arrays instead of materializing"
-                        + " them to their base type. V1 cannot read dictionary-encoded columns, so"
-                        + " turning this on makes them unreadable; it exists for diagnosis.";
-        lowCardinality.choices = new String[] {"true", "false"};
-        properties.add(lowCardinality);
-
-        DriverPropertyInfo unsupportedAsBinary =
-                new DriverPropertyInfo(
-                        ChdbUrl.PROP_UNSUPPORTED_AS_BINARY,
-                        valueOf(info, ChdbUrl.PROP_UNSUPPORTED_AS_BINARY, "false"));
-        unsupportedAsBinary.description =
-                "Degrade types with no faithful Arrow mapping (JSON, Dynamic, AggregateFunction) to"
-                        + " binary instead of failing the query. The bytes are an engine-internal"
-                        + " representation, so read them with getBytes() only.";
-        unsupportedAsBinary.choices = new String[] {"true", "false"};
-        properties.add(unsupportedAsBinary);
-
-        DriverPropertyInfo stringAsString =
-                new DriverPropertyInfo(
-                        ChdbUrl.PROP_STRING_AS_STRING, valueOf(info, ChdbUrl.PROP_STRING_AS_STRING, "true"));
-        stringAsString.description =
-                "Emit String columns as Arrow utf8 (true) or Arrow binary (false). Leave it on"
-                        + " unless a column holds bytes that are not valid UTF-8.";
-        stringAsString.choices = new String[] {"true", "false"};
-        properties.add(stringAsString);
+        // These three configured the Arrow export the driver used to read results through.
+        // It now reads RowBinaryWithNamesAndTypes, where the engine names every type as it
+        // declared it, so none of them does anything.
+        //
+        // Reported rather than dropped, and still swallowed rather than forwarded: a property
+        // the driver stops recognising would be passed to the engine as --<key>=<value> and
+        // fail the connection on an unknown setting, which is a worse answer than "accepted and
+        // ignored" for a URL somebody already has. docs/unsupported.md lists them.
+        for (String inert :
+                new String[] {
+                    ChdbUrl.PROP_LOW_CARDINALITY_AS_DICTIONARY,
+                    ChdbUrl.PROP_UNSUPPORTED_AS_BINARY,
+                    ChdbUrl.PROP_STRING_AS_STRING
+                }) {
+            DriverPropertyInfo property =
+                    new DriverPropertyInfo(inert, valueOf(info, inert, ""));
+            property.description =
+                    "Accepted and ignored. It configured the Arrow export the driver read results"
+                            + " through before it moved to RowBinaryWithNamesAndTypes, where the"
+                            + " engine declares every type and there is nothing to configure.";
+            property.choices = new String[] {"true", "false"};
+            properties.add(property);
+        }
 
         // Every other property is forwarded to the engine as --<key>=<value>, which is how a
         // ClickHouse setting is passed. There are hundreds and they vary by engine version, so
