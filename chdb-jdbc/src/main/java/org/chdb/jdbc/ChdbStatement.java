@@ -14,6 +14,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import org.chdb.internal.ChdbNative;
 import org.chdb.internal.ChdbNativeException;
+import org.chdb.internal.RowBinaryDecoder;
+import org.chdb.internal.RowBinaryCursor;
+import org.chdb.internal.NativeRowBinaryChunks;
+import org.chdb.internal.MaterialisedRowBinaryChunks;
 
 /**
  * Executes one statement at a time on a {@link ChdbConnection}.
@@ -383,62 +387,119 @@ public class ChdbStatement implements Statement {
         boolean stringAsString = url.booleanProperty(ChdbUrl.PROP_STRING_AS_STRING, true);
 
         boolean materialize = route == StatementShape.Route.MATERIALIZED_RESULT_SET;
-        if (materialize && !parameterNames.isEmpty()) {
-            // The engine exports chdb_query_arrow_n but no _with_params_n variant of it, so
-            // there is no entry point that both accepts this statement and binds parameters.
-            // Reported rather than worked around: interpolating the values into the SQL is
-            // the injection this driver's server-side binding exists to avoid, and running
-            // the statement with the bindings dropped would answer the wrong question.
-            throw new SQLFeatureNotSupportedException(
-                    "Server-side parameters are not supported for "
-                            + describeStatement(sql)
-                            + ", because the engine has no parameter-binding form of the Arrow"
-                            + " entry point that accepts it (chdb_query_arrow_with_params_n is"
-                            + " not exported by engine "
-                            + ChdbNative.engineVersion()
-                            + "). Ask the system tables instead -- system.tables,"
-                            + " system.columns, system.databases and system.settings answer the"
-                            + " same questions with a SELECT, which does take parameters. Do not"
-                            + " paste the value into the SQL of a plain Statement: a LIKE"
-                            + " pattern that closes the literal can inject clauses, up to and"
-                            + " including INTO OUTFILE. See docs/unsupported.md.",
-                    "0A000");
-        }
 
+        // Both routes speak RowBinaryWithNamesAndTypes, so the types arrive as the engine
+        // declared them: an Enum with its labels, an IPv6 that is not indistinguishable from a
+        // UUID, a DateTime that is a timestamp and not a UInt32. The Arrow path that came
+        // before typed a column off the Arrow schema, which is the engine's own lossy
+        // projection of its type system.
+        //
+        // The JSON-as-string setting the decoder depends on is a session setting, applied at
+        // connect: see ChdbUrl.toConnectArguments. It is not appended to the SQL, because a
+        // statement that already ends in a clause or in a {name:Type} placeholder would become
+        // a syntax error.
+
+        // Resolved before anything is opened. It runs SELECT timezone() on this connection the
+        // first time, and the engine runs one statement per connection at a time -- so asking
+        // for it after the stream exists destroys the stream, and every fetch then fails with
+        // "No active streaming query". Found the hard way.
+        RowBinaryDecoder.Options options = decoderOptions();
+
+        RowBinaryCursor cursor;
         long stream;
         try {
-            stream =
-                    materialize
-                            ? ChdbNative.streamOpenMaterialized(
-                                    connection.handle(),
-                                    Utf8.encode(sql),
-                                    lowCardinalityAsDictionary,
-                                    unsupportedAsBinary,
-                                    stringAsString)
-                            : ChdbNative.streamOpen(
-                                    connection.handle(),
-                                    Utf8.encode(sql),
-                                    Utf8.encodeAll(parameterNames),
-                                    Utf8.encodeAll(parameterValues),
-                                    lowCardinalityAsDictionary,
-                                    unsupportedAsBinary,
-                                    stringAsString);
+            if (materialize) {
+                // The engine refuses to stream SHOW, DESCRIBE, EXPLAIN, EXISTS and CHECK, so
+                // they run to completion and arrive as a single chunk. Parameters work here,
+                // unlike on the Arrow route, which had no parameterised materialising entry
+                // point and had to refuse the combination outright.
+                MaterialisedRowBinaryChunks chunks =
+                        MaterialisedRowBinaryChunks.run(
+                                connection.handle(),
+                                Utf8.encode(sql),
+                                Utf8.encodeAll(parameterNames),
+                                Utf8.encodeAll(parameterValues));
+                stream = NO_STREAM;
+                cursor = new RowBinaryCursor(chunks, options);
+            } else {
+                NativeRowBinaryChunks chunks =
+                        NativeRowBinaryChunks.open(
+                                connection.handle(),
+                                Utf8.encode(sql),
+                                Utf8.encodeAll(parameterNames),
+                                Utf8.encodeAll(parameterValues));
+                stream = chunks.streamHandle();
+                // Registered before the cursor reads the header, because reading it talks to
+                // the engine and a cancel() from another thread has to be able to find it.
+                inFlightStream.set(stream);
+                try {
+                    cursor = new RowBinaryCursor(chunks, options);
+                } catch (RuntimeException e) {
+                    inFlightStream.compareAndSet(stream, NO_STREAM);
+                    chunks.close();
+                    throw e;
+                }
+            }
         } catch (ChdbNativeException e) {
-            throw ChdbExceptions.wrap("Query failed", e);
+            throw parameterAware(e, parameterNames);
+        } catch (IllegalStateException e) {
+            throw new SQLDataException(
+                    "The result stream could not be read: " + e.getMessage(), "22000", 0, e);
         }
 
-        inFlightStream.set(stream);
-        try {
-            currentResultSet = new ChdbResultSet(this, stream, maxRows);
-        } catch (RuntimeException | SQLException e) {
-            // Deregistered before the handle is destroyed, not after: cancel() runs on another
-            // thread and must never be handed an id the shim is in the middle of freeing.
-            inFlightStream.compareAndSet(stream, NO_STREAM);
-            // The stream is ours until a ResultSet takes ownership of it.
-            safeCloseStream(stream);
-            throw e;
-        }
+        currentResultSet = new ChdbResultSet(this, stream, cursor, maxRows);
         return true;
+    }
+
+    /**
+     * Explains a syntax error that is really "this statement cannot take a parameter there".
+     *
+     * <p>ClickHouse substitutes {@code {name:Type}} while parsing, and not every grammar admits
+     * it. Measured for the shapes this driver routes: {@code SELECT}, {@code EXPLAIN SELECT},
+     * {@code DESCRIBE} and {@code EXISTS} accept parameters; {@code SHOW ... LIKE} does not,
+     * because its grammar wants a string literal there. The engine's own message for that says
+     * "Expected one of: string literal", which describes the parser's state rather than the
+     * caller's mistake.
+     *
+     * <p>Detected from the error rather than from a table of which statement shapes the engine
+     * admits, because such a table would go stale against the next engine with nothing failing
+     * to say so.
+     *
+     * <p>What this never does is interpolate the value into the SQL. That is the injection the
+     * server-side binding exists to avoid: a LIKE pattern that closes the literal can append
+     * clauses, up to and including INTO OUTFILE.
+     */
+    private SQLException parameterAware(ChdbNativeException cause, List<String> parameterNames) {
+        String message = String.valueOf(cause.getMessage());
+        if (parameterNames.isEmpty() || !message.contains("Syntax error") || !message.contains("{")) {
+            return ChdbExceptions.wrap("Query failed", cause);
+        }
+        return new SQLFeatureNotSupportedException(
+                "Server-side parameters are not supported in this statement: the engine"
+                        + " substitutes {name:Type} while parsing, and this statement's grammar"
+                        + " expects a literal where the parameter is. SHOW ... LIKE is the case"
+                        + " that hits this; DESCRIBE, EXISTS, EXPLAIN and SELECT all accept"
+                        + " parameters. Ask the system tables instead -- system.tables,"
+                        + " system.columns, system.databases and system.settings answer the same"
+                        + " questions with a SELECT, which does take parameters. Do not paste the"
+                        + " value into the SQL of a plain Statement: a LIKE pattern that closes"
+                        + " the literal can inject clauses, up to and including INTO OUTFILE."
+                        + " The engine said: "
+                        + message,
+                "0A000",
+                0,
+                cause);
+    }
+
+    /**
+     * What the engine was asked for, handed to the decoder so it does not have to guess.
+     *
+     * <p>{@code jsonAsString} is true because {@link #openStream} appends the setting that
+     * makes it true. Keeping the two together in one place is the point: the decoder refuses
+     * JSON unless told, and the only thing entitled to tell it is the code that asked.
+     */
+    private RowBinaryDecoder.Options decoderOptions() {
+        return new RowBinaryDecoder.Options(true, connection.sessionTimeZone());
     }
 
     private void runMaterialized(String sql, List<String> parameterNames, List<String> parameterValues)
@@ -545,7 +606,7 @@ public class ChdbStatement implements Statement {
             return;
         }
         try {
-            ChdbNative.streamCancel(connection.handle(), stream);
+            ChdbNative.rowBinaryCancel(connection.handle(), stream);
         } catch (ChdbNativeException e) {
             throw ChdbExceptions.wrap("Failed to cancel the statement", e);
         }
@@ -649,7 +710,7 @@ public class ChdbStatement implements Statement {
 
     private void safeCloseStream(long stream) {
         try {
-            ChdbNative.streamClose(stream);
+            ChdbNative.rowBinaryClose(stream);
         } catch (ChdbNativeException ignored) {
             // Already reporting a more useful failure to the caller.
         }

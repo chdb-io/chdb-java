@@ -4,50 +4,59 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLDataException;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
-import org.chdb.internal.ArrowFieldType;
-import org.chdb.internal.ArrowSchemaView;
+import org.chdb.internal.ClickHouseType;
+import org.chdb.internal.JdbcTypeMapping;
+import org.chdb.internal.RowBinaryHeader;
 
 /**
- * Column metadata for a {@link ChdbResultSet}, derived from the Arrow schema.
+ * Column metadata for a {@link ChdbResultSet}, from the types the engine declared.
  *
- * <p>Available before the first {@code next()}, because the shim fetches the first batch when
- * it opens the stream and that is what produces the schema.
+ * <p>Available before the first {@code next()}, because a
+ * {@code RowBinaryWithNamesAndTypes} stream opens with the names and types and the cursor reads
+ * them when it is constructed.
  *
- * <p>Catalog, schema and table names come back empty. An Arrow schema carries a column's name
- * and type but not its origin, and a result column often has no single origin anyway -- it may
- * be an expression, a join output or a table function's product. Returning an empty string,
- * which JDBC defines as "not applicable", is accurate; guessing a table name would not be.
+ * <p>The types are the engine's own rather than Arrow's projection of them, which is the whole
+ * reason for the change underneath this class: precision and scale were zero for everything
+ * temporal, an array's type name was the string "Unsupported(arrow=+l)", and Nullable and
+ * LowCardinality had been erased. {@link JdbcTypeMapping} holds the answers, captured from
+ * clickhouse-jdbc so that a column's reported type does not change for an application moving
+ * between the two drivers.
+ *
+ * <p>Catalog, schema and table names come back empty. The stream carries a column's name and
+ * type but not its origin, and a result column often has no single origin anyway -- it may be an
+ * expression, a join output or a table function's product. Returning an empty string, which
+ * JDBC defines as "not applicable", is accurate; guessing a table name would not be.
  */
 final class ChdbResultSetMetaData implements ResultSetMetaData {
 
-    private final ArrowSchemaView schema;
+    private final RowBinaryHeader header;
 
-    ChdbResultSetMetaData(ArrowSchemaView schema) {
-        this.schema = schema;
+    ChdbResultSetMetaData(RowBinaryHeader header) {
+        this.header = header;
     }
 
-    private ArrowFieldType type(int column) throws SQLException {
-        if (column < 1 || column > schema.columnCount()) {
+    private ClickHouseType type(int column) throws SQLException {
+        if (column < 1 || column > header.columnCount()) {
             throw new SQLDataException(
                     "Column index "
                             + column
                             + " is out of range; this result set has "
-                            + schema.columnCount()
+                            + header.columnCount()
                             + " column(s), indexed from 1.",
                     "22023");
         }
-        return schema.typeRef(column - 1);
+        return header.types().get(column - 1);
     }
 
     @Override
     public int getColumnCount() {
-        return schema.columnCount();
+        return header.columnCount();
     }
 
     @Override
     public String getColumnName(int column) throws SQLException {
         type(column);
-        return schema.columnName(column - 1);
+        return header.names().get(column - 1);
     }
 
     @Override
@@ -58,44 +67,44 @@ final class ChdbResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public int getColumnType(int column) throws SQLException {
-        return type(column).jdbcType();
+        return JdbcTypeMapping.jdbcType(type(column));
     }
 
     @Override
     public String getColumnTypeName(int column) throws SQLException {
-        return type(column).typeName();
+        return type(column).name();
     }
 
     @Override
     public String getColumnClassName(int column) throws SQLException {
-        return type(column).javaClass().getName();
+        return JdbcTypeMapping.className(type(column));
     }
 
     @Override
     public int getColumnDisplaySize(int column) throws SQLException {
-        return type(column).displaySize();
+        return JdbcTypeMapping.displaySize(type(column));
     }
 
     @Override
     public int getPrecision(int column) throws SQLException {
-        return type(column).jdbcPrecision();
+        return JdbcTypeMapping.precision(type(column));
     }
 
     @Override
     public int getScale(int column) throws SQLException {
-        return type(column).scale();
+        return JdbcTypeMapping.scale(type(column));
     }
 
     @Override
     public boolean isSigned(int column) throws SQLException {
-        return type(column).signed();
+        return JdbcTypeMapping.isSigned(type(column));
     }
 
     @Override
     public int isNullable(int column) throws SQLException {
         // The Arrow nullable flag is authoritative: the engine sets it from the ClickHouse
         // type, so Nullable(T) and T are distinguishable rather than guessed at.
-        return type(column).nullable() ? columnNullable : columnNoNulls;
+        return type(column).isNullable() ? columnNullable : columnNoNulls;
     }
 
     @Override
@@ -106,23 +115,17 @@ final class ChdbResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public boolean isCaseSensitive(int column) throws SQLException {
-        ArrowFieldType columnType = type(column);
         // ClickHouse String comparison is byte-wise, so text columns are case-sensitive;
         // numbers and temporals have no case to be sensitive to.
-        switch (columnType.kind()) {
-            case UTF8:
-            case LARGE_UTF8:
-            case FIXED_SIZE_BINARY:
-                return true;
-            default:
-                return false;
-        }
+        return JdbcTypeMapping.isCaseSensitive(type(column));
     }
 
     @Override
     public boolean isSearchable(int column) throws SQLException {
-        // Every supported scalar type can appear in a WHERE clause.
-        return type(column).supported();
+        // Anything the engine can name can appear in a WHERE clause; whether this driver can
+        // decode it is a separate question and not what searchable means.
+        type(column);
+        return true;
     }
 
     @Override

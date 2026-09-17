@@ -27,6 +27,12 @@ abstract class NativeTestBase {
 
     @AfterEach
     void assertNoLeakedHandles() {
+        // Both kinds. KIND_STREAM is the Arrow one and KIND_ROW_BINARY the one the driver now
+        // opens; asserting only the former would have been a check that cannot fail, which is
+        // worse than no check because it reads like one.
+        assertEquals(
+                0, ChdbNative.openHandleCount(ChdbNative.KIND_ROW_BINARY),
+                "leaked row-binary stream handles");
         assertEquals(0, ChdbNative.openHandleCount(ChdbNative.KIND_STREAM), "leaked stream handles");
         assertEquals(0, ChdbNative.openHandleCount(ChdbNative.KIND_RESULT), "leaked result handles");
         assertEquals(

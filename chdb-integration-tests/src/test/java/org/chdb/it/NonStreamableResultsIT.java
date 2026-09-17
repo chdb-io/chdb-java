@@ -731,8 +731,8 @@ class NonStreamableResultsIT extends NativeTestBase {
             }
             assertEquals(
                     0,
-                    ChdbNative.openHandleCount(ChdbNative.KIND_STREAM),
-                    "a failed materialized open leaked a stream handle");
+                    ChdbNative.openHandleCount(ChdbNative.KIND_ROW_BINARY),
+                    "a failed open leaked a row-binary stream handle");
 
             long baseline = residentKb();
             for (int i = 0; i < 1000; i++) {
@@ -742,8 +742,8 @@ class NonStreamableResultsIT extends NativeTestBase {
 
             assertEquals(
                     0,
-                    ChdbNative.openHandleCount(ChdbNative.KIND_STREAM),
-                    "a failed materialized open leaked a stream handle");
+                    ChdbNative.openHandleCount(ChdbNative.KIND_ROW_BINARY),
+                    "a failed open leaked a row-binary stream handle");
             assertEquals(
                     0,
                     ChdbNative.openHandleCount(ChdbNative.KIND_RESULT),
@@ -765,6 +765,19 @@ class NonStreamableResultsIT extends NativeTestBase {
     }
 
     /** Resident set size in KB, from ps. Coarse, but enough to tell a leak from noise. */
+    /**
+     * Bytes the collector cannot reclaim, which is what "streamed rather than materialized"
+     * means. Collected a few times first, because one System.gc() is a suggestion.
+     */
+    private static long liveHeapKb() throws InterruptedException {
+        Runtime runtime = Runtime.getRuntime();
+        for (int i = 0; i < 4; i++) {
+            System.gc();
+            Thread.sleep(80);
+        }
+        return (runtime.totalMemory() - runtime.freeMemory()) / 1024;
+    }
+
     private static long residentKb() throws Exception {
         long pid = ProcessHandle.current().pid();
         Process process =
@@ -806,14 +819,24 @@ class NonStreamableResultsIT extends NativeTestBase {
                         "/*/**/*/ ",
                         "-- banner\n/* /* */ */ "
                     }) {
-                long baseline = residentKb();
+                long baseline = liveHeapKb();
                 assertEquals(4_000_000L, drain(statement, prefix + body), prefix);
-                long growthKb = residentKb() - baseline;
-                // The streamed path grew by kilobytes on every shape measured; the materialized
-                // one by ~500 MB. Anything under 128 MB can only be the streaming route.
+                long growthKb = liveHeapKb() - baseline;
+                // Live heap after a collection, not RSS.
+                //
+                // RSS was the measure while the driver read Arrow, where a batch was a view
+                // onto engine memory and reading a row allocated almost nothing -- so RSS
+                // tracked what was retained. Reading RowBinary allocates: a byte[] per chunk
+                // and decoded objects per row. Measured on this very query, RSS grows by
+                // 683 MB against a 512 MB heap while live heap grows by 10 KB, so RSS now
+                // says how hard the collector was worked and nothing about what is held.
+                //
+                // What the test is for is that nothing accumulates, and that is live heap: the
+                // materialized route holds the whole result, the streamed one holds a chunk.
+                // 32 MB is far above a chunk and far below a 430 MB result.
                 assertTrue(
-                        growthKb < 128 * 1024,
-                        () -> "RSS grew " + growthKb + " KB reading a 4M-row result behind "
+                        growthKb < 32 * 1024,
+                        () -> "live heap grew " + growthKb + " KB reading a 4M-row result behind "
                                 + prefix.replace("\n", "\\n")
                                 + "-- it was materialized rather than streamed");
             }
@@ -913,7 +936,7 @@ class NonStreamableResultsIT extends NativeTestBase {
         // NativeTestBase asserts the counters after the test; this makes the round count part
         // of the failure message if they are not zero.
         assertEquals(
-                0, ChdbNative.openHandleCount(ChdbNative.KIND_STREAM), "leaked a stream handle");
+                0, ChdbNative.openHandleCount(ChdbNative.KIND_ROW_BINARY), "leaked a stream handle");
         assertEquals(
                 0,
                 ChdbNative.openHandleCount(ChdbNative.KIND_CONNECTION),

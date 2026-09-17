@@ -67,7 +67,8 @@ public final class JdbcValues {
             return type;
         }
 
-        String describe() {
+        /** Named in a conversion failure, and used by the driver to build one of its own. */
+        public String describe() {
             return "column " + index + " (" + name + ", " + type.name() + ")";
         }
     }
@@ -516,6 +517,19 @@ public final class JdbcValues {
         }
         if (v instanceof Boolean) {
             return ((Boolean) v) ? 1 : 0;
+        }
+        if (v instanceof byte[]) {
+            // JDBC allows a character column to be read with a numeric accessor when its text
+            // is a number, and callers rely on it -- a parameter bound as a string and read
+            // back with getInt, for one. Parsed as a BigDecimal so that both "42" and "42.5"
+            // work and the range checks above still apply.
+            String text = new String((byte[]) v, StandardCharsets.UTF_8).trim();
+            try {
+                return new BigDecimal(text);
+            } catch (NumberFormatException e) {
+                throw new SQLDataException(
+                        c.describe() + " holds \"" + text + "\", which is not a number", "22018", 0, e);
+            }
         }
         throw cannot(c, "a numeric accessor");
     }

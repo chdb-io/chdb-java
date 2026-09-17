@@ -37,7 +37,7 @@ class QueryTimeoutGenerationIT {
 
     @AfterEach
     void assertNoLeakedHandles() {
-        assertEquals(0, ChdbNative.openHandleCount(ChdbNative.KIND_STREAM), "leaked stream handles");
+        assertEquals(0, ChdbNative.openHandleCount(ChdbNative.KIND_ROW_BINARY), "leaked stream handles");
         assertEquals(0, ChdbNative.openHandleCount(ChdbNative.KIND_RESULT), "leaked result handles");
         assertEquals(
                 0, ChdbNative.openHandleCount(ChdbNative.KIND_CONNECTION), "leaked connection handles");

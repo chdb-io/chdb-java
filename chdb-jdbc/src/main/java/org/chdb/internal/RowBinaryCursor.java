@@ -32,6 +32,15 @@ public final class RowBinaryCursor implements AutoCloseable {
         /** The next chunk, or null at end of stream. */
         byte[] next();
 
+        /**
+         * Asks the producer to stop, if it has one to ask.
+         *
+         * <p>Default no-op: a source over an already-materialised buffer has nothing to
+         * cancel, which is also true of the engine's non-streamable statements.
+         */
+        default void cancel() {
+        }
+
         @Override
         void close();
     }
@@ -63,6 +72,16 @@ public final class RowBinaryCursor implements AutoCloseable {
 
     public RowBinaryHeader header() {
         return header;
+    }
+
+    /** What the engine was asked for, which the accessor layer needs for the session zone. */
+    public RowBinaryDecoder.Options options() {
+        return options;
+    }
+
+    /** Asks the engine to stop producing, if the source can. */
+    public void cancel() {
+        chunks.cancel();
     }
 
     /** One-based, and zero before the first row, as {@code ResultSet.getRow()} wants it. */

@@ -41,38 +41,45 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import org.chdb.internal.ArrowBatch;
-import org.chdb.internal.ArrowFieldType;
-import org.chdb.internal.ArrowSchemaView;
+import org.chdb.internal.ClickHouseType;
+import org.chdb.internal.JdbcValues;
+import org.chdb.internal.RowBinaryCursor;
+import org.chdb.internal.RowBinaryDecoder;
+import org.chdb.internal.RowBinaryHeader;
 import org.chdb.internal.ChdbNative;
 import org.chdb.internal.ChdbNativeException;
 
 /**
- * A forward-only cursor over an Arrow stream, holding one batch at a time.
+ * A forward-only cursor over a {@code RowBinaryWithNamesAndTypes} stream.
  *
  * <h2>Memory</h2>
- * Exactly one batch is live. {@link #next()} releases the current batch before fetching the
- * next, so peak memory tracks the batch size rather than the size of the whole result (work
- * plan section 3.3). A 100 GB result reads in the same footprint as a 100 MB one.
+ * One chunk is live at a time. The cursor drops a chunk when it moves to the next, so peak
+ * memory tracks a chunk rather than the whole result: a 100 GB result reads in the same
+ * footprint as a 100 MB one.
  *
- * <h2>Batch release ordering</h2>
- * The batch's buffers are direct views onto native memory. Before asking the shim to release
- * a batch, {@link ArrowBatch#invalidate()} drops every Java reference to those buffers; a
- * read that arrives afterwards gets an exception instead of reading freed memory. Getting
- * this order wrong is a JVM crash, not a bug report, so it lives in one place: {@link
- * #releaseBatch()}.
+ * <h2>What changed, and why there is less to get wrong here now</h2>
+ * The Arrow path this replaces handed out direct buffers onto engine memory, so every accessor
+ * had to be sequenced against the release of the batch behind it — read after release was a JVM
+ * crash rather than an exception, and the ordering lived in one carefully commented place.
+ * RowBinary chunks are copied out of the engine before Java sees them, so that hazard does not
+ * exist: there is no native memory for a Java reference to outlive.
+ *
+ * <p>The types are the engine's own, from the stream's header, rather than the Arrow schema's
+ * lossy projection of them. That is the point of the change: {@code Enum8} arrives with its
+ * labels, {@code IPv6} does not arrive indistinguishable from a {@code UUID}, and
+ * {@code DateTime} is a timestamp rather than a {@code UInt32}.
  */
 public final class ChdbResultSet implements ResultSet {
 
     private final ChdbStatement statement;
     private final long stream;
-    private final ArrowSchemaView schema;
+    private final RowBinaryCursor cursor;
+    private final RowBinaryHeader header;
     private final long maxRows;
 
-    private ArrowBatch batch;
-    private long rowInBatch = -1;
     private long rowsReturned;
     private boolean exhausted;
+    private boolean positioned;
 
     /**
      * Volatile because a result set can be closed by a thread other than the one reading it:
@@ -88,19 +95,12 @@ public final class ChdbResultSet implements ResultSet {
     /** Lazily built lowercase name -> 1-based index, for {@link #findColumn(String)}. */
     private Map<String, Integer> nameIndex;
 
-    ChdbResultSet(ChdbStatement statement, long stream, long maxRows) throws SQLException {
+    ChdbResultSet(ChdbStatement statement, long stream, RowBinaryCursor cursor, long maxRows) {
         this.statement = statement;
         this.stream = stream;
+        this.cursor = cursor;
+        this.header = cursor.header();
         this.maxRows = maxRows;
-        try {
-            this.schema =
-                    new ArrowSchemaView(
-                            ChdbNative.streamColumnNames(stream),
-                            ChdbNative.streamColumnFormats(stream),
-                            ChdbNative.streamColumnNullable(stream));
-        } catch (ChdbNativeException e) {
-            throw ChdbExceptions.wrap("Failed to read the result schema", e);
-        }
     }
 
     // ------------------------------------------------------------------ cursor
@@ -113,74 +113,65 @@ public final class ChdbResultSet implements ResultSet {
             // setMaxRows is a cap on rows delivered, and there is no reason to keep the
             // engine producing rows nobody will read.
             exhaustAndRelease();
+            positioned = false;
             return false;
         }
-
-        if (batch != null && rowInBatch + 1 < batch.rowCount()) {
-            rowInBatch++;
-            rowsReturned++;
-            return true;
-        }
-
         if (exhausted) {
+            positioned = false;
             return false;
         }
 
-        // A zero-row batch is legitimate -- the engine can emit one before it has rows --
-        // and must not be mistaken for end of stream, hence the loop.
-        while (true) {
-            long rows = advance();
-            if (rows < 0) {
-                exhausted = true;
-                statement.stopTimeout();
-                statement.clearInFlight(stream);
-                return false;
-            }
-            if (rows > 0) {
-                rowInBatch = 0;
-                rowsReturned++;
-                return true;
-            }
-        }
-    }
-
-    /** Releases the current batch and makes the next one current. Returns rows, or -1 at end. */
-    private long advance() throws SQLException {
-        releaseBatch();
-        long rows;
+        boolean advanced;
         try {
-            rows = ChdbNative.streamAdvance(statement.connection.handle(), stream);
+            advanced = cursor.next();
         } catch (ChdbNativeException e) {
-            throw cancellationAware("Failed to read the next batch", e);
+            throw cancellationAware("Failed to read the next chunk", e);
+        } catch (RowBinaryDecoder.UnsupportedTypeException e) {
+            // A column this driver cannot decode. It fails the row rather than only that
+            // column, and there is no way round that: the decoder does not know how many bytes
+            // the value occupies, so it cannot skip it to reach the next column. Naming the
+            // column and the type is what is left to do.
+            throw new SQLFeatureNotSupportedException(
+                    "Row " + (rowsReturned + 1) + " has a column of type " + e.type().name()
+                            + ", which this driver cannot decode. Cast it in the query --"
+                            + " toString(col) always works -- or select the columns you need.",
+                    "0A000",
+                    0,
+                    e);
+        } catch (RuntimeException e) {
+            // A backstop, deliberately broad. Everything above this is checked or converted,
+            // and an unchecked exception out of next() escapes every caller's
+            // catch(SQLException) -- which is the defect this whole change set has been
+            // removing, and which I reintroduced here once by catching only
+            // IllegalStateException.
+            throw new SQLDataException(
+                    "The result stream could not be read: " + e, "22000", 0, e);
         }
-        if (rows < 0) {
-            return -1;
+        if (!advanced) {
+            exhausted = true;
+            positioned = false;
+            statement.stopTimeout();
+            statement.clearInFlight(stream);
+            // A cancelled stream stops producing and its next fetch is simply empty, which is
+            // indistinguishable from a natural end at this level -- so the reason has to be
+            // asked for. Reporting a truncated result as a complete one is worse than the
+            // exception: the caller would believe they had read everything.
+            if (statement.timedOut()) {
+                throw new SQLTimeoutException(
+                        "The query exceeded the statement's query timeout and was cancelled, so"
+                                + " the result is incomplete",
+                        "57014",
+                        159);
+            }
+            if (statement.wasCancelled()) {
+                throw new SQLException(
+                        "The statement was cancelled, so the result is incomplete", "57014", 394);
+            }
+            return false;
         }
-
-        Object[] columns;
-        try {
-            columns = ChdbNative.streamBatchColumns(stream);
-        } catch (ChdbNativeException e) {
-            throw ChdbExceptions.wrap("Failed to map the Arrow batch", e);
-        }
-        batch = new ArrowBatch(columns, schema.types(), rows);
-        rowInBatch = -1;
-        return rows;
-    }
-
-    /**
-     * Drops the Java view of the current batch, then asks the shim to free it.
-     *
-     * <p>That order is the whole safety property: after {@code invalidate()} no accessor can
-     * reach the native memory, so freeing it cannot be observed.
-     */
-    private void releaseBatch() {
-        ArrowBatch current = batch;
-        batch = null;
-        rowInBatch = -1;
-        if (current != null) {
-            current.invalidate();
-        }
+        rowsReturned++;
+        positioned = true;
+        return true;
     }
 
     private void exhaustAndRelease() throws SQLException {
@@ -189,7 +180,7 @@ public final class ChdbResultSet implements ResultSet {
         // Cancel rather than draining: the caller has what it asked for, and letting the
         // engine finish a query nobody is reading wastes exactly as much work as it has left.
         try {
-            ChdbNative.streamCancel(statement.connection.handle(), stream);
+            cursor.cancel();
         } catch (ChdbNativeException ignored) {
             // The stream may have finished on its own; there is nothing to recover.
         }
@@ -207,11 +198,7 @@ public final class ChdbResultSet implements ResultSet {
      * <p>The two close cases are here for the same reason and are not hypothetical. This result
      * set, or the connection under it, can be closed by another thread while this one is in
      * {@code next()} — which is what {@code Connection.abort()} is defined to do, and what a
-     * pool being closed does to a connection it has lent out. What came back before was the
-     * shim's account of the handles involved ("stream handle 18801 does not belong to connection
-     * handle 18576"), which describes an ownership mix-up that did not happen and says nothing
-     * a caller can act on. Both are checked before the generic path so the answer names the
-     * close.
+     * pool being closed does to a connection it has lent out.
      */
     private SQLException cancellationAware(String context, ChdbNativeException cause) {
         if (closed) {
@@ -242,29 +229,48 @@ public final class ChdbResultSet implements ResultSet {
         return ChdbExceptions.wrap(context, cause);
     }
 
-    private ArrowBatch currentBatch() throws SQLException {
+    /** Translates a 1-based JDBC column index into a 0-based one, or fails precisely. */
+    private int columnIndex(int jdbcIndex) throws SQLException {
+        if (jdbcIndex < 1 || jdbcIndex > header.columnCount()) {
+            throw new SQLDataException(
+                    "Column index "
+                            + jdbcIndex
+                            + " is out of range. This result set has "
+                            + header.columnCount()
+                            + " column(s), indexed from 1.",
+                    "22023");
+        }
+        return jdbcIndex - 1;
+    }
+
+    /**
+     * The decoded value of a column of the current row, and the single writer of
+     * {@code wasNull()}.
+     *
+     * <p>Every accessor comes through here, which is what keeps {@code wasNull} honest: it
+     * describes the last column actually read and nothing else.
+     */
+    private Object read(int jdbcIndex) throws SQLException {
         checkOpen();
-        if (batch == null || rowInBatch < 0) {
+        if (!positioned) {
             throw new SQLException(
                     "No current row. Call next() and check that it returned true before reading a"
                             + " column.",
                     "24000");
         }
-        return batch;
+        Object value = cursor.value(columnIndex(jdbcIndex));
+        lastValueWasNull = value == null;
+        return value;
     }
 
-    /** Translates a 1-based JDBC column index into a 0-based one, or fails precisely. */
-    private int columnIndex(int jdbcIndex) throws SQLException {
-        if (jdbcIndex < 1 || jdbcIndex > schema.columnCount()) {
-            throw new SQLDataException(
-                    "Column index "
-                            + jdbcIndex
-                            + " is out of range. This result set has "
-                            + schema.columnCount()
-                            + " column(s), indexed from 1.",
-                    "22023");
-        }
-        return jdbcIndex - 1;
+    /** The column descriptor a conversion failure names. */
+    private JdbcValues.Column describe(int jdbcIndex) throws SQLException {
+        int column = columnIndex(jdbcIndex);
+        return new JdbcValues.Column(jdbcIndex, header.names().get(column), header.types().get(column));
+    }
+
+    private ClickHouseType typeOf(int jdbcIndex) throws SQLException {
+        return header.types().get(columnIndex(jdbcIndex));
     }
 
     // ------------------------------------------------------------------ reading
@@ -275,619 +281,238 @@ public final class ChdbResultSet implements ResultSet {
         return lastValueWasNull;
     }
 
-    /** Every accessor funnels through here, so {@code wasNull()} has exactly one writer. */
-    private boolean readNull(int column) throws SQLException {
-        lastValueWasNull = currentBatch().isNull(column, (int) rowInBatch);
-        return lastValueWasNull;
-    }
-
     @Override
     public String getString(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return null;
-        }
-        return decodeString(column);
-    }
-
-    /**
-     * A column's value as text.
-     *
-     * <p>Every supported type has a string form, because {@code getString} is what frameworks
-     * fall back to and returning null for a readable value would look like a NULL. The forms
-     * are the ones round-tripping through ClickHouse SQL: ISO-8601 for temporals, plain
-     * decimal for numbers, lowercase hex for binary.
-     */
-    private String decodeString(int column) throws SQLException {
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            switch (type.kind()) {
-                case BOOL:
-                    return batch.getBoolean(column, (int) rowInBatch) ? "true" : "false";
-                case UTF8:
-                case LARGE_UTF8:
-                    return batch.getString(column, (int) rowInBatch);
-                case BINARY:
-                case LARGE_BINARY:
-                    return toHex(batch.getBytes(column, (int) rowInBatch));
-                case FIXED_SIZE_BINARY:
-                    return type.byteWidth() == 16
-                            ? batch.getUuid(column, (int) rowInBatch).toString()
-                            : toHex(batch.getBytes(column, (int) rowInBatch));
-                case DECIMAL:
-                    return batch.getBigDecimal(column, (int) rowInBatch).toPlainString();
-                case UINT64:
-                    return batch.getBigInteger(column, (int) rowInBatch).toString();
-                case FLOAT16:
-                case FLOAT32:
-                    return Float.toString((float) batch.getDouble(column, (int) rowInBatch));
-                case FLOAT64:
-                    return Double.toString(batch.getDouble(column, (int) rowInBatch));
-                case DATE32:
-                case DATE64:
-                    return batch.getLocalDate(column, (int) rowInBatch).toString();
-                case TIMESTAMP:
-                    return renderTimestamp(column, type);
-                case TIME32:
-                case TIME64:
-                    return batch.getLocalTime(column, (int) rowInBatch).toString();
-                case UNSUPPORTED:
-                    throw unsupportedColumn(column, type);
-                default:
-                    return Long.toString(batch.getLong(column, (int) rowInBatch));
-            }
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
-    }
-
-    private String renderTimestamp(int column, ArrowFieldType type) {
-        Instant instant = batch.getInstant(column, (int) rowInBatch);
-        ZoneId zone = type.timezone() == null ? ZoneOffset.UTC : ZoneId.of(type.timezone());
-        return instant.atZone(zone).toLocalDateTime().toString();
-    }
-
-    private static String toHex(byte[] bytes) {
-        StringBuilder out = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) {
-            out.append(Character.forDigit((b >> 4) & 0xf, 16));
-            out.append(Character.forDigit(b & 0xf, 16));
-        }
-        return out.toString();
+        return JdbcValues.asString(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public boolean getBoolean(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return false;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            switch (type.kind()) {
-                case BOOL:
-                    return batch.getBoolean(column, (int) rowInBatch);
-                case UTF8:
-                case LARGE_UTF8:
-                {
-                    String value = batch.getString(column, (int) rowInBatch).trim();
-                    return "true".equalsIgnoreCase(value) || "1".equals(value) || "t".equalsIgnoreCase(value);
-                }
-                case FLOAT16:
-                case FLOAT32:
-                case FLOAT64:
-                    return batch.getDouble(column, (int) rowInBatch) != 0.0;
-                case DECIMAL:
-                    return batch.getBigDecimal(column, (int) rowInBatch).signum() != 0;
-                case UINT64:
-                    return batch.getBigInteger(column, (int) rowInBatch).signum() != 0;
-                case UNSUPPORTED:
-                    throw unsupportedColumn(column, type);
-                default:
-                    // JDBC's rule for numeric-to-boolean: zero is false, anything else true.
-                    return batch.getLong(column, (int) rowInBatch) != 0;
-            }
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        return JdbcValues.asBoolean(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public byte getByte(int columnIndex) throws SQLException {
-        return (byte) narrow(columnIndex, Byte.MIN_VALUE, Byte.MAX_VALUE, "byte");
+        return JdbcValues.asByte(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public short getShort(int columnIndex) throws SQLException {
-        return (short) narrow(columnIndex, Short.MIN_VALUE, Short.MAX_VALUE, "short");
+        return JdbcValues.asShort(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public int getInt(int columnIndex) throws SQLException {
-        return (int) narrow(columnIndex, Integer.MIN_VALUE, Integer.MAX_VALUE, "int");
-    }
-
-    /**
-     * Reads an integral value and refuses to truncate it.
-     *
-     * <p>A UInt32 of 4e9 does fit a {@code long} and does not fit an {@code int}. Silently
-     * wrapping it to a negative number is the kind of data corruption that shows up as a
-     * business bug months later, so the read fails and names the value and the accessor that
-     * would hold it.
-     */
-    private long narrow(int columnIndex, long min, long max, String javaType) throws SQLException {
-        long value = getLong(columnIndex);
-        if (lastValueWasNull) {
-            return 0;
-        }
-        if (value < min || value > max) {
-            throw new SQLDataException(
-                    "Value "
-                            + value
-                            + " in column "
-                            + columnIndex
-                            + " ("
-                            + schema.columnName(columnIndex - 1)
-                            + ", "
-                            + schema.typeRef(columnIndex - 1).typeName()
-                            + ") does not fit a Java "
-                            + javaType
-                            + ". Read it with getLong(), getBigDecimal() or getObject().",
-                    "22003");
-        }
-        return value;
+        return JdbcValues.asInt(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public long getLong(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return 0;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            switch (type.kind()) {
-                case BOOL:
-                    return batch.getBoolean(column, (int) rowInBatch) ? 1 : 0;
-                case FLOAT16:
-                case FLOAT32:
-                case FLOAT64:
-                    return (long) batch.getDouble(column, (int) rowInBatch);
-                case DECIMAL:
-                    return batch.getBigDecimal(column, (int) rowInBatch)
-                            .setScale(0, RoundingMode.DOWN)
-                            .longValueExact();
-                case UTF8:
-                case LARGE_UTF8:
-                    return Long.parseLong(batch.getString(column, (int) rowInBatch).trim());
-                case UNSUPPORTED:
-                    throw unsupportedColumn(column, type);
-                default:
-                    return batch.getLong(column, (int) rowInBatch);
-            }
-        } catch (ArithmeticException e) {
-            throw new SQLDataException(
-                    "Value in column " + columnIndex + " (" + schema.columnName(column) + ", "
-                            + type.typeName() + ") does not fit a Java long: " + e.getMessage()
-                            + ". Read it with getBigDecimal() or getObject().",
-                    "22003",
-                    e);
-        } catch (NumberFormatException e) {
-            throw new SQLDataException(
-                    "Column " + columnIndex + " (" + schema.columnName(column)
-                            + ") holds text that is not an integer: " + e.getMessage(),
-                    "22018",
-                    e);
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        return JdbcValues.asLong(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public float getFloat(int columnIndex) throws SQLException {
-        return (float) getDouble(columnIndex);
+        return JdbcValues.asFloat(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public double getDouble(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return 0.0;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            switch (type.kind()) {
-                case FLOAT16:
-                case FLOAT32:
-                case FLOAT64:
-                    return batch.getDouble(column, (int) rowInBatch);
-                case DECIMAL:
-                case UINT64:
-                    return batch.getBigDecimal(column, (int) rowInBatch).doubleValue();
-                case BOOL:
-                    return batch.getBoolean(column, (int) rowInBatch) ? 1.0 : 0.0;
-                case UTF8:
-                case LARGE_UTF8:
-                    return Double.parseDouble(batch.getString(column, (int) rowInBatch).trim());
-                case UNSUPPORTED:
-                    throw unsupportedColumn(column, type);
-                default:
-                    return batch.getLong(column, (int) rowInBatch);
-            }
-        } catch (NumberFormatException e) {
-            throw new SQLDataException(
-                    "Column " + columnIndex + " (" + schema.columnName(column)
-                            + ") holds text that is not a number: " + e.getMessage(),
-                    "22018",
-                    e);
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        return JdbcValues.asDouble(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public BigDecimal getBigDecimal(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return null;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            if (type.kind() == ArrowFieldType.Kind.UTF8 || type.kind() == ArrowFieldType.Kind.LARGE_UTF8) {
-                return new BigDecimal(batch.getString(column, (int) rowInBatch).trim());
-            }
-            if (type.kind() == ArrowFieldType.Kind.UNSUPPORTED) {
-                throw unsupportedColumn(column, type);
-            }
-            return batch.getBigDecimal(column, (int) rowInBatch);
-        } catch (NumberFormatException e) {
-            throw new SQLDataException(
-                    "Column " + columnIndex + " (" + schema.columnName(column)
-                            + ") holds text that is not a decimal: " + e.getMessage(),
-                    "22018",
-                    e);
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        return JdbcValues.asBigDecimal(describe(columnIndex), read(columnIndex));
     }
 
     @Override
-    @Deprecated
     public BigDecimal getBigDecimal(int columnIndex, int scale) throws SQLException {
         BigDecimal value = getBigDecimal(columnIndex);
-        return value == null ? null : value.setScale(scale, RoundingMode.HALF_UP);
+        // Deprecated since JDBC 2.0 but still called by older frameworks. HALF_UP rather than
+        // the default, because a caller asking for a scale wants a rounded number, not an
+        // ArithmeticException.
+        return value == null ? null : value.setScale(scale, java.math.RoundingMode.HALF_UP);
     }
 
     @Override
     public byte[] getBytes(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return null;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            if (type.kind() == ArrowFieldType.Kind.UNSUPPORTED) {
-                throw unsupportedColumn(column, type);
-            }
-            switch (type.kind()) {
-                case BINARY:
-                case LARGE_BINARY:
-                case FIXED_SIZE_BINARY:
-                case UTF8:
-                case LARGE_UTF8:
-                    return batch.getBytes(column, (int) rowInBatch);
-                default:
-                    // Any other type read as bytes is its text form's UTF-8, which is what
-                    // ClickHouse's own binary formats would produce for it.
-                    return decodeString(column).getBytes(StandardCharsets.UTF_8);
-            }
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        return JdbcValues.asBytes(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public Date getDate(int columnIndex) throws SQLException {
-        LocalDate date = getLocalDate(columnIndex);
-        return date == null ? null : Date.valueOf(date);
+        return JdbcValues.asDate(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public Date getDate(int columnIndex, Calendar cal) throws SQLException {
-        LocalDate date = getLocalDate(columnIndex);
-        if (date == null) {
-            return null;
-        }
-        if (cal == null) {
-            return Date.valueOf(date);
-        }
-        // JDBC's Calendar overloads mean "interpret the value in this calendar's zone".
-        Calendar copy = (Calendar) cal.clone();
-        copy.clear();
-        copy.set(date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
-        return new Date(copy.getTimeInMillis());
-    }
-
-    private LocalDate getLocalDate(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return null;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            if (type.kind() == ArrowFieldType.Kind.UTF8 || type.kind() == ArrowFieldType.Kind.LARGE_UTF8) {
-                return LocalDate.parse(batch.getString(column, (int) rowInBatch).trim());
-            }
-            return batch.getLocalDate(column, (int) rowInBatch);
-        } catch (java.time.format.DateTimeParseException e) {
-            throw new SQLDataException(
-                    "Column " + columnIndex + " (" + schema.columnName(column)
-                            + ") holds text that is not an ISO-8601 date: " + e.getMessage(),
-                    "22007",
-                    e);
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        // The Calendar overloads exist to reinterpret a wall-clock value in another zone. The
+        // engine's value is already a wall clock in the column's zone, so shifting it again
+        // would move a moment that was never ambiguous; the calendar is accepted and ignored,
+        // which is what the value's own timezone makes correct. docs/type-mapping.md says so.
+        return getDate(columnIndex);
     }
 
     @Override
     public Time getTime(int columnIndex) throws SQLException {
-        LocalTime time = getLocalTime(columnIndex);
-        return time == null ? null : Time.valueOf(time);
+        return JdbcValues.asTime(describe(columnIndex), read(columnIndex));
     }
 
     @Override
     public Time getTime(int columnIndex, Calendar cal) throws SQLException {
-        LocalTime time = getLocalTime(columnIndex);
-        if (time == null) {
-            return null;
-        }
-        if (cal == null) {
-            return Time.valueOf(time);
-        }
-        Calendar copy = (Calendar) cal.clone();
-        copy.clear();
-        copy.set(1970, Calendar.JANUARY, 1, time.getHour(), time.getMinute(), time.getSecond());
-        return new Time(copy.getTimeInMillis());
-    }
-
-    private LocalTime getLocalTime(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return null;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            return batch.getLocalTime(column, (int) rowInBatch);
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        return getTime(columnIndex);
     }
 
     @Override
     public Timestamp getTimestamp(int columnIndex) throws SQLException {
-        return getTimestamp(columnIndex, null);
+        return JdbcValues.asTimestamp(describe(columnIndex), read(columnIndex));
     }
 
-    /**
-     * A timestamp in a specific zone.
-     *
-     * <p>{@link Timestamp} is a zoneless wall-clock type, so producing one requires choosing a
-     * zone. The rules, in order:
-     *
-     * <ol>
-     *   <li>the {@link Calendar}'s zone, when one is passed;
-     *   <li>the zone the engine tagged the column with, for a {@code DateTime64(p, 'tz')};
-     *   <li>UTC.
-     * </ol>
-     *
-     * UTC rather than the JVM default is the important choice: a default-zone fallback makes
-     * the same query return different instants on a developer laptop and a UTC server, which
-     * is exactly the bug this driver should not ship.
-     */
     @Override
     public Timestamp getTimestamp(int columnIndex, Calendar cal) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return null;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            if (type.kind() == ArrowFieldType.Kind.UTF8 || type.kind() == ArrowFieldType.Kind.LARGE_UTF8) {
-                return Timestamp.valueOf(
-                        LocalDateTime.parse(batch.getString(column, (int) rowInBatch).trim()));
-            }
-            Instant instant = batch.getInstant(column, (int) rowInBatch);
-            ZoneId zone;
-            if (cal != null) {
-                zone = cal.getTimeZone().toZoneId();
-            } else if (type.timezone() != null) {
-                zone = ZoneId.of(type.timezone());
-            } else {
-                zone = ZoneOffset.UTC;
-            }
-            return Timestamp.valueOf(LocalDateTime.ofInstant(instant, zone));
-        } catch (java.time.format.DateTimeParseException e) {
-            throw new SQLDataException(
-                    "Column " + columnIndex + " (" + schema.columnName(column)
-                            + ") holds text that is not an ISO-8601 timestamp: " + e.getMessage(),
-                    "22007",
-                    e);
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        return getTimestamp(columnIndex);
     }
 
     @Override
     public Object getObject(int columnIndex) throws SQLException {
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
-            return null;
-        }
-        ArrowFieldType type = schema.typeRef(column);
-        try {
-            switch (type.kind()) {
-                case BOOL:
-                    return batch.getBoolean(column, (int) rowInBatch);
-                case INT8:
-                    return (byte) batch.getLong(column, (int) rowInBatch);
-                case UINT8:
-                case INT16:
-                    return (short) batch.getLong(column, (int) rowInBatch);
-                case UINT16:
-                case INT32:
-                    return (int) batch.getLong(column, (int) rowInBatch);
-                case UINT32:
-                case INT64:
-                case DURATION:
-                    return batch.getLong(column, (int) rowInBatch);
-                case UINT64:
-                    return batch.getBigInteger(column, (int) rowInBatch);
-                case DECIMAL:
-                    return batch.getBigDecimal(column, (int) rowInBatch);
-                case FLOAT16:
-                case FLOAT32:
-                    return (float) batch.getDouble(column, (int) rowInBatch);
-                case FLOAT64:
-                    return batch.getDouble(column, (int) rowInBatch);
-                case UTF8:
-                case LARGE_UTF8:
-                    return batch.getString(column, (int) rowInBatch);
-                case BINARY:
-                case LARGE_BINARY:
-                    return batch.getBytes(column, (int) rowInBatch);
-                case FIXED_SIZE_BINARY:
-                    return type.byteWidth() == 16
-                            ? batch.getUuid(column, (int) rowInBatch)
-                            : batch.getBytes(column, (int) rowInBatch);
-                case DATE32:
-                case DATE64:
-                    return batch.getLocalDate(column, (int) rowInBatch);
-                case TIMESTAMP:
-                    return batch.getInstant(column, (int) rowInBatch);
-                case TIME32:
-                case TIME64:
-                    return batch.getLocalTime(column, (int) rowInBatch);
-                case UNSUPPORTED:
-                default:
-                    throw unsupportedColumn(column, type);
-            }
-        } catch (IllegalStateException e) {
-            throw decodeFailure(column, type, e);
-        }
+        return JdbcValues.asObject(describe(columnIndex), read(columnIndex));
+    }
+
+    @Override
+    public Object getObject(int columnIndex, Map<String, Class<?>> map) throws SQLException {
+        // The map is for user-defined types, which ClickHouse does not have.
+        return getObject(columnIndex);
     }
 
     @Override
     public <T> T getObject(int columnIndex, Class<T> targetType) throws SQLException {
         if (targetType == null) {
-            throw new SQLDataException("target type must not be null", "22023");
+            throw new SQLDataException("getObject requires a target type, not null", "22023");
         }
-        int column = columnIndex(columnIndex);
-        if (readNull(column)) {
+        JdbcValues.Column column = describe(columnIndex);
+        Object raw = read(columnIndex);
+        if (raw == null) {
             return null;
         }
-
-        Object value;
-        if (targetType == String.class) {
-            value = getString(columnIndex);
-        } else if (targetType == Boolean.class || targetType == boolean.class) {
-            value = getBoolean(columnIndex);
-        } else if (targetType == Byte.class || targetType == byte.class) {
-            value = getByte(columnIndex);
-        } else if (targetType == Short.class || targetType == short.class) {
-            value = getShort(columnIndex);
-        } else if (targetType == Integer.class || targetType == int.class) {
-            value = getInt(columnIndex);
-        } else if (targetType == Long.class || targetType == long.class) {
-            value = getLong(columnIndex);
-        } else if (targetType == Float.class || targetType == float.class) {
-            value = getFloat(columnIndex);
-        } else if (targetType == Double.class || targetType == double.class) {
-            value = getDouble(columnIndex);
-        } else if (targetType == BigDecimal.class) {
-            value = getBigDecimal(columnIndex);
-        } else if (targetType == BigInteger.class) {
-            BigDecimal decimal = getBigDecimal(columnIndex);
-            value = decimal == null ? null : decimal.toBigIntegerExact();
-        } else if (targetType == byte[].class) {
-            value = getBytes(columnIndex);
-        } else if (targetType == LocalDate.class) {
-            value = getLocalDate(columnIndex);
-        } else if (targetType == LocalTime.class) {
-            value = getLocalTime(columnIndex);
-        } else if (targetType == Instant.class) {
-            value = batch.getInstant(column, (int) rowInBatch);
-        } else if (targetType == LocalDateTime.class) {
-            ArrowFieldType type = schema.typeRef(column);
-            ZoneId zone = type.timezone() == null ? ZoneOffset.UTC : ZoneId.of(type.timezone());
-            value = LocalDateTime.ofInstant(batch.getInstant(column, (int) rowInBatch), zone);
-        } else if (targetType == Date.class) {
-            value = getDate(columnIndex);
-        } else if (targetType == Time.class) {
-            value = getTime(columnIndex);
-        } else if (targetType == Timestamp.class) {
-            value = getTimestamp(columnIndex);
-        } else if (targetType == UUID.class) {
-            value = batch.getUuid(column, (int) rowInBatch);
-        } else if (targetType == Object.class) {
-            value = getObject(columnIndex);
-        } else {
-            throw ChdbExceptions.notSupported(
-                    "Converting column " + columnIndex + " (" + schema.typeRef(column).typeName()
-                            + ") to " + targetType.getName());
+        Object converted = convert(column, raw, targetType);
+        if (converted == null) {
+            throw new SQLDataException(
+                    column.describe() + " cannot be read as " + targetType.getName(), "22000");
         }
-        return targetType.cast(value);
-    }
-
-    @Override
-    public Object getObject(int columnIndex, Map<String, Class<?>> map) throws SQLException {
-        if (map != null && !map.isEmpty()) {
-            throw ChdbExceptions.notSupported("Custom type maps in getObject");
-        }
-        return getObject(columnIndex);
-    }
-
-    private SQLException unsupportedColumn(int column, ArrowFieldType type) {
-        return new SQLFeatureNotSupportedException(
-                "Column "
-                        + (column + 1)
-                        + " ("
-                        + schema.columnName(column)
-                        + ") has type "
-                        + type.typeName()
-                        + ", which the chDB JDBC driver V1 cannot read. V1 covers the scalar type"
-                        + " matrix in docs/type-mapping.md; Array, Map, Tuple, Nested, Variant, JSON"
-                        + " and Dynamic are not in it. Cast the column in SQL -- for example"
-                        + " toString("
-                        + schema.columnName(column)
-                        + ") -- to read it as text.",
-                "0A000");
+        return targetType.cast(converted);
     }
 
     /**
-     * Wraps a decoding failure from {@link ArrowBatch}.
+     * The typed {@code getObject} conversions.
      *
-     * <p>{@code IllegalStateException} from the batch means either a released batch or Arrow
-     * buffers that do not match their schema. Both are driver or engine bugs rather than user
-     * errors, so the message says so and asks for a report.
+     * <p>Every branch goes through {@link JdbcValues}, so a type asked for by class and the same
+     * type asked for by accessor cannot disagree -- which is the defect this replaced: the old
+     * path reached past its own conversions for three of these and let an
+     * {@code IllegalStateException} out of a JDBC accessor.
      */
-    private SQLException decodeFailure(int column, ArrowFieldType type, IllegalStateException cause) {
-        return new SQLException(
-                "Failed to decode column "
-                        + (column + 1)
-                        + " ("
-                        + schema.columnName(column)
-                        + ", "
-                        + type.typeName()
-                        + ", arrow format \""
-                        + type.format()
-                        + "\"): "
-                        + cause.getMessage()
-                        + ". This is a driver or engine defect rather than a problem with your"
-                        + " query; please report it with the query and the schema.",
-                "HY000",
-                cause);
+    private Object convert(JdbcValues.Column column, Object raw, Class<?> targetType)
+            throws SQLException {
+        if (targetType == String.class) {
+            return JdbcValues.asString(column, raw);
+        }
+        if (targetType == Boolean.class || targetType == boolean.class) {
+            return JdbcValues.asBoolean(column, raw);
+        }
+        if (targetType == Byte.class || targetType == byte.class) {
+            return JdbcValues.asByte(column, raw);
+        }
+        if (targetType == Short.class || targetType == short.class) {
+            return JdbcValues.asShort(column, raw);
+        }
+        if (targetType == Integer.class || targetType == int.class) {
+            return JdbcValues.asInt(column, raw);
+        }
+        if (targetType == Long.class || targetType == long.class) {
+            return JdbcValues.asLong(column, raw);
+        }
+        if (targetType == Float.class || targetType == float.class) {
+            return JdbcValues.asFloat(column, raw);
+        }
+        if (targetType == Double.class || targetType == double.class) {
+            return JdbcValues.asDouble(column, raw);
+        }
+        if (targetType == BigDecimal.class) {
+            return JdbcValues.asBigDecimal(column, raw);
+        }
+        if (targetType == java.math.BigInteger.class) {
+            BigDecimal value = JdbcValues.asBigDecimal(column, raw);
+            return value == null ? null : value.toBigIntegerExact();
+        }
+        if (targetType == byte[].class) {
+            return JdbcValues.asBytes(column, raw);
+        }
+        if (targetType == Date.class) {
+            return JdbcValues.asDate(column, raw);
+        }
+        if (targetType == Time.class) {
+            return JdbcValues.asTime(column, raw);
+        }
+        if (targetType == Timestamp.class) {
+            return JdbcValues.asTimestamp(column, raw);
+        }
+        if (targetType == java.time.LocalDate.class) {
+            Date date = JdbcValues.asDate(column, raw);
+            return date == null ? null : date.toLocalDate();
+        }
+        if (targetType == java.time.LocalTime.class) {
+            // From the decoded value rather than from java.sql.Time, which has no sub-second
+            // field and would silently drop a Time64's milliseconds.
+            return raw instanceof java.time.LocalTime
+                    ? raw
+                    : raw instanceof java.time.LocalDateTime
+                            ? ((java.time.LocalDateTime) raw).toLocalTime()
+                            : null;
+        }
+        if (targetType == java.time.LocalDateTime.class) {
+            return raw instanceof java.time.LocalDateTime
+                    ? raw
+                    : raw instanceof java.time.LocalDate
+                            ? ((java.time.LocalDate) raw).atStartOfDay()
+                            : null;
+        }
+        if (targetType == java.time.Instant.class || targetType == java.time.OffsetDateTime.class) {
+            // The only place the column's zone is needed: the decoded value is a wall clock,
+            // and turning it back into a moment requires knowing which zone it was read in.
+            java.time.LocalDateTime local =
+                    raw instanceof java.time.LocalDateTime
+                            ? (java.time.LocalDateTime) raw
+                            : raw instanceof java.time.LocalDate
+                                    ? ((java.time.LocalDate) raw).atStartOfDay()
+                                    : null;
+            if (local == null) {
+                return null;
+            }
+            java.time.ZoneId zone =
+                    column.type().unwrapped().timeZone() != null
+                            ? java.time.ZoneId.of(column.type().unwrapped().timeZone())
+                            : cursor.options().sessionTimeZone();
+            java.time.ZonedDateTime zoned = local.atZone(zone);
+            return targetType == java.time.Instant.class ? zoned.toInstant() : zoned.toOffsetDateTime();
+        }
+        if (targetType == UUID.class) {
+            return raw instanceof UUID ? raw : null;
+        }
+        if (targetType == java.net.InetAddress.class) {
+            return raw instanceof java.net.InetAddress ? raw : null;
+        }
+        if (targetType == java.sql.Array.class || targetType == Map.class) {
+            Object value = JdbcValues.asObject(column, raw);
+            return targetType.isInstance(value) ? value : null;
+        }
+        if (targetType == Object.class) {
+            return JdbcValues.asObject(column, raw);
+        }
+        // A class we have no rule for, but which the value already is.
+        Object value = JdbcValues.asObject(column, raw);
+        return value != null && targetType.isInstance(value) ? value : null;
     }
+
 
     // ------------------------------------------------------------------ by column name
 
@@ -899,10 +524,10 @@ public final class ChdbResultSet implements ResultSet {
         }
         if (nameIndex == null) {
             Map<String, Integer> index = new HashMap<>();
-            for (int i = schema.columnCount() - 1; i >= 0; i--) {
+            for (int i = header.columnCount() - 1; i >= 0; i--) {
                 // Built backwards so that on a duplicate label the lowest index wins, which is
                 // what JDBC requires.
-                index.put(schema.columnName(i).toLowerCase(Locale.ROOT), i + 1);
+                index.put(header.names().get(i).toLowerCase(Locale.ROOT), i + 1);
             }
             nameIndex = index;
         }
@@ -912,7 +537,7 @@ public final class ChdbResultSet implements ResultSet {
                     "No column named \""
                             + columnLabel
                             + "\" in this result set. Available: "
-                            + String.join(", ", schema.columnNames())
+                            + String.join(", ", header.names())
                             + ".",
                     "42S22");
         }
@@ -1094,7 +719,7 @@ public final class ChdbResultSet implements ResultSet {
     @Override
     public ResultSetMetaData getMetaData() throws SQLException {
         checkOpen();
-        return new ChdbResultSetMetaData(schema);
+        return new ChdbResultSetMetaData(header);
     }
 
     @Override
@@ -1213,14 +838,11 @@ public final class ChdbResultSet implements ResultSet {
         }
         closed = true;
 
-        // Order matters: drop the Java view of the batch before the shim frees it.
-        releaseBatch();
-
         SQLException failure = null;
         if (!exhausted) {
-            // Tell the engine to stop producing rows nobody will read.
+            // Tell the engine to stop producing rows nobody will read, before the handle goes.
             try {
-                ChdbNative.streamCancel(statement.connection.handle(), stream);
+                cursor.cancel();
             } catch (ChdbNativeException ignored) {
                 // Cancelling a stream that already finished is a no-op, and a failure here
                 // must not stop the close below.
@@ -1228,13 +850,16 @@ public final class ChdbResultSet implements ResultSet {
         }
 
         // Deregistered before the handle is destroyed. A cancel() on another thread reads this
-        // registration, so the other order leaves a window in which it is handed an id that
-        // streamClose() has already removed, and hands the caller a native failure for a
-        // cancel that simply lost its race. See ChdbStatement.cancel().
+        // registration, so the other order leaves a window in which it is handed an id the
+        // close has already removed, and hands the caller a native failure for a cancel that
+        // simply lost its race. See ChdbStatement.cancel().
         statement.clearInFlight(stream);
 
         try {
-            ChdbNative.streamClose(stream);
+            // No ordering hazard beyond that one: chunks are copied out of the engine before
+            // Java sees them, so releasing the stream cannot be observed by a reader. The Arrow
+            // path this replaces had to sequence every accessor against this call.
+            cursor.close();
         } catch (ChdbNativeException e) {
             failure = ChdbExceptions.wrap("Failed to close the result set", e);
         }

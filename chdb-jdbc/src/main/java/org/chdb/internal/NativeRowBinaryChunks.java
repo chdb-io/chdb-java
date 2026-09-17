@@ -56,6 +56,7 @@ public final class NativeRowBinaryChunks implements RowBinaryCursor.ChunkSource 
      * from another thread does, and it has to be safe while this thread is inside
      * {@link #next()}.
      */
+    @Override
     public void cancel() {
         if (!closed) {
             ChdbNative.rowBinaryCancel(connection, stream);

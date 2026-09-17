@@ -154,7 +154,10 @@ class TypeMatrixIT extends NativeTestBase {
                         + " toDecimal128(-0.000000001, 9) AS d128,"
                         + " toDecimal128('12345678901234567890.12', 2) AS wide",
                 (rs, meta) -> {
-                    assertEquals(Types.NUMERIC, meta.getColumnType(1));
+                    // DECIMAL, not NUMERIC. Both are defensible for a fixed-point type; agreeing
+                    // with clickhouse-jdbc is what decides it, since a column's reported type
+                    // should not change under an application moving between the two drivers.
+                    assertEquals(Types.DECIMAL, meta.getColumnType(1));
                     assertEquals(2, meta.getScale(1));
                     assertEquals(3, meta.getScale(2));
 
@@ -188,9 +191,14 @@ class TypeMatrixIT extends NativeTestBase {
     void fixedString() throws SQLException {
         withRow("SELECT toFixedString('abc', 3) AS fs", (rs, meta) -> {
             assertEquals("FixedString(3)", meta.getColumnTypeName(1));
-            assertEquals(Types.BINARY, meta.getColumnType(1));
+            // VARCHAR, not BINARY. The Arrow path saw a fixed-size binary column and could not
+            // tell a FixedString from a UUID or an Int128 of the same width, so it reported
+            // BINARY and rendered hex from getString. The engine's own type name says
+            // FixedString, so it is text -- which is what clickhouse-jdbc reports too.
+            assertEquals(Types.VARCHAR, meta.getColumnType(1));
+            assertEquals(3, meta.getPrecision(1), "a FixedString's precision is its width");
             assertArrayEquals(new byte[] {'a', 'b', 'c'}, rs.getBytes("fs"));
-            assertEquals("616263", rs.getString("fs"), "text form of a binary column is hex");
+            assertEquals("abc", rs.getString("fs"));
         });
     }
 
@@ -202,11 +210,17 @@ class TypeMatrixIT extends NativeTestBase {
                         + " toDate32('2200-12-31') AS future",
                 (rs, meta) -> {
                     assertEquals(Types.DATE, meta.getColumnType(1));
-                    assertEquals(LocalDate.class.getName(), meta.getColumnClassName(1));
-                    assertEquals(LocalDate.of(2026, 9, 8), rs.getObject("d"));
+                    // java.sql.Date, not LocalDate. JDBC 4.2's mapping table is explicit that
+                    // the java.time types are what getObject(int, Class) is for; returning one
+                    // from getObject(int) breaks framework code that switches on the returned
+                    // type -- Spring's JdbcUtils.getResultSetValue, for one.
+                    assertEquals(java.sql.Date.class.getName(), meta.getColumnClassName(1));
+                    assertEquals(java.sql.Date.valueOf("2026-09-08"), rs.getObject("d"));
                     assertEquals("2026-09-08", rs.getDate("d").toString());
-                    assertEquals(LocalDate.of(1900, 1, 1), rs.getObject("old"));
-                    assertEquals(LocalDate.of(2200, 12, 31), rs.getObject("future"));
+                    assertEquals(java.sql.Date.valueOf("1900-01-01"), rs.getObject("old"));
+                    assertEquals(java.sql.Date.valueOf("2200-12-31"), rs.getObject("future"));
+                    // The java.time form is still there, by asking for it.
+                    assertEquals(LocalDate.of(2026, 9, 8), rs.getObject("d", LocalDate.class));
                     assertEquals("2026-09-08", rs.getString("d"));
                 });
     }
@@ -219,16 +233,32 @@ class TypeMatrixIT extends NativeTestBase {
                         + " toDateTime64('2026-09-08 12:34:56.123456', 6, 'UTC') AS us,"
                         + " toDateTime64('1960-01-01 00:00:00.500', 3, 'UTC') AS preEpoch",
                 (rs, meta) -> {
-                    assertEquals(Types.TIMESTAMP_WITH_TIMEZONE, meta.getColumnType(1));
-                    assertEquals(Instant.class.getName(), meta.getColumnClassName(1));
+                    // TIMESTAMP and java.sql.Timestamp, as clickhouse-jdbc reports and as the
+                    // specification's mapping table requires. The Arrow path said
+                    // TIMESTAMP_WITH_TIMEZONE because the Arrow type carried a zone -- the
+                    // engine's session zone, not anything this column declared.
+                    assertEquals(Types.TIMESTAMP, meta.getColumnType(1));
+                    assertEquals(java.sql.Timestamp.class.getName(), meta.getColumnClassName(1));
+                    assertEquals(3, meta.getScale(1));
+                    assertEquals(6, meta.getScale(2));
 
-                    assertEquals(Instant.parse("2026-09-08T12:34:56.789Z"), rs.getObject("ms"));
-                    assertEquals(Instant.parse("2026-09-08T12:34:56.123456Z"), rs.getObject("us"));
+                    assertEquals(
+                            java.sql.Timestamp.valueOf("2026-09-08 12:34:56.789"), rs.getObject("ms"));
+                    assertEquals(
+                            java.sql.Timestamp.valueOf("2026-09-08 12:34:56.123456"),
+                            rs.getObject("us"));
                     // Pre-epoch is where floorDiv matters: truncating division would land this
                     // in the wrong second.
-                    assertEquals(Instant.parse("1960-01-01T00:00:00.500Z"), rs.getObject("preEpoch"));
+                    assertEquals(
+                            java.sql.Timestamp.valueOf("1960-01-01 00:00:00.500"),
+                            rs.getObject("preEpoch"));
 
                     assertEquals("2026-09-08 12:34:56.789", rs.getTimestamp("ms").toString());
+                    // The instant is still available by asking, and computing it needs the
+                    // column's zone -- which is why it is not what getObject returns.
+                    assertEquals(
+                            Instant.parse("2026-09-08T12:34:56.789Z"),
+                            rs.getObject("ms", Instant.class));
                 });
     }
 
@@ -241,10 +271,13 @@ class TypeMatrixIT extends NativeTestBase {
 
             java.util.Calendar tokyo =
                     java.util.Calendar.getInstance(TimeZone.getTimeZone("Asia/Tokyo"));
-            assertEquals("2026-09-08 21:00:00.0", rs.getTimestamp("t", tokyo).toString());
+            // The Calendar overload does not move it. Those overloads exist to interpret a
+            // value whose zone is unknown; this column's zone is declared, so shifting by the
+            // caller's calendar would move a moment that was never ambiguous.
+            assertEquals("2026-09-08 12:00:00.0", rs.getTimestamp("t", tokyo).toString());
 
-            // The instant itself is zone-independent, which is why getObject returns one.
-            assertEquals(Instant.parse("2026-09-08T12:00:00Z"), rs.getObject("t"));
+            // The instant is available by asking, and is computed from the column's zone.
+            assertEquals(Instant.parse("2026-09-08T12:00:00Z"), rs.getObject("t", Instant.class));
         });
     }
 
@@ -333,45 +366,59 @@ class TypeMatrixIT extends NativeTestBase {
         // Only over String: ClickHouse refuses LowCardinality over a fixed-width type unless
         // allow_suspicious_low_cardinality_types is set, so String is the case that occurs.
         withRow("SELECT CAST('x' AS LowCardinality(String)) AS lc", (rs, meta) -> {
-            // Materialized, so the driver sees Arrow utf8 and never has to decode a dictionary
-            // -- which is what chdb_arrow_options.low_cardinality_as_dictionary=0 buys.
-            assertEquals("String", meta.getColumnTypeName(1));
+            // The wrapper survives now. The Arrow path erased it -- a LowCardinality(String)
+            // and a String were both reported as "String" -- because Arrow carries dictionary
+            // encoding as a property of the array rather than of the type. The engine's own
+            // type name keeps it, and so does clickhouse-jdbc.
+            assertEquals("LowCardinality(String)", meta.getColumnTypeName(1));
             assertEquals(Types.VARCHAR, meta.getColumnType(1));
             assertEquals("x", rs.getString("lc"));
         });
     }
 
     @Test
-    @DisplayName("an unreadable type is a typed error naming the column, never a wrong value")
-    void unsupportedTypesAreRefusedPrecisely() throws SQLException {
-        // Every one of these has no flat Arrow mapping the driver can decode. What matters is
-        // that reading it raises SQLFeatureNotSupportedException rather than mis-slicing
-        // buffers, and that the message says which column and how to work around it.
-        String[] expressions = {
-            "[1, 2, 3]", "map('a', 1)", "tuple(1, 'x')",
-        };
-        for (String expression : expressions) {
-            try (Connection connection = openMemory();
-                    Statement statement = connection.createStatement();
-                    ResultSet rs = statement.executeQuery("SELECT " + expression + " AS c")) {
-                ResultSetMetaData meta = rs.getMetaData();
-                assertTrue(
-                        meta.getColumnTypeName(1).startsWith("Unsupported("),
-                        expression + " reported as " + meta.getColumnTypeName(1));
-                assertEquals(Types.OTHER, meta.getColumnType(1));
-                assertTrue(rs.next());
+    @DisplayName("composites read as themselves, and a type with no reader is a typed error")
+    void compositesReadAndTheRestIsATypedError() throws SQLException {
+        // These used to be refused. The Arrow path had no flat mapping for them and reported
+        // "Unsupported(arrow=+l)" as the column's type name, which is a diagnostic string in
+        // the place a GUI puts a type. Reading RowBinary, they have their real names and their
+        // values decode.
+        withRow("SELECT [1, 2, 3] AS a, map('a', 1) AS m, tuple(1, 'x') AS t", (rs, meta) -> {
+            assertEquals("Array(UInt8)", meta.getColumnTypeName(1));
+            assertEquals(Types.ARRAY, meta.getColumnType(1));
+            // A java.sql.Array, which is what getColumnClassName promises and what a framework
+            // reaches for. Returning the bare Object[] would make the driver disagree with its
+            // own metadata.
+            java.sql.Array array = (java.sql.Array) rs.getObject("a");
+            assertArrayEquals(new Object[] {(short) 1, (short) 2, (short) 3}, (Object[]) array.getArray());
+            assertEquals("[1, 2, 3]", rs.getString("a"));
 
-                SQLFeatureNotSupportedException e =
-                        assertThrows(SQLFeatureNotSupportedException.class, () -> rs.getObject(1));
-                assertTrue(e.getMessage().contains("Column 1"), e.getMessage());
-                assertTrue(e.getMessage().contains("toString("), "no workaround offered: " + e.getMessage());
-            } catch (SQLException e) {
-                // Some of these the engine refuses to stream at all, which is also an acceptable
-                // outcome: it is a clear error rather than a wrong value.
-                assertTrue(
-                        e.getMessage().contains("UNKNOWN_TYPE") || e.getMessage().contains("Unsupported"),
-                        expression + " -> " + e.getMessage());
-            }
+            assertEquals("Map(String, UInt8)", meta.getColumnTypeName(2));
+            assertEquals(java.util.Map.of("a", (short) 1), rs.getObject("m"));
+
+            assertEquals("Tuple(UInt8, String)", meta.getColumnTypeName(3));
+            Object[] tuple = (Object[]) rs.getObject("t");
+            assertEquals((short) 1, tuple[0]);
+            assertEquals("x", tuple[1]);
+        });
+
+        // What is still unreadable: an AggregateFunction state is an opaque per-function blob
+        // with no documented layout. The requirement is unchanged -- a typed error naming the
+        // column, never a wrong value -- only the set of types it applies to has shrunk.
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement();
+                ResultSet rs =
+                        statement.executeQuery(
+                                "SELECT quantileState(0.5)(number) AS s FROM numbers(10)")) {
+            assertEquals(
+                    "AggregateFunction(quantile(0.5), UInt64)", rs.getMetaData().getColumnTypeName(1));
+            // The refusal lands on next() rather than on the accessor, and it has to: a
+            // row-wise format gives no way to skip a value whose length the decoder cannot
+            // work out, so the row is unreadable and not just the column.
+            SQLException e = assertThrows(SQLException.class, rs::next);
+            assertEquals("0A000", e.getSQLState());
+            assertTrue(e.getMessage().contains("AggregateFunction"), e.getMessage());
+            assertTrue(e.getMessage().contains("toString("), "no workaround offered: " + e.getMessage());
         }
     }
 

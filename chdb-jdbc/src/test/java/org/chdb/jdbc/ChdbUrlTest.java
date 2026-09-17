@@ -34,7 +34,30 @@ class ChdbUrlTest {
     @DisplayName(":memory: is not passed as --path, which the engine would take as a directory name")
     void memoryOmitsPathArgument() throws SQLException {
         List<String> arguments = ChdbUrl.parse("jdbc:chdb::memory:", null).toConnectArguments();
-        assertEquals(List.of("clickhouse"), arguments);
+        assertFalse(
+                arguments.stream().anyMatch(a -> a.startsWith("--path")),
+                "no --path for :memory:, but got " + arguments);
+        assertEquals("clickhouse", arguments.get(0));
+    }
+
+    @Test
+    @DisplayName("the JSON-as-string setting is applied at connect, and cannot be turned off")
+    void jsonAsStringIsForced() throws SQLException {
+        // The driver reads results as RowBinaryWithNamesAndTypes, in which a JSON column is
+        // written either as a length-prefixed string or in its own structured binary form
+        // depending on this setting -- and the header says JSON either way, so a decoder cannot
+        // tell which arrived. A caller turning it off would make JSON columns unreadable.
+        String setting = "--output_format_binary_write_json_as_string=1";
+        assertTrue(
+                ChdbUrl.parse("jdbc:chdb::memory:", null).toConnectArguments().contains(setting));
+
+        // Last wins in the engine's argument handling, so ours has to come after the URL's.
+        List<String> overridden =
+                ChdbUrl.parse(
+                                "jdbc:chdb::memory:?output_format_binary_write_json_as_string=0",
+                                null)
+                        .toConnectArguments();
+        assertEquals(setting, overridden.get(overridden.size() - 1), overridden.toString());
     }
 
     @Test
