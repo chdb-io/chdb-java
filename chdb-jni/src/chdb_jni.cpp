@@ -1609,6 +1609,247 @@ Java_org_chdb_internal_ChdbNative_streamClose(JNIEnv * env, jclass, jlong id)
     }
 }
 
+// ====================================================================== RowBinary streaming
+//
+// The type-carrying path. Where the Arrow entry points above hand over columnar buffers whose
+// Arrow types are a lossy projection of ClickHouse's -- Enum8 arriving as Int8 with its labels
+// gone, Int128 and IPv6 and UUID all arriving as sixteen bytes of fixed-size binary -- these
+// hand over the bytes of a RowBinaryWithNamesAndTypes stream, whose header carries every type
+// as the engine declared it. All of the decoding is on the Java side; the shim only moves
+// bytes and owns the engine handles.
+
+namespace
+{
+
+struct RowBinaryHandle : HandleBase
+{
+    RowBinaryHandle() : HandleBase(kKindRowBinary) { }
+
+    ~RowBinaryHandle() override { closeNow(); }
+
+    void closeNow()
+    {
+        if (stream != nullptr)
+        {
+            chdb_destroy_query_result(stream);
+            stream = nullptr;
+        }
+        finished = true;
+    }
+
+    std::mutex mutex;
+    chdb_result * stream = nullptr;
+    bool finished = false;
+    std::shared_ptr<ConnHandle> owner;
+};
+
+std::shared_ptr<RowBinaryHandle> requireRowBinary(JNIEnv * env, jlong id)
+{
+    auto base = HandleRegistry::instance().get(id, kKindRowBinary);
+    if (!base)
+    {
+        throwNative(env, "RowBinary stream handle " + std::to_string(id) + " is not open (it was "
+                    "closed, or it belongs to a different kind of object)");
+        return nullptr;
+    }
+    return std::static_pointer_cast<RowBinaryHandle>(base);
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_chdb_internal_ChdbNative_rowBinaryOpen(
+    JNIEnv * env,
+    jclass,
+    jlong connection_id,
+    jbyteArray sql_bytes,
+    jbyteArray format_bytes,
+    jobjectArray param_name_bytes,
+    jobjectArray param_value_bytes)
+{
+    try
+    {
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return 0;
+
+        std::string sql;
+        std::string format;
+        std::vector<std::string> names;
+        std::vector<std::string> values;
+        if (!toBytes(env, sql_bytes, sql) || !toBytes(env, format_bytes, format)
+            || !toBytesVector(env, param_name_bytes, names)
+            || !toBytesVector(env, param_value_bytes, values))
+            return 0;
+        if (names.size() != values.size())
+        {
+            throwNative(env, "parameter name and value arrays have different lengths");
+            return 0;
+        }
+
+        chdb_result * stream = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            if (connection->conn == nullptr)
+            {
+                throwNative(env, "the connection was closed while the streaming query was starting");
+                return 0;
+            }
+            chdb_connection conn = *connection->conn;
+            // Always the _with_params_n form, even with no parameters: it is the only variant
+            // that takes explicit lengths for both the query and the format, and a query is
+            // allowed to contain a NUL byte.
+            ParamArrays params = buildParams(names, values);
+            stream = chdb_stream_query_with_params_n(
+                conn,
+                sql.data(),
+                sql.size(),
+                format.data(),
+                format.size(),
+                params.names.data(),
+                params.name_lengths.data(),
+                params.values.data(),
+                params.value_lengths.data(),
+                params.names.size());
+        }
+
+        const std::string error = resultError(stream);
+        if (!error.empty())
+        {
+            chdb_destroy_query_result(stream);
+            throwNative(env, error);
+            return 0;
+        }
+        if (stream == nullptr)
+        {
+            throwNative(env, "chDB returned neither a stream nor an error");
+            return 0;
+        }
+
+        auto handle = std::make_shared<RowBinaryHandle>();
+        handle->stream = stream;
+        handle->owner = connection;
+        return static_cast<jlong>(HandleRegistry::instance().insert(handle));
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("failed to start the RowBinary stream: ") + e.what());
+        return 0;
+    }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_chdb_internal_ChdbNative_rowBinaryFetch(
+    JNIEnv * env, jclass, jlong connection_id, jlong id)
+{
+    try
+    {
+        auto handle = requireRowBinary(env, id);
+        if (!handle)
+            return nullptr;
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return nullptr;
+
+        std::string bytes;
+        {
+            // Lock order: the stream's mutex before the connection's, as declared in
+            // chdb_jni_handles.h.
+            std::lock_guard<std::mutex> stream_lock(handle->mutex);
+            if (handle->finished || handle->stream == nullptr)
+                return nullptr;
+
+            std::lock_guard<std::mutex> conn_lock(connection->mutex);
+            if (connection->conn == nullptr)
+            {
+                throwNative(env, "the connection was closed while the stream was being read");
+                return nullptr;
+            }
+
+            chdb_result * chunk = chdb_stream_fetch_result(*connection->conn, handle->stream);
+            const std::string error = resultError(chunk);
+            if (!error.empty())
+            {
+                chdb_destroy_query_result(chunk);
+                handle->finished = true;
+                throwNative(env, error);
+                return nullptr;
+            }
+            const char * buffer = chunk == nullptr ? nullptr : chdb_result_buffer(chunk);
+            const size_t length = chunk == nullptr ? 0 : chdb_result_length(chunk);
+            if (buffer == nullptr || length == 0)
+            {
+                // An empty chunk is how the stream says it is done.
+                chdb_destroy_query_result(chunk);
+                handle->finished = true;
+                return nullptr;
+            }
+            // Copied out before the chunk is destroyed: the buffer belongs to it, and holding
+            // the pointer past the destroy would be a use-after-free the JVM cannot catch.
+            bytes.assign(buffer, length);
+            chdb_destroy_query_result(chunk);
+        }
+
+        jbyteArray out = env->NewByteArray(static_cast<jsize>(bytes.size()));
+        if (out == nullptr)
+            return nullptr;
+        env->SetByteArrayRegion(
+            out, 0, static_cast<jsize>(bytes.size()), reinterpret_cast<const jbyte *>(bytes.data()));
+        return out;
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("failed to fetch from the RowBinary stream: ") + e.what());
+        return nullptr;
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_chdb_internal_ChdbNative_rowBinaryCancel(
+    JNIEnv * env, jclass, jlong connection_id, jlong id)
+{
+    try
+    {
+        auto handle = requireRowBinary(env, id);
+        if (!handle)
+            return;
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return;
+
+        std::lock_guard<std::mutex> stream_lock(handle->mutex);
+        if (handle->finished || handle->stream == nullptr)
+            return;
+        std::lock_guard<std::mutex> conn_lock(connection->mutex);
+        if (connection->conn == nullptr)
+            return;
+        chdb_stream_cancel_query(*connection->conn, handle->stream);
+        handle->finished = true;
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("failed to cancel the RowBinary stream: ") + e.what());
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_chdb_internal_ChdbNative_rowBinaryClose(JNIEnv * env, jclass, jlong id)
+{
+    try
+    {
+        auto base = HandleRegistry::instance().remove(id, kKindRowBinary);
+        if (!base)
+            return;
+        auto handle = std::static_pointer_cast<RowBinaryHandle>(base);
+        std::lock_guard<std::mutex> lock(handle->mutex);
+        handle->closeNow();
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("failed to close the RowBinary stream: ") + e.what());
+    }
+}
+
 // ====================================================================== diagnostics
 
 extern "C" JNIEXPORT jlong JNICALL

@@ -34,6 +34,7 @@ public final class ChdbNative {
     public static final int KIND_CONNECTION = 1;
     public static final int KIND_RESULT = 2;
     public static final int KIND_STREAM = 3;
+    public static final int KIND_ROW_BINARY = 4;
 
     static {
         // Loads libchdb and then the shim, in that order, and verifies the ABI.
@@ -252,6 +253,43 @@ public final class ChdbNative {
      * Idempotent.
      */
     public static native void streamClose(long stream);
+
+    // ---------------------------------------------------------------- RowBinary streaming
+
+    /**
+     * {@code chdb_stream_query_with_params_n} with a {@code RowBinaryWithNamesAndTypes} format.
+     *
+     * <p>The type-carrying path. Where {@link #streamOpen} hands over Arrow buffers whose types
+     * are a lossy projection of ClickHouse's, this hands over the bytes of a RowBinary stream
+     * whose header names every type as the engine declared it. Nothing is decoded natively.
+     *
+     * <p>Unlike the Arrow route this one has a parameterised variant for every statement,
+     * including the ones the engine will not stream through Arrow, so a parameterised
+     * {@code SHOW} or {@code DESCRIBE} has a path here where it had none before.
+     *
+     * @param format the ClickHouse output format, normally {@code RowBinaryWithNamesAndTypes}
+     * @return a stream handle of {@link #KIND_ROW_BINARY}
+     * @throws ChdbNativeException carrying the engine's error text if the statement failed
+     */
+    public static native long rowBinaryOpen(
+            long connection, byte[] sql, byte[] format, byte[][] paramNames, byte[][] paramValues);
+
+    /**
+     * The next chunk of the stream, or null once it has ended.
+     *
+     * <p>Chunks are the engine's, not rows: one may end part-way through a row and the caller
+     * has to carry the remainder into the next. The bytes are copied out of the engine's buffer
+     * before it is released, so the array is the caller's to keep.
+     *
+     * @throws ChdbNativeException if the engine reported a mid-stream error
+     */
+    public static native byte[] rowBinaryFetch(long connection, long stream);
+
+    /** {@code chdb_stream_cancel_query}. Safe on a stream that already ended. */
+    public static native void rowBinaryCancel(long connection, long stream);
+
+    /** Releases the engine's stream handle. Idempotent. */
+    public static native void rowBinaryClose(long stream);
 
     // ---------------------------------------------------------------- diagnostics
 
