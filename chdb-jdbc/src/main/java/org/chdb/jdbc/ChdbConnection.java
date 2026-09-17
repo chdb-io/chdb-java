@@ -415,7 +415,7 @@ public final class ChdbConnection implements Connection {
         // ExecutionGate.closeToNewEntrantsWaiting() for why waiting here costs nothing.
         executionGate.closeToNewEntrantsWaiting();
 
-        // Statements first, so their streams and batches are released before the connection
+        // Statements first, so their streams and chunks are released before the connection
         // they were opened on. The shim keeps a strong reference from stream to connection,
         // so the other order would leak rather than crash -- but leaking is still wrong.
         for (ChdbStatement statement : openStatements.toArray(new ChdbStatement[0])) {

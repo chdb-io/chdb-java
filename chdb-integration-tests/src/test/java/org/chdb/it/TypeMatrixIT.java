@@ -353,8 +353,10 @@ class TypeMatrixIT extends NativeTestBase {
                 "SELECT CAST('b' AS Enum8('a' = 1, 'b' = 2)) AS e,"
                         + " toString(CAST('b' AS Enum8('a' = 1, 'b' = 2))) AS s",
                 (rs, meta) -> {
-                    // The engine's Arrow converter materializes an Enum to its integer, so that
-                    // is what the driver sees -- there is no Arrow enum type to preserve.
+                    // The header names the Enum with its labels, so the driver could hand back
+                    // the label. It hands back the underlying integer because that is what
+                    // clickhouse-jdbc returns; toString() in SQL is how to ask for the label.
+                    // See docs/type-parity-clickhouse-jdbc.md.
                     assertEquals(2, rs.getInt("e"));
                     assertEquals("b", rs.getString("s"));
                 });
@@ -392,6 +394,12 @@ class TypeMatrixIT extends NativeTestBase {
             java.sql.Array array = (java.sql.Array) rs.getObject("a");
             assertArrayEquals(new Object[] {(short) 1, (short) 2, (short) 3}, (Object[]) array.getArray());
             assertEquals("[1, 2, 3]", rs.getString("a"));
+            // And getArray() is the same object. It used to refuse outright, which left the
+            // driver returning a java.sql.Array from getObject and denying it had one here.
+            assertArrayEquals(
+                    (Object[]) array.getArray(), (Object[]) rs.getArray("a").getArray());
+            assertEquals(Types.SMALLINT, rs.getArray("a").getBaseType());
+            assertEquals("UInt8", rs.getArray("a").getBaseTypeName());
 
             assertEquals("Map(String, UInt8)", meta.getColumnTypeName(2));
             assertEquals(java.util.Map.of("a", (short) 1), rs.getObject("m"));
@@ -430,5 +438,133 @@ class TypeMatrixIT extends NativeTestBase {
             assertEquals("[1,2,3]", rs.getString("arr"));
             assertEquals("{'a':1}", rs.getString("m"));
         });
+    }
+
+    /**
+     * Every declared type reads the same from a real table column as from the expression that
+     * produced the value.
+     *
+     * <p>Every other test here, and the whole clickhouse-jdbc parity harness, reads a `SELECT`
+     * expression. That is deliberate — both drivers then see an identical column type with no
+     * table definition to disagree about — but it leaves one thing unchecked: a `CAST` in a
+     * projection could in principle reach the wire format as something other than what a column
+     * of that type reaches it as, and the whole exercise would then be an artifact of how the
+     * cases are written. It is not, and this is what says so.
+     *
+     * <p>Compared per column: all seven `ResultSetMetaData` answers, `getObject` and
+     * `getString`.
+     */
+    @Test
+    @DisplayName("a table column reads identically to the expression that produced it")
+    void tableColumnsAgreeWithExpressions() throws SQLException {
+        // {column name, declared type, an expression yielding that type and value}
+        String[][] cases = {
+            {"i8", "Int8", "toInt8(-7)"},
+            {"u64", "UInt64", "toUInt64(18446744073709551615)"},
+            {"i256", "Int256", "toInt256(-170141183460469231731687303715884105728)"},
+            {"b", "Bool", "true"},
+            {"f32", "Float32", "toFloat32(1.5)"},
+            {"dec", "Decimal(18, 4)", "toDecimal64(1.2345, 4)"},
+            {"s", "String", "'abc'"},
+            {"fs", "FixedString(6)", "toFixedString('abc', 6)"},
+            {"lc", "LowCardinality(String)", "toLowCardinality('x')"},
+            {"lcn", "LowCardinality(Nullable(String))", "CAST('x', 'LowCardinality(Nullable(String))')"},
+            {"e8", "Enum8('a' = 1, 'b' = 2)", "CAST('b', 'Enum8(\\'a\\' = 1, \\'b\\' = 2)')"},
+            {"d", "Date", "toDate('2024-03-04')"},
+            {"d32", "Date32", "toDate32('2024-03-04')"},
+            {"dt", "DateTime", "toDateTime('2024-03-04 05:06:07')"},
+            {"dt64", "DateTime64(3)", "toDateTime64('2024-03-04 05:06:07.123', 3)"},
+            {"dtz", "DateTime64(3, 'Europe/Berlin')",
+                "toDateTime64('2024-03-04 05:06:07.123', 3, 'Europe/Berlin')"},
+            {"t64", "Time64(3)", "CAST('12:34:56.789', 'Time64(3)')"},
+            {"uu", "UUID", "toUUID('61f0c404-5cb3-11e7-907b-a6006ad3dba0')"},
+            {"ip4", "IPv4", "toIPv4('1.2.3.4')"},
+            {"ip6", "IPv6", "toIPv6('::1')"},
+            {"arr", "Array(Int32)", "CAST([1, 2, 3], 'Array(Int32)')"},
+            {"m", "Map(String, UInt8)", "map('a', 1)"},
+            {"tp", "Tuple(UInt8, String)", "tuple(1, 'x')"},
+            {"var", "Variant(String, UInt64)", "CAST(toUInt64(42), 'Variant(String, UInt64)')"},
+            {"dyn", "Dynamic", "CAST(42, 'Dynamic')"},
+            {"js", "JSON", "CAST('{\"a\":1}', 'JSON')"},
+            {"pt", "Point", "CAST((1.0, 2.0), 'Point')"},
+            {"nul", "Nullable(Int32)", "CAST(NULL, 'Nullable(Int32)')"},
+        };
+
+        StringBuilder columns = new StringBuilder();
+        StringBuilder projection = new StringBuilder();
+        for (String[] c : cases) {
+            if (columns.length() > 0) {
+                columns.append(", ");
+                projection.append(", ");
+            }
+            columns.append(c[0]).append(' ').append(c[1]);
+            projection.append(c[2]).append(" AS ").append(c[0]);
+        }
+
+        try (Connection connection = openMemory();
+                Statement statement = connection.createStatement()) {
+            statement.execute("CREATE DATABASE IF NOT EXISTS type_agreement");
+            statement.execute("DROP TABLE IF EXISTS type_agreement.t");
+            statement.execute("CREATE TABLE type_agreement.t (" + columns + ") ENGINE = Memory");
+            statement.execute("INSERT INTO type_agreement.t SELECT " + projection);
+
+            java.util.Map<String, String> viaExpression = describeRow(statement, "SELECT " + projection);
+            java.util.Map<String, String> viaColumn =
+                    describeRow(statement, "SELECT * FROM type_agreement.t");
+
+            assertEquals(cases.length, viaExpression.size());
+            for (String[] c : cases) {
+                assertEquals(
+                        viaExpression.get(c[0]),
+                        viaColumn.get(c[0]),
+                        () -> "a " + c[1] + " column does not read like " + c[2]);
+            }
+
+            statement.execute("DROP TABLE type_agreement.t");
+        }
+    }
+
+    /** Every answer the driver gives about each column of a one-row query, as text. */
+    private java.util.Map<String, String> describeRow(Statement statement, String sql)
+            throws SQLException {
+        java.util.Map<String, String> answers = new java.util.LinkedHashMap<>();
+        try (ResultSet rs = statement.executeQuery(sql)) {
+            assertTrue(rs.next(), "expected one row from: " + sql);
+            ResultSetMetaData meta = rs.getMetaData();
+            for (int i = 1; i <= meta.getColumnCount(); i++) {
+                StringBuilder answer = new StringBuilder();
+                answer.append(meta.getColumnTypeName(i))
+                        .append('|').append(meta.getColumnType(i))
+                        .append('|').append(meta.getColumnClassName(i))
+                        .append('|').append(meta.getPrecision(i))
+                        .append('|').append(meta.getScale(i))
+                        .append('|').append(meta.isSigned(i))
+                        .append('|').append(meta.isNullable(i))
+                        .append('|').append(render(rs.getObject(i)))
+                        .append('|').append(rs.getString(i));
+                answers.put(meta.getColumnName(i), answer.toString());
+            }
+        }
+        return answers;
+    }
+
+    /** Text for a decoded value, reaching inside the containers that do not define equals. */
+    private static String render(Object value) throws SQLException {
+        if (value == null) {
+            return "null";
+        }
+        if (value instanceof byte[]) {
+            return java.util.Arrays.toString((byte[]) value);
+        }
+        if (value instanceof double[]) {
+            return java.util.Arrays.toString((double[]) value);
+        }
+        if (value instanceof java.sql.Array) {
+            return java.util.Arrays.deepToString((Object[]) ((java.sql.Array) value).getArray());
+        }
+        if (value instanceof Object[]) {
+            return java.util.Arrays.deepToString((Object[]) value);
+        }
+        return value.getClass().getName() + ":" + value;
     }
 }

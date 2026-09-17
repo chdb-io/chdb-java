@@ -794,8 +794,8 @@ public final class ChdbResultSet implements ResultSet {
 
     @Override
     public boolean isLast() throws SQLException {
-        // Answering would need a one-row lookahead, which for a stream means fetching a batch
-        // the caller may never read. Refusing is honest; guessing would be wrong at a batch
+        // Answering would need a one-row lookahead, which for a stream means fetching a chunk
+        // the caller may never read. Refusing is honest; guessing would be wrong at a chunk
         // boundary.
         throw ChdbExceptions.notSupported("isLast() on a forward-only streaming result set");
     }
@@ -825,7 +825,7 @@ public final class ChdbResultSet implements ResultSet {
     // ------------------------------------------------------------------ lifecycle
 
     /**
-     * Releases the current batch and the engine's stream immediately.
+     * Releases the current chunk and the engine's stream immediately.
      *
      * <p>Not deferred to a {@code Cleaner}: an unread stream holds engine-side memory and,
      * until it is cancelled, keeps the query running. Closing early -- reading one row of a
@@ -923,7 +923,7 @@ public final class ChdbResultSet implements ResultSet {
         return new SQLFeatureNotSupportedException(
                 method
                         + " needs a scrollable result set. chDB result sets are forward-only because"
-                        + " they stream one batch at a time; buffering the whole result to allow"
+                        + " they stream one chunk at a time; buffering the whole result to allow"
                         + " scrolling would defeat that. Collect the rows you need into a Java"
                         + " collection, or re-run the query with an ORDER BY and LIMIT.",
                 "0A000");
@@ -1442,9 +1442,17 @@ public final class ChdbResultSet implements ResultSet {
 
     @Override
     public Array getArray(int columnIndex) throws SQLException {
+        // The same object getObject() hands back for an Array column, so the two cannot
+        // disagree. Refusing here while getObject() returned a java.sql.Array was the state
+        // this left behind when Array columns became readable.
+        Object value = getObject(columnIndex);
+        if (value == null || value instanceof Array) {
+            return (Array) value;
+        }
         throw ChdbExceptions.notSupported(
-                "Array (V1 does not map ClickHouse Array columns; read them as text with"
-                        + " toString(col))");
+                "getArray on a column of type " + describe(columnIndex).type().name()
+                        + " (only Array columns have one; read this one with getObject or"
+                        + " getString)");
     }
 
     @Override

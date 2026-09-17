@@ -61,7 +61,7 @@ final class ChdbResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public String getColumnLabel(int column) throws SQLException {
-        // chDB has no separate label; the SQL alias is already the Arrow field's name.
+        // chDB has no separate label; the SQL alias is already the name in the header.
         return getColumnName(column);
     }
 
@@ -102,8 +102,8 @@ final class ChdbResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public int isNullable(int column) throws SQLException {
-        // The Arrow nullable flag is authoritative: the engine sets it from the ClickHouse
-        // type, so Nullable(T) and T are distinguishable rather than guessed at.
+        // Straight off the declared type: the header says Nullable(T) or it says T, so this
+        // is read rather than inferred.
         return type(column).isNullable() ? columnNullable : columnNoNulls;
     }
 

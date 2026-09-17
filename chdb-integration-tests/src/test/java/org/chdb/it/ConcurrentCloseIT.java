@@ -73,8 +73,8 @@ class ConcurrentCloseIT extends NativeTestBase {
             "SELECT sum(sipHash64(toString(number))) FROM numbers(200000000)";
 
     /**
-     * The same, on the materialized route: {@code chdb_query_arrow_n} runs the statement to
-     * completion before returning, and a scalar subquery is evaluated while EXPLAIN analyses.
+     * The same, on the materialized route: {@code chdb_query_with_params_n} runs the statement
+     * to completion before returning, and a scalar subquery is evaluated while EXPLAIN analyses.
      * Included because the two routes reach the shim through different entry points and only
      * the streaming one takes the connection's lock for its first fetch.
      */

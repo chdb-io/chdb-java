@@ -152,13 +152,15 @@ close is idempotent; owner relations checked (a stream may only be driven by its
 connection). No C++ exception can unwind across the boundary. Engine error text, including the
 ClickHouse code, is preserved and mapped to `SQLException` subclasses. Text crosses as UTF-8
 `byte[]` into the `_n` entry points — no `GetStringUTFChars` — and an embedded NUL round-trips.
-Batch lifetime is a single place: the Java view is invalidated before the shim frees the batch,
-so a late read is an exception rather than a use-after-free. Handle counters are exposed and
-asserted zero after every test. Nothing calls back into Java from a native thread.
+Result bytes are copied into a Java `byte[]` before the engine's buffer is released, so there
+is no view onto native memory to invalidate and a late read cannot be a use-after-free. Handle
+counters are exposed and asserted zero after every test. Nothing calls back into Java from a
+native thread.
 
-The handle registry and the Arrow layout parser are additionally covered by `chdb_jni_test`,
-a JVM-free harness run under ASan and UBSan — 197 checks, which found five parser defects on
-its first run. ⬜ `Cleaner` as a leak backstop.
+The handle registry and the signal guard are additionally covered by `chdb_jni_test`, a JVM-free
+harness run under ASan and UBSan — 107 checks. It was 199 while the shim also parsed Arrow
+layouts, where it found five parser defects on its first run; that parser is gone with the Arrow
+path, and so are its checks. ⬜ `Cleaner` as a leak backstop.
 
 ## Phase 5 — JVM signal-handler safety
 
@@ -203,18 +205,22 @@ all checked. Parameters survive execution deliberately and `clearParameters()` u
 
 ## Phase 8 — Streaming result set and type mapping
 
-All ✅ for the V1 matrix. Forward-only batch cursor releasing on advance and on close;
+All ✅ for the V1 matrix. Forward-only chunk cursor releasing on advance and on close;
 `wasNull()`; 1-based column indices with precise out-of-range errors; duplicate labels resolve
 to the lowest index; full `ResultSetMetaData`.
 
 The documented matrix is covered end to end, including `UInt64` → `BigInteger` with `getLong()`
 refusing above 2⁶³, `UInt32` refusing to truncate into `getInt()`, `Decimal128`/`Decimal256`
 beyond double precision, pre-epoch sub-second timestamps, NaN and both infinities, and
-timezone-tagged `DateTime64`. Unreadable types report `Unsupported(arrow=<format>)` in metadata
-and raise a typed error naming the column and the SQL cast that reads it — never a wrong value.
+timezone-tagged `DateTime64`. The one unreadable type, an `AggregateFunction` state, reports its
+real name in metadata and raises a typed error naming the column and the SQL cast that reads it
+— never a wrong value.
 
-⬜ Allocation profiling. The per-batch (not per-cell) JNI design and per-column direct buffers
-are in place, but the three-way benchmark the plan asks for in §3.3 has not been run.
+⬜ Allocation profiling. The per-chunk (not per-cell) JNI design is in place, but the three-way
+benchmark the plan asks for in §3.3 has not been run — and reading `RowBinaryWithNamesAndTypes`
+made it more worth running: a `byte[]` per chunk and decoded objects per row, measured at
++683 MB of RSS against +10 KB of live heap on a 430 MB result. See
+[memory](memory.md#rss-is-not-what-to-measure-any-more).
 
 ## Phases 9-14
 
@@ -238,8 +244,8 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
 | Version and symbol mismatch fails before first use | ✅ |
 | Signal handlers preserved across load/connect/query/close | ✅ on macOS arm64 |
 | ASan, LSan, UBSan clean | 🟡 UBSan clean over the whole suite and ASan clean over the shim harness, on Linux and macOS; full-process ASan and LSan blocked on an upstream sanitizer build of chdb-core |
-| Native handle count zero after every test | ✅ 221 tests |
-| Large results stream in bounded memory | ✅ 20M rows, +17 MB RSS |
+| Native handle count zero after every test | ✅ all 175 integration tests |
+| Large results stream in bounded memory | ✅ 20M rows in a 512 MB heap, +79 KB live heap (+202 MB RSS, transient — see [memory](memory.md#rss-is-not-what-to-measure-any-more)) |
 | 1000 queries and a soak show no linear RSS growth | 🟡 1000 queries ✅, soak ⬜ |
 | Cancel, timeout, early close and cascading close leak-free and deadlock-free | ✅ |
 | PreparedStatement does not interpolate | ✅ |
@@ -264,8 +270,10 @@ are in place, but the three-way benchmark the plan asks for in §3.3 has not bee
    upstream stops parsing every JDBC URL as client/server — it is also where issue #2's reporter
    came from.
 3. **The soak test**, the remaining phase-10 item that a CI run cannot stand in for.
-4. **The §3.3 batch-access benchmark**, so the data-path choice is recorded as measured rather
-   than as reasoned.
+4. **The §3.3 batch-access benchmark**. The data path itself is now a measured choice — Arrow's
+   writer loses the type, `RowBinaryWithNamesAndTypes` does not — but the three-way access
+   comparison the plan asks for has not been run, and the allocation cost of the format that
+   won is the reason to run it.
 5. **Phase 14 release preparation**, which is now the largest untouched block: nothing is
    published, and the Maven Central size, signing and SBOM requirements are unverified. The
    package sizes are at least measured: 112 MB (macOS arm64), 128 MB (macOS x86_64), 130 MB

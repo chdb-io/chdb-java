@@ -83,8 +83,11 @@ class StreamingLifecycleIT extends NativeTestBase {
 
             if (baseline > 0 && peak > 0) {
                 long growthMb = (peak - baseline) / 1024;
-                // Generous: the point is that growth is bounded by the batch, not by the
-                // 20 million rows. A materializing driver would need thousands of MB here.
+                // Generous, and RSS rather than live heap on purpose: reading RowBinary
+                // allocates per chunk and per row, so RSS here is mostly the heap expanding to
+                // hold garbage -- measured at 202 MB, against 79 KB of live heap. What the
+                // bound catches is accumulation, which would be thousands of MB for 20 million
+                // rows. docs/memory.md has the two numbers and what each one means.
                 assertTrue(
                         growthMb < 800,
                         "RSS grew " + growthMb + " MB while streaming 20,000,000 rows"

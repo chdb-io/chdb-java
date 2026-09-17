@@ -9,7 +9,7 @@
 // so a stale id would eventually pass a magic check and dereference reused memory. An id
 // that is gone from the registry is simply absent, which turns every use-after-free into
 // a clean Java exception. Lookup takes one mutex; the data path makes native calls per
-// batch rather than per cell (work plan section 3.3), so that cost is not on a hot loop.
+// chunk rather than per cell (work plan section 3.3), so that cost is not on a hot loop.
 
 #pragma once
 

@@ -15,8 +15,10 @@ The baseline has since moved twice. First to **v26.7.2-rc.2** (issue #8, for
   as documented. An unrecognized setting *name* is still accepted and ignored.
 - **§6 no longer applies to the baseline**: both optional symbols are exported now.
 - **§9 is new**, from measuring what `chdb_shutdown()` does and does not do.
-- **§10 and §11 are new**, from measuring which statements the streaming Arrow entry
-  point accepts, and what a query timeout can actually interrupt.
+- **§10 and §11 are new**, from measuring which statements the streaming entry points accept,
+  and what a query timeout can actually interrupt. Re-measured after this driver moved off
+  Arrow: `chdb_stream_query` refuses `SHOW` and `DESCRIBE` exactly as
+  `chdb_stream_query_arrow` does, so §10 is about streaming and not about Arrow.
 
 Then to **v26.7.3**, the first stable release pinned since the RC baseline — v26.7.0 was
 stable too — which closed the oldest entry here:
@@ -383,16 +385,24 @@ degrade rather than fail the load:
 
 ## 7. `UUID` and `FixedString(16)` are indistinguishable in Arrow output
 
-**Severity: cosmetic, lossless. Documented rather than worked around.**
+**Severity: cosmetic, lossless. No longer reaches this driver, but the finding stands.**
+
+**Update.** This driver reads `RowBinaryWithNamesAndTypes` now, whose header names the type, so
+it no longer has to guess. The ambiguity is still there in the engine's Arrow output and still
+affects anything reading it — the ADBC driver, and any consumer of
+`chdb_stream_query_arrow` — so the suggested fix below is unchanged. Worth adding that the
+collision is wider than this section first described: `Int128`, `UInt128` and `IPv6` are also
+exported as `w:16`, so a reader guessing UUID is right for one of five.
 
 The engine's Arrow converter exports both as `w:16` (fixed-size binary of 16 bytes). The public
 `chdb_arrow_options` struct has no knob to change that — the internal
 `chdb_query_arrow_with_settings_n` used by the ADBC driver takes an
 `outputUuidAsFixedByteArray` flag, but it is not on the public API.
 
-So the driver has to pick one meaning for `w:16`. It reports UUID, because a UUID column is far
-more common than a 16-byte `FixedString` and the work plan's type matrix asks for a UUID
-mapping. Nothing is lost either way: `getBytes()` returns the raw 16 bytes for both.
+A reader of the Arrow output has to pick one meaning for `w:16`. This driver reported UUID while
+it read Arrow, because a UUID column is far more common than a 16-byte `FixedString`. That was
+the best available guess and it was wrong for four of the five types that share the encoding,
+which is part of why the driver stopped guessing.
 
 **Suggested upstream fix:** expose `output_uuid_as_fixed_byte_array` on `chdb_arrow_options`,
 so a caller can ask for UUIDs as text and remove the ambiguity.

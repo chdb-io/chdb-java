@@ -189,6 +189,9 @@ p.setBytes(1, payload);
 
 ### Arrays
 
+Reading one gives a `java.sql.Array`, from `getObject` and from `getArray` alike;
+`getBaseTypeName()` is the element's ClickHouse type name and `getArray()` its decoded elements.
+
 There is no `setArray`. Build the array in SQL from a text parameter:
 
 ```java

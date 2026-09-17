@@ -158,13 +158,13 @@ public final class ChdbNative {
     /**
      * {@code chdb_stream_query_with_params_n} with a {@code RowBinaryWithNamesAndTypes} format.
      *
-     * <p>The type-carrying path. Where {@link #streamOpen} hands over Arrow buffers whose types
-     * are a lossy projection of ClickHouse's, this hands over the bytes of a RowBinary stream
-     * whose header names every type as the engine declared it. Nothing is decoded natively.
+     * <p>The one path results arrive on. It hands over the bytes of a RowBinary stream whose
+     * header names every type as the engine declared it; nothing is decoded natively. The Arrow
+     * entry points this replaced typed a column off the Arrow schema instead, which is the
+     * engine's own lossy projection of its type system.
      *
-     * <p>Unlike the Arrow route this one has a parameterised variant for every statement,
-     * including the ones the engine will not stream through Arrow, so a parameterised
-     * {@code SHOW} or {@code DESCRIBE} has a path here where it had none before.
+     * <p>It has a parameterised variant, which those did not: a parameterised {@code SHOW} or
+     * {@code DESCRIBE} has a path here where it had none before.
      *
      * @param format the ClickHouse output format, normally {@code RowBinaryWithNamesAndTypes}
      * @return a stream handle of {@link #KIND_ROW_BINARY}
@@ -176,9 +176,10 @@ public final class ChdbNative {
     /**
      * The next chunk of the stream, or null once it has ended.
      *
-     * <p>Chunks are the engine's, not rows: one may end part-way through a row and the caller
-     * has to carry the remainder into the next. The bytes are copied out of the engine's buffer
-     * before it is released, so the array is the caller's to keep.
+     * <p>Each chunk is a whole document: its own header followed by whole rows, never a row
+     * split across two chunks. Measured rather than documented, so {@link RowBinaryCursor}
+     * checks it instead of trusting it. The bytes are copied out of the engine's buffer before
+     * it is released, so the array is the caller's to keep.
      *
      * @throws ChdbNativeException if the engine reported a mid-stream error
      */

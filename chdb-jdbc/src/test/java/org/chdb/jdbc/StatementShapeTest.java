@@ -14,8 +14,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * both directions.
  *
  * <p>The pinned v26.7.3 baseline does export chdb_classify_query_n, so the scan is no
- * longer the only thing deciding. It is still what decides which of the two Arrow doors a
- * result set goes through, because the classifier does not distinguish them, as well as
+ * longer the only thing deciding. It is still what decides whether a result set is streamed or
+ * materialized, because the classifier does not distinguish those, as well as
  * deciding both halves whenever the classifier is absent or refuses the text -- hence the cases
  * below that pass a classifier answer alongside the SQL.
  */
@@ -42,8 +42,8 @@ class StatementShapeTest {
 
     /**
      * The whole of issue #12: every one of these was measured failing on the streaming door of
-     * the pinned v26.7.0 engine with {@code Streaming query is not supported}, and succeeding
-     * on {@code chdb_query_arrow_n}. Routing them anywhere else is the bug.
+     * the pinned engine with {@code Streaming query is not supported}, and succeeding on the
+     * materializing entry point. Routing them anywhere else is the bug.
      */
     @ParameterizedTest
     @DisplayName("statements with a result set the engine refuses to stream")
@@ -77,7 +77,7 @@ class StatementShapeTest {
     }
 
     @ParameterizedTest
-    @DisplayName("statements with no result set take neither Arrow route")
+    @DisplayName("statements with no result set take neither result-set route")
     @ValueSource(
             strings = {
                 "INSERT INTO t VALUES (1)",
@@ -107,8 +107,8 @@ class StatementShapeTest {
         // that there is a result set; the keyword scan still picks the door, and a keyword that
         // is not in the materialized set takes the streaming one -- which for this synthetic
         // case is also the safe answer, because the streaming door refuses an INSERT before
-        // executing it while the materialized door would write the row and *then* report
-        // "Missing result header for Arrow output".
+        // executing it while the materialized door would write the row and *then* report that
+        // there is no result to read.
         assertEquals(
                 StatementShape.Route.STREAMED_RESULT_SET,
                 StatementShape.route(
@@ -121,7 +121,7 @@ class StatementShapeTest {
         assertEquals(
                 StatementShape.Route.MATERIALIZED_RESULT_SET,
                 StatementShape.route(new int[] {StatementShape.CLASS_READ_ONLY, 1, 0}, "SHOW TABLES"));
-        // And the other way round: a classified write never reaches either Arrow route.
+        // And the other way round: a classified write never reaches either result-set route.
         assertEquals(
                 StatementShape.Route.NO_RESULT_SET,
                 StatementShape.route(new int[] {StatementShape.CLASS_MUTATING, 1, 0}, "SELECT 1"));

@@ -5,6 +5,10 @@ import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.RowIdLifetime;
 import java.sql.SQLException;
+import org.chdb.internal.JdbcTypeMapping;
+import org.chdb.internal.ClickHouseType;
+import java.util.List;
+import java.util.ArrayList;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import org.chdb.internal.NativeLibraryLoader;
@@ -744,45 +748,118 @@ final class ChdbDatabaseMetaData implements DatabaseMetaData {
     }
 
     /**
-     * Column metadata from {@code system.columns}.
+     * Column metadata from {@code system.columns}, with the JDBC type of each column.
      *
-     * <p>{@code DATA_TYPE} is left as {@link java.sql.Types#OTHER} and {@code TYPE_NAME} carries
-     * the ClickHouse type name. Mapping the type name to a JDBC type here would mean
-     * reimplementing the Arrow mapping against a different input -- a text type name rather
-     * than an Arrow format string -- and the two would drift. A caller that needs the JDBC type
-     * of a column can read it from {@code SELECT * FROM t LIMIT 0}'s
-     * {@link java.sql.ResultSetMetaData}, which goes through the one mapping that matters.
+     * <p>{@code DATA_TYPE}, {@code COLUMN_SIZE}, {@code DECIMAL_DIGITS} and {@code NULLABLE} are
+     * real answers now. They used to be {@code OTHER} and zero, on the reasoning that mapping a
+     * type name to a JDBC type here would be a second implementation of the Arrow mapping and
+     * the two would drift. That reasoning went away with the Arrow mapping: the driver types
+     * every column from its declared name now, so {@link JdbcTypeMapping} is the one
+     * implementation and this uses it.
+     *
+     * <p>Getting it there takes two queries. SQL cannot parse a ClickHouse type name, so the
+     * distinct type names in scope are fetched first, mapped in Java, and the results
+     * materialised into the main query as {@code transform()} lookups. The distinct count is
+     * small -- it is types in use, not types that exist -- and the alternative, wrapping the
+     * result set to rewrite four columns per row, is a lot of delegation to achieve the same
+     * thing.
+     *
+     * <p>{@code NULLABLE} comes from the parsed type rather than from
+     * {@code startsWith(type, 'Nullable(')}, which was wrong for
+     * {@code LowCardinality(Nullable(String))} -- a nullable column that did not start with the
+     * word.
      */
     @Override
     public ResultSet getColumns(
             String catalog, String schemaPattern, String tableNamePattern, String columnNamePattern)
             throws SQLException {
+        String where =
+                likeOrTrue("database", schemaPattern)
+                        + " AND "
+                        + likeOrTrue("table", tableNamePattern)
+                        + " AND "
+                        + likeOrTrue("name", columnNamePattern);
+
+        List<String> typeNames = distinctTypes(where);
+        String dataType = lookup(typeNames, "type", t -> String.valueOf(JdbcTypeMapping.jdbcType(t)),
+                String.valueOf(java.sql.Types.OTHER));
+        String columnSize = lookup(typeNames, "type", t -> String.valueOf(JdbcTypeMapping.precision(t)), "0");
+        String decimalDigits = lookup(typeNames, "type", t -> String.valueOf(JdbcTypeMapping.scale(t)), "0");
+        String nullable = lookup(typeNames, "type",
+                t -> String.valueOf(t.isNullable() ? columnNullable : columnNoNulls),
+                String.valueOf(columnNoNulls));
+        String isNullable = lookup(typeNames, "type", t -> t.isNullable() ? "'YES'" : "'NO'", "'NO'");
+
         return query(
                 "SELECT '' AS TABLE_CAT, database AS TABLE_SCHEM, table AS TABLE_NAME,"
                         + " name AS COLUMN_NAME, "
-                        + java.sql.Types.OTHER
-                        + " AS DATA_TYPE, type AS TYPE_NAME,"
-                        + " 0 AS COLUMN_SIZE, 0 AS BUFFER_LENGTH, 0 AS DECIMAL_DIGITS,"
-                        + " 10 AS NUM_PREC_RADIX,"
-                        + " if(startsWith(type, 'Nullable('), "
-                        + columnNullable
-                        + ", "
-                        + columnNoNulls
-                        + ") AS NULLABLE,"
+                        + dataType
+                        + " AS DATA_TYPE, type AS TYPE_NAME, "
+                        + columnSize
+                        + " AS COLUMN_SIZE, 0 AS BUFFER_LENGTH, "
+                        + decimalDigits
+                        + " AS DECIMAL_DIGITS, 10 AS NUM_PREC_RADIX, "
+                        + nullable
+                        + " AS NULLABLE,"
                         + " comment AS REMARKS, default_expression AS COLUMN_DEF,"
                         + " 0 AS SQL_DATA_TYPE, 0 AS SQL_DATETIME_SUB, 0 AS CHAR_OCTET_LENGTH,"
-                        + " toInt32(position) AS ORDINAL_POSITION,"
-                        + " if(startsWith(type, 'Nullable('), 'YES', 'NO') AS IS_NULLABLE,"
+                        + " toInt32(position) AS ORDINAL_POSITION, "
+                        + isNullable
+                        + " AS IS_NULLABLE,"
                         + " '' AS SCOPE_CATALOG, '' AS SCOPE_SCHEMA, '' AS SCOPE_TABLE,"
                         + " 0 AS SOURCE_DATA_TYPE, 'NO' AS IS_AUTOINCREMENT,"
                         + " 'NO' AS IS_GENERATEDCOLUMN"
                         + " FROM system.columns WHERE "
-                        + likeOrTrue("database", schemaPattern)
-                        + " AND "
-                        + likeOrTrue("table", tableNamePattern)
-                        + " AND "
-                        + likeOrTrue("name", columnNamePattern)
+                        + where
                         + " ORDER BY database, table, position");
+    }
+
+    /** The distinct declared types of the columns this call is about. */
+    private List<String> distinctTypes(String where) throws SQLException {
+        List<String> types = new ArrayList<>();
+        try (ResultSet rs =
+                query("SELECT DISTINCT type FROM system.columns WHERE " + where + " ORDER BY type")) {
+            while (rs.next()) {
+                types.add(rs.getString(1));
+            }
+        }
+        return types;
+    }
+
+    /**
+     * A {@code transform()} call mapping each type name to what {@link JdbcTypeMapping} says.
+     *
+     * <p>A type whose name will not parse is left to the default rather than failing the call:
+     * a column of some type from a future engine should cost its own row's detail, not the
+     * whole of {@code getColumns}.
+     */
+    private static String lookup(
+            List<String> typeNames,
+            String column,
+            java.util.function.Function<ClickHouseType, String> answer,
+            String fallback) {
+        StringBuilder names = new StringBuilder();
+        StringBuilder values = new StringBuilder();
+        for (String typeName : typeNames) {
+            ClickHouseType parsed;
+            try {
+                parsed = ClickHouseType.parse(typeName);
+            } catch (RuntimeException e) {
+                continue;
+            }
+            if (names.length() > 0) {
+                names.append(", ");
+                values.append(", ");
+            }
+            names.append(quote(typeName));
+            values.append(answer.apply(parsed));
+        }
+        if (names.length() == 0) {
+            // transform() rejects empty arrays, and with nothing to map the default is the
+            // whole answer anyway.
+            return fallback;
+        }
+        return "transform(" + column + ", [" + names + "], [" + values + "], " + fallback + ")";
     }
 
     @Override

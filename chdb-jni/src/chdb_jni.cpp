@@ -5,7 +5,7 @@
 //   - convert every C++ exception and every engine error into a Java exception, so that
 //     nothing unwinds across the JNI boundary
 //   - keep the host JVM's signal dispositions intact (chdb_jni_signals.h)
-//   - hand Java bounded, correctly sized views of the current Arrow batch and nothing else
+//   - hand Java the bytes of one result chunk, copied out before the engine's buffer goes
 //
 // It deliberately holds no query logic. Deciding what a statement is, mapping types and
 // enforcing JDBC semantics all happen in Java, where they are testable without a build.
@@ -684,17 +684,14 @@ Java_org_chdb_internal_ChdbNative_classifyQuery(JNIEnv * env, jclass, jlong conn
 
 
 
-
-
-
 // ====================================================================== RowBinary streaming
 //
-// The type-carrying path. Where the Arrow entry points above hand over columnar buffers whose
-// Arrow types are a lossy projection of ClickHouse's -- Enum8 arriving as Int8 with its labels
-// gone, Int128 and IPv6 and UUID all arriving as sixteen bytes of fixed-size binary -- these
-// hand over the bytes of a RowBinaryWithNamesAndTypes stream, whose header carries every type
-// as the engine declared it. All of the decoding is on the Java side; the shim only moves
-// bytes and owns the engine handles.
+// The one path results arrive on. It hands over the bytes of a RowBinaryWithNamesAndTypes
+// stream, whose header carries every type as the engine declared it. The Arrow entry points
+// this replaced handed over columnar buffers whose Arrow types are a lossy projection of
+// ClickHouse's -- Enum8 arriving as Int8 with its labels gone, Int128 and IPv6 and UUID all
+// arriving as sixteen bytes of fixed-size binary. All of the decoding is on the Java side; the
+// shim only moves bytes and owns the engine handles.
 
 namespace
 {

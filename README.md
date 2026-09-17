@@ -215,21 +215,23 @@ never a wrong value. The full list, with what to do instead, is in
 
 ## What has been tested
 
-238 tests, run on **all four platforms × Java 11, 17, 21 and 25** — sixteen combinations — plus
+348 tests, run on **all four platforms × Java 11, 17, 21 and 25** — sixteen combinations — plus
 a native sanitizer harness. Every one is green in CI on the current commit.
 
-**148 tests need no engine**, so they run anywhere: the SQL parameter lexer (which `?` is a
-placeholder and which is data, across quotes, comments and dollar-quoting), the Arrow format
-parser and the whole type matrix, JDBC URL parsing, statement classification, platform and libc
+**173 tests need no engine**, so they run anywhere: the SQL parameter lexer (which `?` is a
+placeholder and which is data, across quotes, comments and dollar-quoting); the ClickHouse type
+name parser, including the enum labels that make the grammar non-regular; the RowBinary decoder
+against byte vectors captured from the engine; the `ResultSetMetaData` answers against a table
+captured from clickhouse-jdbc; JDBC URL parsing; statement classification; platform and libc
 detection.
 
-**90 integration tests drive a real engine:**
+**175 integration tests drive a real engine:**
 
 | | |
 |---|---|
-| Type matrix | every scalar type end to end, `NULL` and `wasNull()`, unsigned widening, `UInt64` beyond `Long.MAX_VALUE`, `Decimal128`/`Decimal256` past double precision, pre-epoch sub-second timestamps, NaN and both infinities, timezone-tagged `DateTime64`, and that an unreadable type is a typed error rather than a wrong value |
+| Type matrix | every scalar type end to end, `NULL` and `wasNull()`, unsigned widening, `UInt64` beyond `Long.MAX_VALUE`, `Decimal128`/`Decimal256` past double precision, pre-epoch sub-second timestamps, NaN and both infinities, timezone-tagged `DateTime64`, and that an unreadable type is a typed error rather than a wrong value; and that 28 declared types read identically from a table column and from the expression that produced the value |
 | Parameters | injection attempts round-trip as data; quotes, backslashes, newlines, embedded NUL and astral characters survive; unbound and out-of-range parameters refused |
-| Streaming | 20 million rows in a 512 MB heap grew RSS by 17 MB; slow consumer, early close, `setMaxRows`, and 1000 queries reaching an RSS plateau rather than climbing |
+| Streaming | 20 million rows in a 512 MB heap grew live heap by 79 KB (RSS by 202 MB, which is transient); slow consumer, early close, `setMaxRows`, and 1000 queries reaching a plateau rather than climbing |
 | Lifetime | every native handle asserted back to zero after every test, including after 150 deliberate query failures; cascading close; use-after-close refused |
 | Cancellation | `cancel()` from another thread and `setQueryTimeout` both stop the engine, not just the Java-side wait |
 | Signal handlers | dispositions identical across load, connect, query and close — and a real `NullPointerException` after connecting, which would kill the JVM if the guard regressed |
@@ -239,7 +241,7 @@ detection.
 | Version floors | the full suite again on AlmaLinux 8 — glibc 2.28, RHEL 8's base — against the artefacts the release job would publish; and the build fails if a platform's measured floor rises above its ceiling |
 
 **Sanitizers**, on both a Linux and a macOS toolchain: UBSan over the whole integration suite in
-a real JVM against the real engine, and ASan plus UBSan over a 199-check harness for the shim's
+a real JVM against the real engine, and ASan plus UBSan over a 107-check harness for the shim's
 own logic. ASan cannot cover the full suite — the released engine is not ASan-clean — which is
 [written up with the evidence](docs/upstream-findings.md).
 

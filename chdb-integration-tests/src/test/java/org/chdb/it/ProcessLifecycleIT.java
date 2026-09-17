@@ -639,7 +639,7 @@ class ProcessLifecycleIT extends NativeTestBase {
                         "the slot was not released by the refusal: " + again.getMessage());
 
                 // All three routes, because each reaches the engine through a different native
-                // statement-start call -- the streaming open, chdb_query_arrow_n for a
+                // statement-start call -- the streaming open, chdb_query_with_params_n for a
                 // materialized result set, and chdb_query_n for one with no result set -- and
                 // the abort does not care which. The gate is taken before the route is even
                 // decided, which is what makes one refusal cover all three; this is the test

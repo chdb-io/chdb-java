@@ -24,12 +24,14 @@ import org.chdb.internal.MaterialisedRowBinaryChunks;
  *
  * <h2>Three routes, not two</h2>
  * A statement with a result set the engine will stream goes through {@code
- * chdb_stream_query_arrow_n} and yields a {@link ChdbResultSet} that holds one batch at a
+ * chdb_stream_query_with_params_n} and yields a {@link ChdbResultSet} that holds one chunk at a
  * time. A statement with a result set the engine refuses to stream -- {@code SHOW}, {@code
  * DESCRIBE}, {@code EXPLAIN}, {@code EXISTS}, {@code CHECK}, none of which parse as a SELECT
- * pipeline -- goes through {@code chdb_query_arrow_n}, which delivers the same Arrow C Data
- * Interface materialized, and produces a {@link ChdbResultSet} indistinguishable from the
- * first. Everything else -- DDL, DML, session control -- goes through {@code chdb_query_n}.
+ * pipeline -- goes through {@code chdb_query_with_params_n}, which returns the whole result in
+ * one buffer, and produces a {@link ChdbResultSet} indistinguishable from the first: both read
+ * {@code RowBinaryWithNamesAndTypes}, and one buffer with a header and its rows is a stream of
+ * exactly one chunk. Everything else -- DDL, DML, session control -- goes through {@code
+ * chdb_query_n}.
  * {@link StatementShape} decides which, from the engine's classifier where available.
  *
  * <p>The route is decided once, before execution, and no statement is ever executed twice:
@@ -222,8 +224,9 @@ public class ChdbStatement implements Statement {
         boolean entered = false;
         try {
             // Covers every native call that starts a statement on this connection -- the
-            // classifier in route(), both stream opens in openStream() (chdb_query_arrow_n on
-            // the materialized route, the streaming open on the other) and chdb_query_n in
+            // classifier in route(), both opens in openStream() (chdb_query_with_params_n on
+            // the materialized route, chdb_stream_query_with_params_n on the other) and
+            // chdb_query_n in
             // runMaterialized() -- and stops where a result set takes over, because from there
             // on the thread is fetching rather than starting. Held by covering the whole body
             // rather than by wrapping each call, so a fourth entry point added later is inside
@@ -314,11 +317,11 @@ public class ChdbStatement implements Statement {
      * 12.65 seconds.
      *
      * <h2>How long that window is</h2>
-     * On the streaming route it is the pipeline init plus the first batch, which for a SELECT
+     * On the streaming route it is the pipeline init plus the first chunk, which for a SELECT
      * that emits as it scans is milliseconds -- but for a full aggregate, a {@code GROUP BY} or
-     * an {@code ORDER BY} without a {@code LIMIT} there is no first batch until the whole scan
+     * an {@code ORDER BY} without a {@code LIMIT} there is no first chunk until the whole scan
      * is done, so the window is the entire query. On the materialized route it is always the
-     * entire statement, because {@code chdb_query_arrow_n} runs it to completion before
+     * entire statement, because {@code chdb_query_with_params_n} runs it to completion before
      * returning.
      *
      * <h2>What the caller gets instead</h2>

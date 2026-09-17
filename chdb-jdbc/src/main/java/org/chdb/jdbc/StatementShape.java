@@ -126,7 +126,7 @@ final class StatementShape {
         NO_RESULT_SET,
         /** {@code chdb_stream_query}: a result set, one chunk at a time. */
         STREAMED_RESULT_SET,
-        /** {@code chdb_query_arrow_n}: a result set the engine will not stream. */
+        /** {@code chdb_query_with_params_n}: a result set the engine will not stream. */
         MATERIALIZED_RESULT_SET,
     }
 
@@ -153,8 +153,9 @@ final class StatementShape {
     /**
      * Leading keywords whose statements produce a result set the engine refuses to stream.
      *
-     * <p>Every one of these was measured failing on the streaming door and succeeding on
-     * {@code chdb_query_arrow_n} on the pinned v26.7.0 engine (issue #12). They are all
+     * <p>Every one of these was measured failing on the streaming door and succeeding
+     * materialized on the pinned engine (issue #12) -- first through Arrow, re-measured through
+     * {@code chdb_query_with_params_n}, which the driver reads results on now. They are all
      * metadata reads with results bounded by the schema, so materializing them costs nothing
      * the streaming path was buying.
      */

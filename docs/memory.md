@@ -15,8 +15,8 @@ that is well inside its `-Xmx`.
 |---|---|---|
 | The engine shared library | 350 MB resident, mostly shared file-backed pages | nothing; it is the code |
 | Query execution | depends on the query | `max_memory_usage` |
-| One Arrow batch | engine block size, typically single-digit MB | the engine's block size |
-| Java-side per row | transient objects only | the heap |
+| One result chunk | engine block size, typically under a megabyte | the engine's block size |
+| Java-side per row | transient objects, collected | the heap |
 | The Java heap | | `-Xmx` |
 
 ## What to set
@@ -65,10 +65,10 @@ one query claim the lot, and it applies outside containers, where there is no cg
 
 ## Streaming is what keeps result size out of the equation
 
-A result set holds one Arrow batch at a time. Peak memory tracks the batch, not the result:
+A result set holds one chunk at a time. Live memory tracks the chunk, not the result:
 
 ```java
-// 20 million rows in a JVM with -Xmx512m. Measured RSS growth: 17 MB.
+// 20 million rows in a JVM with -Xmx512m. Measured live heap growth: 79 KB.
 try (Statement statement = connection.createStatement();
         ResultSet rs = statement.executeQuery(
                 "SELECT number, toString(number) FROM numbers(20000000)")) {
@@ -80,7 +80,7 @@ try (Statement statement = connection.createStatement();
 
 Two things you have to do for that to hold:
 
-- **Close the `ResultSet`.** Until you do, its batch is live and the engine's query is still
+- **Close the `ResultSet`.** Until you do, its chunk is live and the engine's query is still
   running. Use try-with-resources; do not rely on the garbage collector, which does not know
   about native memory and has no reason to hurry.
 - **Do not accumulate rows yourself.** Streaming the result into an `ArrayList` puts it all in
@@ -89,10 +89,29 @@ Two things you have to do for that to hold:
 Reading one row of a huge result and closing is cheap and supported: the driver cancels the
 query rather than draining it.
 
+## RSS is not what to measure any more
+
+Reading a four-million-row, ~430 MB result in a JVM with `-Xmx512m`: **live heap grows 10 KB,
+RSS grows 683 MB.** Twenty million narrower rows in the same heap: **live heap 79 KB, RSS
+202 MB.**
+
+Both numbers are correct and they say different things. Live heap is what the collector cannot
+reclaim, and 10 KB is the chunk — the streaming property, intact. RSS includes the heap expanding
+to hold transient garbage, and there is a lot of it now: reading `RowBinaryWithNamesAndTypes`
+allocates a `byte[]` per chunk and decoded objects per row, where the Arrow path handed out
+direct views onto engine memory and allocated almost nothing per row.
+
+So RSS used to be a fair proxy for "streamed rather than materialized" and is not one now. A
+test in `NonStreamableResultsIT` had been using it as one and now measures live heap instead.
+
+Reusing the chunk buffer across fetches would cut the largest single contributor without
+changing any answer. Deliberately not done: it is an allocation-rate change with no behavioural
+evidence behind it, and the change that created the cost was about correctness.
+
 ## One route is not bounded: `SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK`
 
 These cannot be streamed — the engine's streaming entry point accepts only a SELECT pipeline —
-so they run through `chdb_query_arrow_n`, which materializes the whole result.
+so they run through `chdb_query_with_params_n`, which materializes the whole result.
 
 **The peak is inside the engine, before the driver has a handle.** Measured on v26.7.0, arm64,
 comparing the two routes on the same query and sampling RSS after the open with not one row
@@ -104,10 +123,10 @@ read:
 | 432 MB | +669 MB | +0 | +6.4 MB |
 | 864 MB | +896 MB | +0 | +6.5 MB |
 
-`RSS at open` is already the peak: it does not move while the caller iterates. `chdb-arrow-output.cpp`
-shows why — the engine collects every chunk, converts all of them into one `arrow::Table`, and
-only then exports a `TableBatchReader` over it, so both the ClickHouse chunks and the Arrow copy
-are live before the call returns.
+`RSS at open` is already the peak: it does not move while the caller iterates. The engine
+collects the whole result before the call returns, which is what "materialized" means; the table
+above was measured against the Arrow export and the shape is the same for the RowBinary one,
+because the cost is the engine's and not the format's.
 
 **So the JDBC knobs cannot help on this route, and the driver does not pretend otherwise.**
 `setMaxRows`, closing the `ResultSet` after one row, and any row cap the driver could impose all

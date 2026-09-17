@@ -1,5 +1,6 @@
 package org.chdb.it;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -11,6 +12,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -122,6 +124,67 @@ class MetaDataIT extends NativeTestBase {
     }
 
     @Test
+    @DisplayName("getColumns reports a real JDBC type, size and nullability per column")
+    void columnsCarryTheirJdbcType() throws SQLException {
+        // These were DATA_TYPE = OTHER and zeroes, on the reasoning that mapping a type name
+        // here would be a second implementation of the result-set mapping and the two would
+        // drift. The driver types every column from its declared name now, so JdbcTypeMapping is
+        // the one implementation and this goes through it.
+        try (Connection connection = openMemory()) {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute(
+                        "CREATE TABLE IF NOT EXISTS meta_types (i Int32, s String,"
+                                + " fs FixedString(6), d Decimal(18, 4), dt DateTime64(3),"
+                                + " n Nullable(Int32), lcn LowCardinality(Nullable(String)),"
+                                + " e Enum8('a' = 1), arr Array(Int32)) ENGINE = Memory");
+            }
+
+            java.util.Map<String, int[]> found = new java.util.LinkedHashMap<>();
+            java.util.Map<String, String> nullableText = new java.util.LinkedHashMap<>();
+            try (ResultSet rs =
+                    connection.getMetaData().getColumns(null, "default", "meta_types", null)) {
+                while (rs.next()) {
+                    found.put(
+                            rs.getString("COLUMN_NAME"),
+                            new int[] {
+                                rs.getInt("DATA_TYPE"),
+                                rs.getInt("COLUMN_SIZE"),
+                                rs.getInt("DECIMAL_DIGITS"),
+                                rs.getInt("NULLABLE")
+                            });
+                    nullableText.put(rs.getString("COLUMN_NAME"), rs.getString("IS_NULLABLE"));
+                }
+            }
+
+            assertArrayEquals(new int[] {Types.INTEGER, 10, 0, DatabaseMetaData.columnNoNulls},
+                    found.get("i"));
+            assertArrayEquals(new int[] {Types.VARCHAR, 0, 0, DatabaseMetaData.columnNoNulls},
+                    found.get("s"));
+            // A FixedString's size is its width, and it is text rather than binary.
+            assertArrayEquals(new int[] {Types.VARCHAR, 6, 0, DatabaseMetaData.columnNoNulls},
+                    found.get("fs"));
+            assertArrayEquals(new int[] {Types.DECIMAL, 18, 4, DatabaseMetaData.columnNoNulls},
+                    found.get("d"));
+            assertArrayEquals(new int[] {Types.TIMESTAMP, 29, 3, DatabaseMetaData.columnNoNulls},
+                    found.get("dt"));
+            assertArrayEquals(new int[] {Types.INTEGER, 10, 0, DatabaseMetaData.columnNullable},
+                    found.get("n"));
+            // The case the old implementation got wrong. Nullability was decided by
+            // startsWith(type, 'Nullable('), and this column is nullable without starting with
+            // the word -- so it was reported as NOT NULL, which is the kind of metadata a tool
+            // generates a schema from.
+            assertArrayEquals(new int[] {Types.VARCHAR, 0, 0, DatabaseMetaData.columnNullable},
+                    found.get("lcn"));
+            assertEquals("YES", nullableText.get("lcn"));
+            // An enum is VARCHAR because its label is what getString returns.
+            assertArrayEquals(new int[] {Types.VARCHAR, 0, 0, DatabaseMetaData.columnNoNulls},
+                    found.get("e"));
+            assertArrayEquals(new int[] {Types.ARRAY, 0, 0, DatabaseMetaData.columnNoNulls},
+                    found.get("arr"));
+        }
+    }
+
+    @Test
     @DisplayName("getTables and getColumns report a table the test just created")
     void tablesAndColumns() throws SQLException {
         try (Connection connection = openMemory()) {
@@ -175,7 +238,7 @@ class MetaDataIT extends NativeTestBase {
     }
 
     @Test
-    @DisplayName("the JDBC type of a column comes from a zero-row query, which is the one mapping")
+    @DisplayName("the JDBC type of a column also comes from a zero-row query")
     void columnTypesViaEmptyQuery() throws SQLException {
         try (Connection connection = openMemory()) {
             try (Statement statement = connection.createStatement()) {
@@ -183,9 +246,9 @@ class MetaDataIT extends NativeTestBase {
                         "CREATE TABLE IF NOT EXISTS type_probe (id UInt32, name String)"
                                 + " ENGINE = Memory");
             }
-            // getColumns reports the ClickHouse type name and leaves DATA_TYPE as OTHER on
-            // purpose: mapping a type *name* to a JDBC type would be a second implementation of
-            // the Arrow mapping, and the two would drift. This is the documented way to get it.
+            // The other way to the same answer. getColumns() maps the declared type name
+            // through JdbcTypeMapping (see columnsCarryTheirJdbcType) and so does result-set
+            // metadata, so a zero-row query agrees with it without a metadata call.
             try (Statement statement = connection.createStatement();
                     ResultSet rs = statement.executeQuery("SELECT * FROM type_probe LIMIT 0")) {
                 assertEquals(2, rs.getMetaData().getColumnCount());
