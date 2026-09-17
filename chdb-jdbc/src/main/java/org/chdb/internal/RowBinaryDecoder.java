@@ -8,6 +8,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,6 +41,7 @@ import java.util.UUID;
  */
 public final class RowBinaryDecoder {
 
+
     private RowBinaryDecoder() {
     }
 
@@ -69,18 +72,31 @@ public final class RowBinaryDecoder {
      */
     public static final class Options {
         private final boolean jsonAsString;
+        private final ZoneId sessionTimeZone;
 
-        public Options(boolean jsonAsString) {
+        public Options(boolean jsonAsString, ZoneId sessionTimeZone) {
             this.jsonAsString = jsonAsString;
+            this.sessionTimeZone = sessionTimeZone == null ? ZoneOffset.UTC : sessionTimeZone;
         }
 
         public boolean jsonAsString() {
             return jsonAsString;
         }
+
+        /**
+         * The engine's own timezone, from {@code SELECT timezone()}.
+         *
+         * <p>Needed because a {@code DateTime} column without a declared zone stores an instant
+         * whose wall-clock reading is only defined relative to the session's zone, and the wall
+         * clock is what a caller of {@code getTimestamp} is given.
+         */
+        public ZoneId sessionTimeZone() {
+            return sessionTimeZone;
+        }
     }
 
-    /** Nothing assumed about the engine's settings: JSON is refused rather than guessed at. */
-    public static final Options STRICT = new Options(false);
+    /** Nothing assumed about the engine: JSON is refused, and UTC is the fallback zone. */
+    public static final Options STRICT = new Options(false, ZoneOffset.UTC);
 
     /** Decodes with no assumption about engine settings. */
     public static Object decode(ClickHouseType type, RowBinaryInput in) {
@@ -142,8 +158,10 @@ public final class RowBinaryDecoder {
 
             case DATE: return LocalDate.ofEpochDay(in.readUInt16());
             case DATE32: return LocalDate.ofEpochDay(in.readInt32());
-            case DATETIME: return Instant.ofEpochSecond(in.readUInt32());
-            case DATETIME64: return decodeDateTime64(type, in);
+            case DATETIME:
+                return localDateTime(Instant.ofEpochSecond(in.readUInt32()), type, options);
+            case DATETIME64:
+                return localDateTime(decodeDateTime64Instant(type, in), type, options);
             case TIME: return LocalTime.ofSecondOfDay(Math.floorMod(in.readInt32(), 86400));
             case TIME64: return decodeTime64(type, in);
 
@@ -164,6 +182,17 @@ public final class RowBinaryDecoder {
 
             case VARIANT:
                 return decodeVariant(type, in, options);
+
+            case DYNAMIC: {
+                // Each value names its own type first, because a Dynamic column may hold a
+                // different one in every row.
+                ClickHouseType actual = BinaryTypeEncoding.read(in);
+                if (actual.kind() == ClickHouseType.Kind.NOTHING) {
+                    // Which is how Dynamic writes a NULL: the Nothing type and no value.
+                    return null;
+                }
+                return decode(actual, in, options);
+            }
 
             case SIMPLE_AGGREGATE_FUNCTION:
                 // Only the "simple" kind: its state *is* a value of the argument type, so the
@@ -226,7 +255,25 @@ public final class RowBinaryDecoder {
         return new BigDecimal(unscaled, type.scale());
     }
 
-    private static Object decodeDateTime64(ClickHouseType type, RowBinaryInput in) {
+    /**
+     * The wall clock the value reads as, in the column's zone.
+     *
+     * <p>Not the instant, deliberately. {@code DateTime} stores an instant, and reporting it as
+     * one is defensible, but it is not what the reference driver does and not what a caller
+     * expects: select a {@code DateTime('Asia/Shanghai')} holding 12:34:56 and you should see
+     * 12:34:56, not the same moment rendered in whatever zone the JVM happens to run in. So the
+     * instant is resolved in the column's declared zone -- or the engine's session zone when the
+     * column does not declare one -- and the wall clock is what comes out. The zone itself stays
+     * available on the type and in the options for a caller that asks for an
+     * {@code OffsetDateTime}.
+     */
+    private static java.time.LocalDateTime localDateTime(
+            Instant instant, ClickHouseType type, Options options) {
+        ZoneId zone = type.timeZone() != null ? ZoneId.of(type.timeZone()) : options.sessionTimeZone();
+        return java.time.LocalDateTime.ofInstant(instant, zone);
+    }
+
+    private static Instant decodeDateTime64Instant(ClickHouseType type, RowBinaryInput in) {
         long ticks = in.readInt64();
         int scale = type.scale();
         // floorDiv/floorMod rather than / and %, so a pre-epoch value keeps a positive
@@ -237,6 +284,7 @@ public final class RowBinaryDecoder {
         long nanos = fraction * pow10(9 - scale);
         return Instant.ofEpochSecond(seconds, nanos);
     }
+
 
     private static Object decodeTime64(ClickHouseType type, RowBinaryInput in) {
         long ticks = in.readInt64();

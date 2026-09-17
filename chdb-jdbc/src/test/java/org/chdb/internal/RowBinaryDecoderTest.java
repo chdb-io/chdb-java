@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.InetAddress;
-import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.LinkedHashMap;
@@ -38,7 +38,8 @@ class RowBinaryDecoderTest {
      * The vectors were captured with output_format_binary_write_json_as_string on, which is
      * what the driver asks for, so the decoder is exercised the same way it will run.
      */
-    private static final RowBinaryDecoder.Options OPTIONS = new RowBinaryDecoder.Options(true);
+    private static final RowBinaryDecoder.Options OPTIONS =
+            new RowBinaryDecoder.Options(true, java.time.ZoneOffset.UTC);
 
     /** name -> {type name, hex of the value bytes, header excluded}. */
     private static final Map<String, String[]> VECTORS = new LinkedHashMap<>();
@@ -133,9 +134,9 @@ class RowBinaryDecoderTest {
         assertEquals("192.168.1.1", ((InetAddress) decode("ipv6Mapped")).getHostAddress());
         assertEquals(LocalDate.parse("1970-01-01"), decode("dateEpoch"));
         assertEquals(LocalDate.parse("1925-01-01"), decode("date32PreEpoch"));
-        assertEquals(Instant.parse("2026-09-17T12:34:56Z"), decode("dateTime"));
-        assertEquals(Instant.parse("2026-09-17T12:34:56.789012345Z"), decode("dateTime64Nanos"));
-        assertEquals(Instant.parse("1960-01-01T00:00:00.500Z"), decode("dateTime64PreEpoch"));
+        assertEquals(LocalDateTime.parse("2026-09-17T12:34:56"), decode("dateTime"));
+        assertEquals(LocalDateTime.parse("2026-09-17T12:34:56.789012345"), decode("dateTime64Nanos"));
+        assertEquals(LocalDateTime.parse("1960-01-01T00:00:00.500"), decode("dateTime64PreEpoch"));
         assertEquals(LocalTime.parse("12:34:56.789"), decode("time64"));
         assertNull(decode("nullableNull"));
         assertEquals(7, decode("nullableValue"));
@@ -160,16 +161,53 @@ class RowBinaryDecoderTest {
     @Test
     @DisplayName("a type with no reader is refused by name, not by running off the end")
     void unsupportedTypesAreNamed() {
-        // JSON, Dynamic and Variant frame themselves in ways that need their own reader.
-        // Refusing is what keeps a row's remaining columns readable.
-        // Dynamic prefixes every value with ClickHouse's binary encoding of its type, which is
-        // a recursive sub-format this does not implement yet.
-        ClickHouseType dynamic = ClickHouseType.parse("Dynamic");
-        RowBinaryDecoder.UnsupportedTypeException e =
-                assertThrows(
-                        RowBinaryDecoder.UnsupportedTypeException.class,
-                        () -> RowBinaryDecoder.decode(dynamic, new RowBinaryInput(new byte[64]), OPTIONS));
-        assertEquals("Dynamic", e.type().name());
+        // What is left now that Dynamic has a reader: an AggregateFunction state, which is an
+        // opaque per-function blob, and anything the parser could not classify. Both are
+        // refused by name, because consuming the wrong number of bytes would corrupt the
+        // columns after this one rather than failing where the problem is.
+        for (String name : new String[] {
+            "AggregateFunction(quantiles(0.5), UInt64)", "SomeTypeFrom2030(Int32)"
+        }) {
+            ClickHouseType t = ClickHouseType.parse(name);
+            RowBinaryDecoder.UnsupportedTypeException e =
+                    assertThrows(
+                            RowBinaryDecoder.UnsupportedTypeException.class,
+                            () -> RowBinaryDecoder.decode(t, new RowBinaryInput(new byte[64]), OPTIONS));
+            assertEquals(name, e.type().name());
+        }
+    }
+
+    @Test
+    @DisplayName("a DateTime reads as the wall clock in its own zone, not in the JVM's")
+    void dateTimeUsesTheColumnsZone() {
+        // The decision this pins: select a DateTime('Asia/Shanghai') holding 12:34:56 and you
+        // get 12:34:56, whatever zone the JVM runs in. The alternative -- reporting the instant
+        // -- is defensible but disagrees with clickhouse-jdbc and surprises callers.
+        //
+        // 0x6aabde70 little-endian is 1789648496, which is 12:34:56 UTC on 2026-09-17.
+        byte[] bytes = hex("70deab6a");
+
+        assertEquals(
+                LocalDateTime.parse("2026-09-17T12:34:56"),
+                RowBinaryDecoder.decode(
+                        ClickHouseType.parse("DateTime('UTC')"), new RowBinaryInput(bytes), OPTIONS));
+
+        // Same instant, a column declared eight hours ahead: the wall clock moves, the bytes
+        // do not.
+        assertEquals(
+                LocalDateTime.parse("2026-09-17T20:34:56"),
+                RowBinaryDecoder.decode(
+                        ClickHouseType.parse("DateTime('Asia/Shanghai')"),
+                        new RowBinaryInput(bytes),
+                        OPTIONS));
+
+        // No declared zone, so the engine's session zone decides.
+        assertEquals(
+                LocalDateTime.parse("2026-09-18T00:34:56"),
+                RowBinaryDecoder.decode(
+                        ClickHouseType.parse("DateTime"),
+                        new RowBinaryInput(bytes),
+                        new RowBinaryDecoder.Options(true, java.time.ZoneId.of("Pacific/Auckland"))));
     }
 
     @Test
