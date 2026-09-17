@@ -482,7 +482,27 @@ public final class JdbcValues {
             return new BigDecimal((BigInteger) n);
         }
         if (n instanceof Double || n instanceof Float) {
-            return BigDecimal.valueOf(((Number) n).doubleValue());
+            double d = ((Number) n).doubleValue();
+            if (Double.isNaN(d) || Double.isInfinite(d)) {
+                // BigDecimal has no NaN and no infinity, so there is no value to return.
+                // Guarded explicitly because BigDecimal.valueOf(double) formats the double
+                // first and then fails on the text, which escapes as an unchecked
+                // NumberFormatException -- the defect class this layer exists to remove. The
+                // differential run against clickhouse-jdbc is what found it; the reference
+                // refuses these too, but with a SQLException.
+                throw new SQLDataException(
+                        c.describe() + " holds " + d + ", which has no BigDecimal value",
+                        "22003",
+                        0);
+            }
+            if (n instanceof Float) {
+                // The float's own shortest decimal text, not the widened double's:
+                // BigDecimal.valueOf((double) 3.4028235E38f) is 3.4028234663852886E+38, which
+                // states 17 digits of a value that carries 7. clickhouse-jdbc answers
+                // 3.4028235E+38, and it is right.
+                return new BigDecimal(Float.toString((Float) n));
+            }
+            return BigDecimal.valueOf(d);
         }
         return BigDecimal.valueOf(((Number) n).longValue());
     }
