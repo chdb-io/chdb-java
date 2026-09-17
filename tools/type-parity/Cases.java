@@ -114,7 +114,9 @@ final class Cases {
         add(c, "JSON", "CAST('{\"a\":1,\"b\":\"x\"}' AS JSON)");
         add(c, "Dynamic int", "CAST(42 AS Dynamic)");
         add(c, "Dynamic string", "CAST('s' AS Dynamic)");
-        add(c, "Variant", "CAST(42 AS Variant(Int64, String))");
+        // Int64 rather than 42: the engine refuses UInt8 -> Variant(Int64, String), because a
+        // conversion into a Variant is only allowed from one of its own member types.
+        add(c, "Variant", "CAST(42::Int64 AS Variant(Int64, String))");
 
         // ---- geo
         add(c, "Point", "CAST((1.0, 2.0) AS Point)");
