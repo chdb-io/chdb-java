@@ -1,8 +1,8 @@
 # Publishing runbook
 
 Everything needed to put `org.chdb:chdb-jdbc` on Maven Central, in the order it has to happen,
-marked by who can do it. The short version: the mechanics are done and tested, the namespace
-needs one DNS record, and one licence question needs somebody with authority to answer it.
+marked by who can do it. Until the Central provider is settled, GitHub Preview bundles provide
+an installable per-platform path for early users.
 
 ---
 
@@ -15,8 +15,9 @@ needs one DNS record, and one licence question needs somebody with authority to 
 | GPG signing | **done and verified** — signs jar, sources, javadoc and pom |
 | Publishing plugin | **done** — `central-publishing-maven-plugin`, `autoPublish=false` |
 | Third-party licence inventory | **done** — generated from the engine, shipped in the package, drift-tested |
+| GitHub Preview bundles | **done** — one per platform, with checksum verification and a local-Maven installer |
 | `org.chdb` namespace | **not started** — needs a DNS TXT record, and there is no fallback |
-| A way to stage all four platforms for one release | **not started** — issue #15 |
+| A way to stage all four platforms for one preview release | **done** — `.github/workflows/preview-release.yml` |
 | GPG key for the project | **not started** — needs a decision about whose key |
 | Position on the LGPL components | **not started** — needs chdb-io |
 
@@ -38,7 +39,7 @@ scripts/build-native.sh macos-x86_64                      # on an Intel Mac
 JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-x86_64-gnu
 JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-aarch64-gnu
 
-mvn versions:set -DnewVersion=26.7.0.1     # a release, not the -SNAPSHOT in the POM
+mvn versions:set -DnewVersion=1.0.0         # a release, not the -SNAPSHOT in the POM
 mvn -Prelease deploy
 ```
 
@@ -63,12 +64,11 @@ release profile rejects.
 purpose: a shim linked for another architecture fails at `System.load()` in a user's JVM rather
 than at build time. Linux is covered from either host by the container helper — given a Linux
 JDK to point `JAVA_HOME` at, which a macOS machine does not have lying around — but macOS
-x86_64 needs an Intel Mac. CI already builds all four on their own runners and does not currently
-upload the packaged jars, so assembling a release means either four machines or a release
-workflow. That gap is issue #15 and should be closed before the first release rather than
-worked around by hand.
+x86_64 needs an Intel Mac. The preview workflow builds all four on their own runners, packages
+each one as a GitHub Release asset, and provides `scripts/install-preview.sh` for local Maven
+installation. Maven Central still needs a separate release workflow and provider decision.
 
-The version matters too: `deploy` on the `26.7.0.1-SNAPSHOT` currently in the POM publishes a
+The version matters too: `deploy` on the `1.0.0-SNAPSHOT` currently in the POM publishes a
 snapshot, which goes to a different place and is never validated or promoted. A Central release
 bundle needs a non-`SNAPSHOT` version.
 

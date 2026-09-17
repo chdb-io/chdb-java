@@ -1,0 +1,135 @@
+name: preview release
+
+# Preview releases are intentionally GitHub Release assets rather than files committed to the
+# repository. GitHub blocks regular repository files over 100 MiB, while the native runtime JARs
+# are roughly 112–167 MB each. A preview tag is expected to look like v1.0.0-preview.1.
+on:
+  push:
+    tags:
+      - 'v*-preview.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing preview tag to build and publish
+        required: true
+        type: string
+
+concurrency:
+  group: preview-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  MAVEN_ARGS: '--batch-mode --no-transfer-progress'
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+          - platform: linux-aarch64-gnu
+            runner: ubuntu-22.04-arm
+          - platform: macos-aarch64
+            runner: macos-15
+          - platform: macos-x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
+
+      - name: Resolve and validate preview version
+        run: |
+          set -eu
+          TAG='${{ inputs.tag || github.ref_name }}'
+          case "$TAG" in
+            v*-preview.*) ;;
+            *) echo "Expected a tag like v1.0.0-preview.1, got $TAG" >&2; exit 1 ;;
+          esac
+          VERSION="${TAG#v}"
+          echo "PREVIEW_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "PREVIEW_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Set the Java binding preview version
+        run: |
+          # shellcheck disable=SC2086
+          mvn $MAVEN_ARGS org.codehaus.mojo:versions-maven-plugin:2.17.0:set \
+            -DnewVersion="$PREVIEW_VERSION" -DgenerateBackupPoms=false
+
+      - name: Compile and run unit tests
+        run: |
+          # shellcheck disable=SC2086
+          mvn $MAVEN_ARGS -pl chdb-jdbc -am test
+
+      - name: Fetch the engine, build the shim, and stage the platform package
+        run: |
+          case '${{ matrix.platform }}' in
+            linux-*) scripts/build-native-in-container.sh '${{ matrix.platform }}' ;;
+            *)       scripts/build-native.sh '${{ matrix.platform }}' ;;
+          esac
+
+      - name: Package the native JAR
+        run: |
+          # shellcheck disable=SC2086
+          mvn $MAVEN_ARGS -pl chdb-jdbc,chdb-native-${{ matrix.platform }} package -DskipTests
+          scripts/package-preview.sh "$PREVIEW_VERSION" '${{ matrix.platform }}' dist
+
+      - name: Smoke-test the packaged preview
+        run: |
+          # shellcheck disable=SC2086
+          mvn $MAVEN_ARGS -pl chdb-examples -am compile -DskipTests
+          java -cp "chdb-jdbc/target/chdb-jdbc-${PREVIEW_VERSION}.jar:$(find chdb-native-${{ matrix.platform }}/target -maxdepth 1 -type f -name '*.jar' -print -quit):chdb-examples/target/classes" \
+            -Dchdb.cache.dir="$PWD/target/preview-cache" \
+            org.chdb.examples.QuickStart
+
+      - name: Upload platform preview bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish GitHub preview release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download platform bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: preview-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: release-assets
+        run: sha256sum -- *.zip > SHA256SUMS
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TAG='${{ inputs.tag || github.ref_name }}'
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "chdb-java $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" release-assets/*.zip release-assets/SHA256SUMS --clobber

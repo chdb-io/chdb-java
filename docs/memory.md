@@ -115,5 +115,5 @@ int result = org.chdb.internal.ChdbNative.shutdown();
 ```
 
 Not needed for a process that simply exits: the threads are reaped by exit, as they always
-were. The pinned 26.7.0 engine does not export it and returns 2; see
+were. Older compatible engines may not export it and return 2; see
 [upstream findings §6](upstream-findings.md).

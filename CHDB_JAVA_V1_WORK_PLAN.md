@@ -25,7 +25,7 @@ V1 不追求一次性覆盖完整 JDBC 规范，也不追求覆盖 chDB 的全�
   - Linux aarch64 glibc
   - macOS x86_64
   - macOS arm64
-- 使用固定版本的 chDB 稳定 C ABI；V1 初始基线为 `chdb-core v26.7.0`，发布前可以升级，但必须重新锁定并完成全量测试。
+- 使用固定版本的 chDB 稳定 C ABI；当前 V1 基线为 `chdb-core v26.7.3`，后续升级必须重新锁定并完成全量测试。
 - 小型 JNI shim 与 `libchdb` 保持为两个独立动态库，不在 Java JNI 库中静态链接完整 chDB。
 - Maven 产物采用“纯 Java 主包 + 平台 native 包”的模式。
 - 提供 JDBC Driver、Connection、Statement、PreparedStatement 和流式 ResultSet。
@@ -201,43 +201,43 @@ META-INF/sbom/
 
 ### 4.3 版本规则
 
-采用“完整 engine 版本 + binding 修订号”：
+采用 Java binding 自身的 SemVer，engine 版本单独记录：
 
 ```text
-<engine-version>.<binding-revision>
+<major>.<minor>.<patch>[-qualifier]
 ```
 
-- `engine-version` 必须原样保留 chDB Core release 版本，包括 `rc` qualifier。
-- `binding-revision` 是最后一个正整数，表示 Java/JNI/loader/平台打包修订；每个新的 engine version 从 `1` 开始。
-- 这是一套 engine-aligned 版本规则，不按 Java SemVer 解释。
+- `major`、`minor`、`patch` 描述 Java binding 自身的 API、行为和兼容性变化，不编码 chDB Core 的版本号。
+- `preview` 和 `rc` 使用 SemVer qualifier，例如 `1.0.0-preview.1` 和 `1.0.0-rc.1`。
+- chDB Core 版本独立记录在 `manifest.properties` 和 JDBC manifest 中；当前 engine 是 `26.7.3`。
+- engine 升级必须产生新的 binding release 并完成全平台测试，但 Maven 版本按 binding 的 SemVer 递增，不直接复制 engine 版本。
 
 示例：
 
 | 场景 | Maven 版本 | 含义 |
 |---|---|---|
-| 首次绑定稳定引擎 26.7.0 | `26.7.0.1` | engine=`26.7.0`，binding revision=`1` |
-| 同一稳定引擎只修 Java/JNI/loader | `26.7.0.2` | engine 不变，binding revision 加一 |
-| 首次绑定引擎 26.7.2-rc.2 | `26.7.2-rc.2.1` | engine=`26.7.2-rc.2`，binding revision=`1` |
-| 同一 rc.2 只修改 addon 后重发 | `26.7.2-rc.2.2` | engine 不变，binding revision 加一 |
-| 引擎升级到 rc.3 | `26.7.2-rc.3.1` | 新 engine，binding revision 重置为 `1` |
-| 引擎升级为正式 26.7.2 | `26.7.2.1` | 稳定 engine 的首次 binding release |
+| 首次 preview，绑定稳定 engine 26.7.3 | `1.0.0-preview.1` | binding preview；engine=`26.7.3` |
+| 同一 preview 修 Java/JNI/loader | `1.0.0-preview.2` | binding preview 修订；engine 不变 |
+| V1 正式发布 | `1.0.0` | binding GA；engine=`26.7.3` |
+| 向后兼容的 binding 修复或 engine 更新 | `1.0.1` | patch release；engine 版本看 manifest |
+| 向后兼容的 Java API 能力增加 | `1.1.0` | minor release |
+| 不兼容的 Java API 变化 | `2.0.0` | major release |
 
 发布规则：
 
-- Maven repository 中的 release artifact 不可变，绝不覆盖 `26.7.2-rc.2.1`；任何 addon、JNI、Java、POM、loader、checksum 或单平台修复都发布 `.2`。
+- Maven repository 中的 release artifact 不可变，绝不覆盖同一个版本；任何 addon、JNI、Java、POM、loader、checksum 或单平台修复都必须递增 binding 版本。
 - 一次 binding release 中，`chdb-jdbc`、四个平台包和 `chdb-bom` 使用完全相同的版本，即使某些平台内容没有变化也一起发布，避免 BOM 和平台包形成混合版本。
-- engine 从一个 RC 升到另一个 RC，或者从 RC 升到稳定版，都视为新的 engine version，binding revision 重新从 `1` 开始。
 - 基于 engine RC 的 Java artifact 也属于 preview，不可以作为 V1 GA 的引擎依赖；V1 GA 必须绑定稳定的 chDB Core release。
-- 开发构建可使用 `26.7.2-rc.2.2-SNAPSHOT`，但 `SNAPSHOT` 不进入 Maven Central 正式 release。
-- 如果稳定 engine 上的 Java binding 自身需要发布候选版，可使用 `26.7.0.1-rc.1`、`26.7.0.1-rc.2`，最终 GA 为 `26.7.0.1`；候选版和 GA 不能复用同一个不可变 artifact。
-- engine 发生变化必须产生新的 Maven 版本并完成全平台测试。
+- 开发构建可使用 `1.0.0-SNAPSHOT`，但 `SNAPSHOT` 不进入 Maven Central 正式 release。
+- Java binding 自身需要发布候选版时，可使用 `1.0.0-rc.1`、`1.0.0-rc.2`，最终 GA 为 `1.0.0`；候选版和 GA 不能复用同一个不可变 artifact。
+- engine 发生变化必须产生新的 binding release 并完成全平台测试，但不改变 Maven 版本的命名规则。
 
 为了消除字符串解析歧义，所有 artifact 的 manifest 必须分别记录：
 
 ```properties
-engine.version=26.7.2-rc.2
-binding.revision=2
-binding.version=26.7.2-rc.2.2
+engine.version=26.7.3
+binding.revision=1
+binding.version=1.0.0-preview.1
 java.api.version=1
 jni.abi.version=1
 ```
@@ -524,7 +524,7 @@ jni.abi.version=1
 - [ ] 冻结公共 Java API 和 JNI ABI。
 - [ ] 编写 release notes 和已知限制。
 - [ ] 发布 RC，完成至少一周 soak/外部验证窗口。
-- [ ] 所有 V1 release gate 通过后发布与稳定 engine 对齐的首个正式版本，例如 `26.7.0.1`。
+- [ ] 所有 V1 release gate 通过后发布 Java binding 的首个正式版本 `1.0.0`。
 
 ## 6. 里程碑
 

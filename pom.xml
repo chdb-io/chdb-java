@@ -6,7 +6,7 @@
 
   <groupId>org.chdb</groupId>
   <artifactId>chdb-java-parent</artifactId>
-  <version>26.7.0.1-SNAPSHOT</version>
+  <version>1.0.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>chDB Java Binding (parent)</name>
@@ -62,10 +62,10 @@
     <!--
       Engine baseline. These three coordinates are the single source of truth for
       which chDB Core release this binding is built and tested against; scripts/engine.properties
-      mirrors them for the shell/CMake side. Changing engine.version requires a new
-      Maven version (work plan section 4.3) and a full platform re-test.
+      mirrors them for the shell/CMake side. Changing engine.version requires a new binding
+      release decision (the Maven version is independent) and a full platform re-test.
     -->
-    <chdb.engine.version>26.7.0</chdb.engine.version>
+    <chdb.engine.version>26.7.3</chdb.engine.version>
     <chdb.binding.revision>1</chdb.binding.revision>
     <!-- Bumped only on an incompatible change to the Java <-> JNI shim contract. -->
     <chdb.jni.abi.version>1</chdb.jni.abi.version>

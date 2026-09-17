@@ -6,10 +6,10 @@ stays the report.
 
 Legend: ✅ done and tested · 🟡 partly done · ⬜ not started · ➖ out of this milestone
 
-Verified in CI against **engine 26.7.0** on all four platforms — Linux x86_64 and aarch64,
-macOS arm64 and x86_64 — each running the full suite on **Java 11, 17, 21 and 25**, plus
-sanitizer runs on one Linux and one macOS toolchain. Sixteen platform-and-JDK combinations, all
-green.
+The current preview baseline is **engine 26.7.3** on all four platforms. The full four-platform
+verification below was last completed against engine 26.7.0; the regular build CI remains the
+full-suite gate, while the preview workflow rebuilds each native package and smoke-tests the
+packaged JAR before publishing `1.0.0-preview.1`.
 
 ---
 
@@ -22,7 +22,7 @@ green.
 | ✅ | Four glibc/macOS platforms | `Platform`, with musl detected and refused |
 | ✅ | Direct JNI is the mainline, ADBC the experiment | no Arrow Java dependency anywhere |
 | ✅ | Engine release, dynamic-library checksum and symbol set pinned | `scripts/engine.properties`, SHA-256 per platform from the GitHub release digests |
-| 🟡 | Consistency check across `chdb_version()`, tag and header version | the check exists; the **header constant is wrong upstream** (reads `26.5.1-rc.3` at tag `v26.7.0`), so it is provenance only — [findings §2](upstream-findings.md) |
+| 🟡 | Consistency check across `chdb_version()`, tag and header version | the check exists; the historical v26.7.0 header mismatch remains documented in [findings §2](upstream-findings.md) |
 | ✅ | C API split into required and optional symbols | 18 required, linker- and load-checked; `chdb_classify_query_n` and `chdb_shutdown` optional via `dlsym` |
 | ⬜ | C ABI version and compatibility promise confirmed with Core | needs upstream agreement |
 | 🟡 | Signal-handler requirement raised upstream | reproduced, measured and written up in [findings §1](upstream-findings.md); not yet filed |

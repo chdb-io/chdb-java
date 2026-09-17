@@ -1,7 +1,8 @@
-// chDB C API entry points that the pinned baseline engine does not have.
+// Optional chDB C API entry points. Compatible engine builds may omit these symbols, so the
+// shim resolves them with dlsym instead of requiring them at link time.
 //
-// The V1 baseline is chdb-core v26.7.0 (work plan section 2.1). Two calls the shim would
-// like to use landed after it:
+// The current V1 baseline is chdb-core v26.7.3 (work plan section 2.1). These calls were
+// introduced after the original v26.7.0 baseline:
 //
 //   chdb_classify_query_n   v26.7.1-rc.1  says whether a statement has a result set,
 //                                         using the engine's own parser
@@ -28,10 +29,10 @@ extern "C" {
 namespace chdb_jni
 {
 
-// Mirrors chdb_query_analysis_v1 from a post-baseline chdb.h. Declared here because the
-// pinned header does not have it. The struct is size-versioned by its own first field, so
-// a newer engine fills only the fields this definition has room for -- which is what makes
-// declaring it on this side safe rather than a guess about the engine's layout.
+// Mirrors chdb_query_analysis_v1 from chdb.h. Kept as a local type so the optional API's ABI
+// stays isolated from the required declarations and remains usable with older compatible
+// engine headers. The struct is size-versioned by its own first field, so a newer engine fills
+// only the fields this definition has room for.
 struct QueryAnalysisV1
 {
     uint32_t struct_size;

@@ -282,10 +282,13 @@ if [ "$OS" = linux ]; then
 fi
 
 GIT_COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+BINDING_VERSION="$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' "${ROOT}/pom.xml" | head -n1)"
 BINDING_REVISION="$(sed -n 's:.*<chdb.binding.revision>\(.*\)</chdb.binding.revision>.*:\1:p' "${ROOT}/pom.xml" | head -n1)"
 JNI_ABI="$(sed -n 's:.*<chdb.jni.abi.version>\(.*\)</chdb.jni.abi.version>.*:\1:p' "${ROOT}/pom.xml" | head -n1)"
 JAVA_API="$(sed -n 's:.*<chdb.java.api.version>\(.*\)</chdb.java.api.version>.*:\1:p' "${ROOT}/pom.xml" | head -n1)"
 ENGINE_SOURCE="$(sed -n 's/^engine.source=//p' "${ENGINE_DIR}/engine.source" | head -n1)"
+
+[ -n "$BINDING_VERSION" ] || die "could not read the Java binding version from ${ROOT}/pom.xml"
 
 ENGINE_SHA="$(sha256_of "${NATIVE_DIR}/${LIBNAME}")"
 JNI_SHA="$(sha256_of "${NATIVE_DIR}/${JNINAME}")"
@@ -303,6 +306,7 @@ jni.library=${JNINAME}
 jni.library.sha256=${JNI_SHA}
 jni.abi.version=${JNI_ABI}
 java.api.version=${JAVA_API}
+binding.version=${BINDING_VERSION}
 binding.revision=${BINDING_REVISION}
 platform.id=${PLATFORM}
 platform.os=${OS}
@@ -418,7 +422,7 @@ cat > "${STAGE}/META-INF/sbom/bom.json" <<EOF
     "component": {
       "type": "library",
       "name": "${MODULE}",
-      "version": "${ENGINE_VERSION}.${BINDING_REVISION}",
+      "version": "${BINDING_VERSION}",
       "description": "chDB engine and JNI shim for ${PLATFORM}"
     }
   },
@@ -439,7 +443,7 @@ cat > "${STAGE}/META-INF/sbom/bom.json" <<EOF
     {
       "type": "library",
       "name": "chdb-java-jni",
-      "version": "${ENGINE_VERSION}.${BINDING_REVISION}",
+      "version": "${BINDING_VERSION}",
       "licenses": [{ "license": { "id": "Apache-2.0" } }],
       "hashes": [{ "alg": "SHA-256", "content": "${JNI_SHA}" }],
       "properties": [

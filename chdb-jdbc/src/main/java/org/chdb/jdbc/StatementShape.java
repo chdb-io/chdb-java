@@ -17,8 +17,7 @@ import java.util.Set;
  * <ol>
  *   <li>{@code chdb_classify_query_n}, which parses the SQL with the engine's own parser and
  *       settings and executes nothing. Authoritative, and available from engine v26.7.1-rc.1.
- *   <li>the leading-keyword scan below, for the pinned v26.7.0 baseline, which does not
- *       export the classifier.
+ *   <li>the leading-keyword scan below, for engines without chdb_classify_query_n.</li>
  * </ol>
  *
  * <h2>Why a wrong guess is not retried</h2>

@@ -167,8 +167,8 @@ public class ChdbStatement implements Statement {
     private boolean producesResultSet(String sql) throws SQLException {
         int[] analysis;
         try {
-            // Null when the engine predates chdb_classify_query_n (the pinned v26.7.0
-            // baseline does), in which case StatementShape falls back to its keyword scan.
+            // Null when the engine does not export chdb_classify_query_n, in which case
+            // StatementShape falls back to its keyword scan.
             analysis = ChdbNative.classifyQuery(connection.handle(), Utf8.encode(sql));
         } catch (ChdbNativeException e) {
             // A statement the parser rejects will fail on execution too, with a better

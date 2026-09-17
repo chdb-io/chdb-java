@@ -11,7 +11,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * The keyword scan is the fallback used on the pinned v26.7.0 engine, which does not export
+ * The keyword scan is the fallback used when the pinned engine does not export
  * chdb_classify_query_n. Getting it wrong sends a statement down the wrong execution path, so
  * both directions are covered.
  */

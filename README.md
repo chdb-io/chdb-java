@@ -39,7 +39,7 @@ and is loaded from a real packaged JAR, in CI:
   engine does. Each package records the figure it was built against in its
   `manifest.properties`, and CI runs the whole test suite on AlmaLinux 8 to demonstrate the
   floor rather than infer it from symbol versions.
-- **Engine:** chDB Core **26.7.0**, pinned. The C ABI is version-locked, so the driver refuses
+- **Engine:** chDB Core **26.7.3**, pinned. The C ABI is version-locked, so the driver refuses
   to run against a different engine build rather than risking a struct-layout mismatch.
 - **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
   [work plan §2.3](CHDB_JAVA_V1_WORK_PLAN.md).
@@ -55,7 +55,7 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 <dependency>
   <groupId>org.chdb</groupId>
   <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
-  <version>26.7.0.1</version>
+  <version>1.0.0</version>
 </dependency>
 ```
 
@@ -68,7 +68,7 @@ architecture — declare the driver plus each native package you need:
     <dependency>
       <groupId>org.chdb</groupId>
       <artifactId>chdb-bom</artifactId>
-      <version>26.7.0.1</version>
+      <version>1.0.0</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
@@ -93,15 +93,35 @@ architecture — declare the driver plus each native package you need:
 
 The BOM keeps the driver and every native package on one version, which they must be.
 
+### Trying a GitHub Preview
+
+Until Maven Central publishing is available, preview releases are provided as one GitHub
+Release bundle per platform. The installer downloads the matching bundle, verifies its SHA-256
+checksum, and installs the driver, native package, parent POM and BOM into your local Maven
+cache. It does not add anything to the project repository or download anything at runtime.
+
+```bash
+curl -fsSL -o /tmp/install-chdb-java-preview.sh \
+  https://raw.githubusercontent.com/chdb-io/chdb-java/main/scripts/install-preview.sh
+chmod +x /tmp/install-chdb-java-preview.sh
+/tmp/install-chdb-java-preview.sh v1.0.0-preview.1
+```
+
+The installer prints the exact Maven coordinates after installation. The bundle also contains
+the exact POMs used for the build, so it remains usable if the group ID changes before the first
+Maven Central release. To install into another local repository, pass
+`--maven-repo /path/to/repository`.
+
 **A native package is large**, because it contains the whole engine: 112 MB for macOS arm64,
 128 MB for macOS x86_64, 130 MB for Linux aarch64, 167 MB for Linux x86_64, and around 350 MB
 unpacked. There is no all-platforms package, on purpose: it would be the sum of those four.
 
 ### Versioning
 
-`<engine version>.<binding revision>`, so `26.7.0.1` is the first Java release built against
-engine 26.7.0. A new engine always means a new version. This is not SemVer; see
-[work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
+The Java binding uses its own SemVer version, independently from the embedded engine version.
+The first preview is `1.0.0-preview.1`, and the first stable Maven release will be `1.0.0`.
+The embedded engine version is recorded separately in the artifact manifest; the current
+baseline is chDB Core 26.7.3. See [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
 ## Connecting
 

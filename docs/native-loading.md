@@ -25,7 +25,7 @@ global namespace, which is how the driver probes for optional entry points.
 The cache directory is named after the SHA-256 of the pair it holds:
 
 ```
-$TMPDIR/chdb-java/26.7.0-macos-aarch64-d5e24ccc6dd8b072/
+$TMPDIR/chdb-java/26.7.3-macos-aarch64-d5e24ccc6dd8b072/
 ├── libchdb.so
 ├── libchdb_java_jni.dylib
 ├── manifest.properties
@@ -135,7 +135,7 @@ how ClickHouse settings are passed:
 jdbc:chdb:/data?max_threads=4&max_memory_usage=2000000000
 ```
 
-**A typo is silent.** On engine 26.7.0 an unknown setting name, and an invalid value for a
+**A typo is silent.** On the pinned engine an unknown setting name, and an invalid value for a
 known one, both connect successfully with the setting ignored — despite what `chdb.h` says
 about invalid values failing the connection. There is nothing the driver can check on its
 behalf. Verify a setting took effect with `SELECT value FROM system.settings WHERE name = '...'`
@@ -145,8 +145,8 @@ if it matters. See [upstream findings §5](upstream-findings.md).
 
 ```java
 System.out.println(org.chdb.internal.NativeLibraryLoader.loadedRuntime());
-// chDB native runtime: platform=macos-aarch64 source=native-jar engine=26.7.0 jniAbi=1
-//   enginePath=/var/folders/.../chdb-java/26.7.0-macos-aarch64-d5e24ccc/libchdb.so
+// chDB native runtime: platform=macos-aarch64 source=native-jar engine=26.7.3 jniAbi=1
+//   enginePath=/var/folders/.../chdb-java/26.7.3-macos-aarch64-d5e24ccc/libchdb.so
 //   jniPath=...
 
 System.out.println(org.chdb.internal.ChdbNative.shimBuildInfo());
@@ -154,7 +154,7 @@ System.out.println(org.chdb.internal.ChdbNative.shimBuildInfo());
 // shim.commit=ea2d84799c27
 // shim.compiler=AppleClang 21.0.0.21000101
 // shim.built.against.engine.header=26.5.1-rc.3
-// shim.expected.engine.version=26.7.0
+// shim.expected.engine.version=26.7.3
 ```
 
 `shim.built.against.engine.header` is the `CHDB_VERSION` constant from the header the shim

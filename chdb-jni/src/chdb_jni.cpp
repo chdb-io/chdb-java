@@ -824,7 +824,7 @@ Java_org_chdb_internal_ChdbNative_classifyQuery(JNIEnv * env, jclass, jlong conn
 {
     try
     {
-        // Optional symbol: absent on the pinned v26.7.0 baseline, present from
+        // Optional symbol: absent on the original v26.7.0 baseline, present from
         // v26.7.1-rc.1. Null tells the Java side to use its own statement-shape heuristic
         // rather than failing the query.
         const auto classify = optionalApi().classify_query_n;
