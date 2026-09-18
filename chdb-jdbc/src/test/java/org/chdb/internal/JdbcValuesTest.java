@@ -160,17 +160,28 @@ class JdbcValuesTest {
     }
 
     @Test
-    @DisplayName("a Float32 keeps the float's own decimal text, not the widened double's")
-    void float32BigDecimalDoesNotInventDigits() throws Exception {
-        // BigDecimal.valueOf((double) 3.4028235E38f) is 3.4028234663852886E+38: seventeen
-        // digits stating a value that carries seven. clickhouse-jdbc answers the float's text
-        // and it is right, so this is parity and precision at once.
+    @DisplayName("a Float32 reads the same BigDecimal on every JDK, which is why it is not the float's own text")
+    void float32BigDecimalIsTheSameOnEveryJdk() throws Exception {
+        // These two strings are the whole point of the test, and CI running it on Java 11, 17,
+        // 21, 25 and 26 is what makes it one.
+        //
+        // clickhouse-jdbc answers new BigDecimal(Float.toString(f)), which is shorter and
+        // reads better: 3.4028235E+38 rather than 3.4028234663852886E+38. Matching it was
+        // tried and reverted, because Float.toString changed algorithm in JDK 19
+        // (JDK-4511638): Float.MIN_NORMAL renders as 1.17549435E-38 on Java 11 and 17 and as
+        // 1.1754944E-38 on Java 19 and later. Measured, on this machine, both ways. A driver
+        // that answers getBigDecimal differently depending on which JVM it is running in is a
+        // worse thing than one that answers with more digits than the value carries.
         ClickHouseType f32 = ClickHouseType.parse("Float32");
         JdbcValues.Column col = new JdbcValues.Column(1, "v", f32);
+
         Object max = RowBinaryDecoder.decode(f32, new RowBinaryInput(hex("ffff7f7f")), OPTIONS);
-        assertEquals("3.4028235E+38", JdbcValues.asBigDecimal(col, max).toString());
+        assertEquals("3.4028234663852886E+38", JdbcValues.asBigDecimal(col, max).toString());
 
         Object tiny = RowBinaryDecoder.decode(f32, new RowBinaryInput(hex("00008000")), OPTIONS);
-        assertEquals("1.1754944E-38", JdbcValues.asBigDecimal(col, tiny).toString());
+        assertEquals("1.1754943508222875E-38", JdbcValues.asBigDecimal(col, tiny).toString());
+
+        // And it is the float's value, not a different number: it round-trips.
+        assertEquals(Float.MIN_NORMAL, JdbcValues.asBigDecimal(col, tiny).floatValue());
     }
 }

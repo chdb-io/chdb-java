@@ -10,7 +10,7 @@ which question you ask, so all three:
 |---|---|
 | cases identical on **every** compared answer | 36 of 84 |
 | cases identical on `getObject` **and** `getString` | 79 of 84 |
-| differing answers, over ~19 accessors × 84 cases | 74 |
+| differing answers, over ~19 accessors × 84 cases | 76 |
 
 The 36 is the strict measure and the least useful one: a single `getColumnClassName` the
 reference gets wrong by the specification costs a case its "identical" status even when every
@@ -19,11 +19,12 @@ means treating a `java.sql.Array` whose `toString` is `[1, 2, 3]` and one whose 
 `com.clickhouse.jdbc.types.Array@b62d79` as agreement — they are the same type holding the same
 elements. Both numbers are in the table because neither alone is honest.
 
-Of the 74 differing answers: **28 are the reference refusing what we answer**, **17 are us
+Of the 76 differing answers: **28 are the reference refusing what we answer**, **17 are us
 refusing what it answers**, **1 is a query that fails in the reference and works here**, and
-**28 are both answering differently** — of which 14 are the declared metadata divergences and 7
-are the same value rendered differently by the harness. That leaves **7 real value differences**,
-listed below.
+**30 are both answering differently** — of which 14 are the declared metadata divergences, 2 are
+`Float32` through `getBigDecimal` (declared, for the reason in the next section), and 7 are the
+same value rendered differently by the harness. That leaves **7 real value differences**, listed
+below.
 
 ---
 
@@ -218,12 +219,33 @@ That is the exact defect class the move off Arrow existed to remove, found only 
 comparison asks a question no unit test here asked. It is now a `SQLDataException` with SQLSTATE
 `22003`, and `JdbcValuesTest.bigDecimalHasNoInfinity` pins it.
 
-The same run also showed `getBigDecimal` on a `Float32` answering
-`3.4028234663852886E+38` — seventeen digits stating a value that carries seven, because the
-float was widened to a double before conversion. The reference answers `3.4028235E+38` and is
-right; we do now too.
+### And one fix that had to be reverted
 
-After both fixes: category E is empty, and the strict measure moved from 34 to 36.
+The same run showed `getBigDecimal` on a `Float32` answering `3.4028234663852886E+38` —
+seventeen digits stating a value that carries seven, because the float is widened to a double
+before conversion. The reference answers `3.4028235E+38`, which is `new
+BigDecimal(Float.toString(f))`, and it reads better. So that is what we did, and CI rejected it:
+Java 11 and 17 passed the value `1.17549435E-38` where Java 21 and later gave `1.1754944E-38`.
+
+`Float.toString` changed algorithm in JDK 19 — [JDK-4511638][], the shortest decimal that
+round-trips — so its output for `Float.MIN_NORMAL` is not the same string on every JDK this
+driver supports. Measured both ways locally to be sure it was the JDK and not the test:
+
+| | Java 11 | Java 21 |
+|---|---|---|
+| `Float.toString(MIN_NORMAL)` | `1.17549435E-38` | `1.1754944E-38` |
+| `BigDecimal.valueOf((double) MIN_NORMAL)` | `1.1754943508222875E-38` | `1.1754943508222875E-38` |
+
+A driver that answers `getBigDecimal` differently depending on which JVM it is running in is a
+worse thing than one that answers with more digits than the value carries — and it would be
+undetectable to a caller who only ever runs one JDK. So this is now a **declared divergence**
+rather than a fix: `JdbcValuesTest.float32BigDecimalIsTheSameOnEveryJdk` pins the stable value
+and CI running it on five JDKs is what makes that assertion mean something. clickhouse-jdbc has
+the same JDK dependence; matching it would have been inheriting a defect.
+
+[JDK-4511638]: https://bugs.openjdk.org/browse/JDK-4511638
+
+After the one fix that stuck: category E is empty, and the strict measure moved from 34 to 36.
 
 ---
 

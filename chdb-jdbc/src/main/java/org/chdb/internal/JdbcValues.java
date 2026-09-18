@@ -495,13 +495,16 @@ public final class JdbcValues {
                         "22003",
                         0);
             }
-            if (n instanceof Float) {
-                // The float's own shortest decimal text, not the widened double's:
-                // BigDecimal.valueOf((double) 3.4028235E38f) is 3.4028234663852886E+38, which
-                // states 17 digits of a value that carries 7. clickhouse-jdbc answers
-                // 3.4028235E+38, and it is right.
-                return new BigDecimal(Float.toString((Float) n));
-            }
+            // Widened to a double first, for a Float32 as well. clickhouse-jdbc answers
+            // new BigDecimal(Float.toString(f)) instead, which is shorter and looks better --
+            // 3.4028235E+38 against our 3.4028234663852886E+38 for Float.MAX_VALUE. We tried
+            // that and reverted it: Float.toString changed algorithm in JDK 19 (JDK-4511638),
+            // so it renders Float.MIN_NORMAL as 1.17549435E-38 on Java 11 and 17 and as
+            // 1.1754944E-38 on Java 19 and later. A driver supporting Java 11 through 25 would
+            // then answer getBigDecimal differently depending on the JVM it runs in, which is
+            // a worse defect than seventeen digits. Double.toString is measured stable for
+            // these values on both -- see JdbcValuesTest.float32BigDecimalIsTheSameOnEveryJdk,
+            // which CI runs on five JDKs.
             return BigDecimal.valueOf(d);
         }
         return BigDecimal.valueOf(((Number) n).longValue());
