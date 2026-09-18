@@ -158,9 +158,8 @@ counters are exposed and asserted zero after every test. Nothing calls back into
 native thread.
 
 The handle registry and the signal guard are additionally covered by `chdb_jni_test`, a JVM-free
-harness run under ASan and UBSan — 107 checks. It was 199 while the shim also parsed Arrow
-layouts, where it found five parser defects on its first run; that parser is gone with the Arrow
-path, and so are its checks. ⬜ `Cleaner` as a leak backstop.
+harness run under ASan and UBSan — 107 checks, down from 199 with the Arrow layout parser the
+shim no longer has. ⬜ `Cleaner` as a leak backstop.
 
 ## Phase 5 — JVM signal-handler safety
 
@@ -270,9 +269,8 @@ made it more worth running: a `byte[]` per chunk and decoded objects per row, me
    upstream stops parsing every JDBC URL as client/server — it is also where issue #2's reporter
    came from.
 3. **The soak test**, the remaining phase-10 item that a CI run cannot stand in for.
-4. **The §3.3 batch-access benchmark**. The data path itself is now a measured choice — Arrow's
-   writer loses the type, `RowBinaryWithNamesAndTypes` does not — but the three-way access
-   comparison the plan asks for has not been run, and the allocation cost of the format that
+4. **The §3.3 batch-access benchmark**. The data path is a measured choice now, but the
+   three-way access comparison has not been run — and the allocation cost of the format that
    won is the reason to run it.
 5. **Phase 14 release preparation**, which is now the largest untouched block: nothing is
    published, and the Maven Central size, signing and SBOM requirements are unverified. The

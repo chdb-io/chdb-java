@@ -215,10 +215,10 @@ never a wrong value. The full list, with what to do instead, is in
 
 ## What has been tested
 
-350 tests, run on **all four platforms × Java 11, 17, 21 and 25** — sixteen combinations — plus
+351 tests, run on **all four platforms × Java 11, 17, 21 and 25** — sixteen combinations — plus
 a native sanitizer harness. Every one is green in CI on the current commit.
 
-**175 tests need no engine**, so they run anywhere: the SQL parameter lexer (which `?` is a
+**176 tests need no engine**, so they run anywhere: the SQL parameter lexer (which `?` is a
 placeholder and which is data, across quotes, comments and dollar-quoting); the ClickHouse type
 name parser, including the enum labels that make the grammar non-regular; the RowBinary decoder
 against byte vectors captured from the engine; the `ResultSetMetaData` answers against a table

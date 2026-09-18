@@ -484,27 +484,18 @@ public final class JdbcValues {
         if (n instanceof Double || n instanceof Float) {
             double d = ((Number) n).doubleValue();
             if (Double.isNaN(d) || Double.isInfinite(d)) {
-                // BigDecimal has no NaN and no infinity, so there is no value to return.
-                // Guarded explicitly because BigDecimal.valueOf(double) formats the double
-                // first and then fails on the text, which escapes as an unchecked
-                // NumberFormatException -- the defect class this layer exists to remove. The
-                // differential run against clickhouse-jdbc is what found it; the reference
-                // refuses these too, but with a SQLException.
+                // BigDecimal has neither, so there is no value to return. Guarded explicitly
+                // because BigDecimal.valueOf(double) formats first and then fails on the text,
+                // escaping as an unchecked NumberFormatException.
                 throw new SQLDataException(
                         c.describe() + " holds " + d + ", which has no BigDecimal value",
                         "22003",
                         0);
             }
-            // Widened to a double first, for a Float32 as well. clickhouse-jdbc answers
-            // new BigDecimal(Float.toString(f)) instead, which is shorter and looks better --
-            // 3.4028235E+38 against our 3.4028234663852886E+38 for Float.MAX_VALUE. We tried
-            // that and reverted it: Float.toString changed algorithm in JDK 19 (JDK-4511638),
-            // so it renders Float.MIN_NORMAL as 1.17549435E-38 on Java 11 and 17 and as
-            // 1.1754944E-38 on Java 19 and later. A driver supporting Java 11 through 25 would
-            // then answer getBigDecimal differently depending on the JVM it runs in, which is
-            // a worse defect than seventeen digits. Double.toString is measured stable for
-            // these values on both -- see JdbcValuesTest.float32BigDecimalIsTheSameOnEveryJdk,
-            // which CI runs on five JDKs.
+            // A Float32 widens to a double first, deliberately. clickhouse-jdbc uses
+            // new BigDecimal(Float.toString(f)), which is shorter but not stable across JDKs:
+            // Float.toString changed algorithm in JDK 19. See
+            // JdbcValuesTest.float32BigDecimalIsTheSameOnEveryJdk.
             return BigDecimal.valueOf(d);
         }
         return BigDecimal.valueOf(((Number) n).longValue());
@@ -524,7 +515,10 @@ public final class JdbcValues {
         if (n instanceof BigDecimal) {
             return ((BigDecimal) n).signum() != 0;
         }
-        return ((Number) n).doubleValue() != 0;
+        // NaN is false, as the reference has it. JDBC's rule is "zero is false", and NaN is
+        // neither zero nor not-zero, so this is a choice rather than a reading.
+        double d = ((Number) n).doubleValue();
+        return !Double.isNaN(d) && d != 0;
     }
 
     /**
@@ -566,8 +560,14 @@ public final class JdbcValues {
         if (v instanceof byte[]) {
             return (byte[]) v;
         }
-        // getBytes is for binary columns. Inventing an encoding for a number -- which the old
-        // path did, returning the UTF-8 of its decimal text -- makes an error look like data.
+        if (v instanceof java.net.InetAddress) {
+            // An address is bytes: 4 for IPv4, 16 for IPv6, and 4 for a v4-mapped IPv6 because
+            // that is what InetAddress makes of it. Same as the reference.
+            return ((java.net.InetAddress) v).getAddress();
+        }
+        // Otherwise getBytes is for binary columns. Inventing an encoding for a number -- which
+        // the old path did, returning the UTF-8 of its decimal text -- makes an error look like
+        // data.
         throw cannot(c, "getBytes");
     }
 

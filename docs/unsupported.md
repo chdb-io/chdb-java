@@ -130,21 +130,15 @@ column-list overloads throw. ClickHouse has no auto-increment or sequences.
 `AggregateFunction`, and nothing else.
 
 Its serialized state is the aggregate function's own, with no documented shape a reader outside
-the engine can rely on, so there is nothing to decode into. `SimpleAggregateFunction` is not in
-this list — it stores the plain nested type and reads as that.
+the engine can rely on. `SimpleAggregateFunction` is not in this list: it stores the plain nested
+type and reads as that.
 
 `Array`, `Map`, `Tuple`, `Nested`, `Variant`, `Dynamic`, `JSON`, the geometry types, `IPv4` and
-`IPv6` **are** readable, and used to be in this list. They became readable when the driver moved
-from Arrow to `RowBinaryWithNamesAndTypes`, which names every type as the engine declared it;
-see [type mapping](type-mapping.md) for what each one returns.
+`IPv6` used to be here and **are** readable now — see [type mapping](type-mapping.md).
 
-`ResultSetMetaData` reports an `AggregateFunction` column under its real type name with
-`DATA_TYPE` `OTHER`, so a framework can see it. Reading it throws `SQLFeatureNotSupportedException`
-(SQLSTATE `0A000`), naming the column and its type, with the workaround: cast in SQL with
-`toString(col)`, `hex(col)`, or finalize it with `-Merge`.
-
-The alternative — decoding bytes the driver does not understand — risks silently wrong values,
-which is worse than an error.
+`ResultSetMetaData` reports the real type name with `DATA_TYPE` `OTHER`, so a framework can see
+the column. Reading it throws SQLSTATE `0A000` naming the column and its type, with the
+workaround: `toString(col)`, `hex(col)`, or a `-Merge` to finalize it.
 
 ## Other
 

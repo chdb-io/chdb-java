@@ -750,24 +750,19 @@ final class ChdbDatabaseMetaData implements DatabaseMetaData {
     /**
      * Column metadata from {@code system.columns}, with the JDBC type of each column.
      *
-     * <p>{@code DATA_TYPE}, {@code COLUMN_SIZE}, {@code DECIMAL_DIGITS} and {@code NULLABLE} are
-     * real answers now. They used to be {@code OTHER} and zero, on the reasoning that mapping a
-     * type name to a JDBC type here would be a second implementation of the Arrow mapping and
-     * the two would drift. That reasoning went away with the Arrow mapping: the driver types
-     * every column from its declared name now, so {@link JdbcTypeMapping} is the one
-     * implementation and this uses it.
+     * <p>{@code DATA_TYPE}, {@code COLUMN_SIZE}, {@code DECIMAL_DIGITS} and {@code NULLABLE} come
+     * from {@link JdbcTypeMapping}, the same mapping {@code ResultSetMetaData} uses. They were
+     * {@code OTHER} and zero while that mapping lived in the Arrow reader and a second
+     * implementation here would have drifted from it.
      *
-     * <p>Getting it there takes two queries. SQL cannot parse a ClickHouse type name, so the
-     * distinct type names in scope are fetched first, mapped in Java, and the results
-     * materialised into the main query as {@code transform()} lookups. The distinct count is
-     * small -- it is types in use, not types that exist -- and the alternative, wrapping the
-     * result set to rewrite four columns per row, is a lot of delegation to achieve the same
-     * thing.
+     * <p>Two queries, because SQL cannot parse a ClickHouse type name: the distinct type names
+     * in scope are fetched first, mapped in Java, and materialised back into the main query as
+     * {@code transform()} lookups. The alternative is wrapping the result set to rewrite four
+     * columns per row.
      *
-     * <p>{@code NULLABLE} comes from the parsed type rather than from
-     * {@code startsWith(type, 'Nullable(')}, which was wrong for
-     * {@code LowCardinality(Nullable(String))} -- a nullable column that did not start with the
-     * word.
+     * <p>{@code NULLABLE} comes from the parsed type, not from
+     * {@code startsWith(type, 'Nullable(')} -- which called
+     * {@code LowCardinality(Nullable(String))} NOT NULL.
      */
     @Override
     public ResultSet getColumns(

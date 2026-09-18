@@ -10,21 +10,15 @@ which question you ask, so all three:
 |---|---|
 | cases identical on **every** compared answer | 36 of 84 |
 | cases identical on `getObject` **and** `getString` | 79 of 84 |
-| differing answers, over ~19 accessors × 84 cases | 76 |
+| differing answers, over ~19 accessors × 84 cases | 72 |
 
-The 36 is the strict measure and the least useful one: a single `getColumnClassName` the
-reference gets wrong by the specification costs a case its "identical" status even when every
-value matches. The 79 counts a case as agreeing when both drivers return the same value, which
-means treating a `java.sql.Array` whose `toString` is `[1, 2, 3]` and one whose `toString` is
-`com.clickhouse.jdbc.types.Array@b62d79` as agreement — they are the same type holding the same
-elements. Both numbers are in the table because neither alone is honest.
+The first two are both here because neither alone is honest: the strict one counts a case as
+differing when only `getColumnClassName` does, and the other treats two `java.sql.Array`s with
+different `toString` output as agreeing, which they are.
 
-Of the 76 differing answers: **28 are the reference refusing what we answer**, **17 are us
-refusing what it answers**, **1 is a query that fails in the reference and works here**, and
-**30 are both answering differently** — of which 14 are the declared metadata divergences, 2 are
-`Float32` through `getBigDecimal` (declared, for the reason in the next section), and 7 are the
-same value rendered differently by the harness. That leaves **7 real value differences**, listed
-below.
+Of the 72 differing answers, **28 are the reference refusing what we answer**, **14 are us
+refusing what it answers**, **1 is a query that fails there**, and **29 are both answering
+differently**. The matrix below has all of them, grouped by why.
 
 ---
 
@@ -148,63 +142,72 @@ yet, and the point of this work was correctness.
 
 ---
 
-## Where the two drivers still differ
+## The behaviour matrix
 
-### Values: seven answers
+Every difference, and why. "Us" is chdb-jdbc.
 
-| case | accessor | us | clickhouse-jdbc | |
+### Where the reference gives a wrong answer rather than an error
+
+| case | accessor | us | reference | why we are right |
 |---|---|---|---|---|
-| `JSON` | `getObject` | the text the engine sent | a `HashMap` | our choice |
-| `JSON` | `getString` | the text the engine sent | `{a=1, b=x}`, a `Map.toString` | our choice |
-| `Tuple`, `Tuple named` | `getString` | `(1,'a')` | `[Ljava.lang.Object;@10163d6` | they are wrong |
-| `String` with invalid UTF-8 | `getBytes` | the 16 bytes stored | 34 bytes, every invalid sequence replaced with `EF BF BD` | they are wrong |
-| `Float32` tiny | `getBoolean` | `true` | `false` | they are wrong |
-| `Float64` `nan` | `getBoolean` | `true` | `false` | arguable |
+| `UInt64`, `Int128`, `Int256`, `UInt128`, `UInt256` at max | `getInt` | throws `22003` | `-1` | The value does not fit 32 bits. They let it overflow, and `-1` looks like data. JDBC says throw. |
+| `Float64` `nan` | `getInt` | throws `22003` | `0` | NaN is not zero. |
+| `Float32` smallest normal | `getBoolean` | `true` | `false` | JDBC is "zero is false, non-zero is true". `1.17e-38` is not zero. |
+| `String` with invalid UTF-8 | `getBytes` | the 16 stored bytes | 34 bytes | A ClickHouse `String` is arbitrary bytes. They decode to a `String` and re-encode, so each invalid byte becomes `EF BF BD` and both length and content change. Silent data loss. |
+| `Tuple`, `Tuple named` | `getString` | `(1,'a')` | `[Ljava.lang.Object;@10163d6` | They hand a Java array to `String.valueOf`. |
+| `Nullable(*)` holding NULL | `getDate`, `getTime`, `getTimestamp` | `null` | throws | JDBC requires `null` for SQL NULL. |
+| `Date`, `Date32` | `getTimestamp` | midnight that day | throws | JDBC's conversion table allows DATE to Timestamp. |
+| `Decimal32`, `Decimal64`, `Float32` | `getLong` | truncates | throws | JDBC allows the conversion. Refusing a legal one is its own error. |
+| `IntervalDay` | every accessor but `getString` | `3` | throws | It is a number of days. |
+| `Enum8`, `Enum16` | `getBigDecimal` | the underlying number | throws | An Enum stores a number. |
+| `BFloat16` | the query | reads | **fails in the driver** | They cannot read the type. |
+| `Float32`, `BFloat16` | `getColumnType` | `REAL` | `FLOAT` | `REAL` is JDBC's single-precision code. |
+| `IPv4`, `IPv6`, `Map`, `Tuple`, `JSON`, geometry | `getColumnClassName` | the class `getObject` returns | `Object`, or `java.sql.Array` for geometry | The specification defines the method as the class `getObject` manufactures. Their own `getObject` returns `InetAddress`, `Map`, `Object[]`, `double[]`. |
 
-`JSON` is the only deliberate choice. Parsing to a `Map` loses the difference between `1` and
-`"1"` and cannot be handed back to a query; the text can.
+### Where we are stricter, and mean to be
 
-`getBytes` on a `String` holding bytes that are not valid UTF-8 is the one that would cost a
-user data: the reference decodes to a `String` and re-encodes, so `A3 A3` comes back as
-`EF BF BD EF BF BD` and the length changes. A `String` column in ClickHouse is arbitrary bytes.
+| case | accessor | us | reference | why |
+|---|---|---|---|---|
+| `String`, `LowCardinality(String)`, `Dynamic` holding text | `getBoolean` | throws `22018` | `false` | Calling `"hello"` false is a guess. An empty string is arguable; `"hello"` is not. |
+| `Array` | `getBytes` | throws | empty `byte[]` | An array has no byte form. |
+| any number | `getBytes` | throws | throws | Agreed. Noted because the Arrow path used to return the UTF-8 of the decimal text. |
 
-`getBoolean` is JDBC's "zero is false, non-zero is true". `1.1754944E-38` is not zero.
-`NaN` is not zero either, which is why ours says `true`, but nothing in the specification
-settles NaN and either answer is defensible.
+### Where both are defensible, and we follow the reference
 
-### Metadata: thirteen declared divergences
+| case | accessor | both | note |
+|---|---|---|---|
+| `Float64` `nan` | `getBoolean` | `false` | JDBC settles zero, not NaN. Followed the reference rather than reason from "not zero". |
+| `IPv4`, `IPv6` | `getBytes` | the address bytes | 4, 16, or 4 for a v4-mapped IPv6. An address is naturally bytes, so refusing was over-strict. |
+| `Enum8`, `Enum16` | `getObject`, `getInt` | the underlying number | `toString(col)` in SQL is how to ask for the label. |
 
-Two reasons only, and both are the reference being wrong by the specification rather than merely
-different.
+### Where the difference is ours, deliberately
 
-**`Float32` and `BFloat16` are `REAL`.** `REAL` is JDBC's single-precision code; `FLOAT` is
-double precision.
+| case | accessor | us | reference | why |
+|---|---|---|---|---|
+| `Float32` | `getBigDecimal` | `3.4028234663852886E+38` | `3.4028235E+38` | Theirs is `new BigDecimal(Float.toString(f))`, which reads better and is **not stable across JDKs**: `Float.toString` changed algorithm in [JDK 19][jdk19], so `Float.MIN_NORMAL` renders differently on Java 11 and on Java 21. Matching them would inherit that. See below. |
+| `JSON` | `getObject`, `getString` | the text the engine sent | a `HashMap` | Parsing to a `Map` loses the difference between `1` and `"1"` and cannot be handed back to a query; the text can. Also the only alignment that would cost a hand-written JSON parser in a driver with no dependencies. |
 
-**`getColumnClassName` names the class `getObject` actually returns.** The reference answers
-`java.lang.Object` for `IPv4`, `IPv6`, `Map`, `Tuple` and `JSON`, and `java.sql.Array` for the
-geometry types, while its own `getObject` hands back an `InetAddress`, a `Map`, an `Object[]` and
-`double[]`. The specification defines the method as the class `getObject` manufactures.
+### Not differences
 
-`JdbcTypeMappingTest` carries the captured reference table and the divergence list together, so
-an undeclared difference fails and a declared one that stopped happening fails too. Without the
-second half a stale entry would quietly excuse the next accidental divergence.
+Seven answers the harness reports as differing are the same value printed differently: our
+`java.sql.Array.toString()` gives `[1, 2, 3]` where theirs gives an identity hash, and an empty
+`Map` is a `LinkedHashMap` here and an `EmptyMap` there. Both equal `{}`.
 
-### Where we are right and they are not
+`getColumnDisplaySize` is `80` for every type in both drivers. JDBC asks for a maximum character
+width, which for `Int32` would be 11, so both are uninformative — but it is a constant with no
+environment dependence, and the captured reference table confirms all 65 types.
 
-Recorded so that nobody later "fixes" us into matching them.
+[jdk19]: https://bugs.openjdk.org/browse/JDK-4511638
 
-- **A SQL NULL through a temporal accessor is `null`.** `getDate`, `getTime` and `getTimestamp`
-  on a NULL return null from us and throw from clickhouse-jdbc.
-- **`getInt` on a `UInt64` above `Long.MAX_VALUE` throws.** They return `-1`. Silently wrapping
-  is worse.
-- **`getBytes` on a number is refused.** Neither driver's answer is useful, but `getBytes` is
-  specified for binary columns and inventing a text encoding for it — which the old Arrow path
-  did, returning the UTF-8 of the decimal text — makes an error look like data.
-- **`BFloat16` and `Interval` have values.** `SELECT toBFloat16(1.5)` fails inside
-  clickhouse-jdbc with "Failed to read value for column v"; `IntervalDay` throws from every
-  accessor but `getString`.
+`JdbcTypeMappingTest` holds the captured reference table and the declared divergences together:
+an undeclared difference fails, and so does a declared one that stopped happening.
 
----
+### The rule we apply
+
+Align when the reference's answer is **more correct**, not when it is more attractive. Never
+align if doing so introduces a dependence on the environment -- JDK version, time zone, locale,
+platform.
+
 
 ## What the re-run found, after all of the above
 
@@ -221,31 +224,21 @@ comparison asks a question no unit test here asked. It is now a `SQLDataExceptio
 
 ### And one fix that had to be reverted
 
-The same run showed `getBigDecimal` on a `Float32` answering `3.4028234663852886E+38` —
-seventeen digits stating a value that carries seven, because the float is widened to a double
-before conversion. The reference answers `3.4028235E+38`, which is `new
-BigDecimal(Float.toString(f))`, and it reads better. So that is what we did, and CI rejected it:
-Java 11 and 17 passed the value `1.17549435E-38` where Java 21 and later gave `1.1754944E-38`.
-
-`Float.toString` changed algorithm in JDK 19 — [JDK-4511638][], the shortest decimal that
-round-trips — so its output for `Float.MIN_NORMAL` is not the same string on every JDK this
-driver supports. Measured both ways locally to be sure it was the JDK and not the test:
+`getBigDecimal` on a `Float32` also looked wrong — seventeen digits for a value carrying seven
+— so it was changed to the reference's `new BigDecimal(Float.toString(f))`. CI rejected that on
+Java 11 and 17. Measured:
 
 | | Java 11 | Java 21 |
 |---|---|---|
 | `Float.toString(MIN_NORMAL)` | `1.17549435E-38` | `1.1754944E-38` |
-| `BigDecimal.valueOf((double) MIN_NORMAL)` | `1.1754943508222875E-38` | `1.1754943508222875E-38` |
+| `BigDecimal.valueOf((double) MIN_NORMAL)` | `1.1754943508222875E-38` | same |
 
-A driver that answers `getBigDecimal` differently depending on which JVM it is running in is a
-worse thing than one that answers with more digits than the value carries — and it would be
-undetectable to a caller who only ever runs one JDK. So this is now a **declared divergence**
-rather than a fix: `JdbcValuesTest.float32BigDecimalIsTheSameOnEveryJdk` pins the stable value
-and CI running it on five JDKs is what makes that assertion mean something. clickhouse-jdbc has
-the same JDK dependence; matching it would have been inheriting a defect.
+Answering differently per JVM is worse than answering with extra digits, and invisible to anyone
+on one JDK. Reverted; `JdbcValuesTest.float32BigDecimalIsTheSameOnEveryJdk` pins the stable value
+and CI's five JDKs are what make it an assertion.
 
-[JDK-4511638]: https://bugs.openjdk.org/browse/JDK-4511638
-
-After the one fix that stuck: category E is empty, and the strict measure moved from 34 to 36.
+After the fix that stuck: category E is empty and the strict measure moved from 34 to 36.
+Then following the reference on the two defensible cases took the differing answers 76 to 72.
 
 ---
 

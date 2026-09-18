@@ -95,18 +95,16 @@ Reading a four-million-row, ~430 MB result in a JVM with `-Xmx512m`: **live heap
 RSS grows 683 MB.** Twenty million narrower rows in the same heap: **live heap 79 KB, RSS
 202 MB.**
 
-Both numbers are correct and they say different things. Live heap is what the collector cannot
-reclaim, and 10 KB is the chunk — the streaming property, intact. RSS includes the heap expanding
-to hold transient garbage, and there is a lot of it now: reading `RowBinaryWithNamesAndTypes`
-allocates a `byte[]` per chunk and decoded objects per row, where the Arrow path handed out
-direct views onto engine memory and allocated almost nothing per row.
+Live heap is what the collector cannot reclaim, and that is the chunk — the streaming property,
+intact. RSS is the heap expanding to hold transient garbage, and reading
+`RowBinaryWithNamesAndTypes` makes plenty: a `byte[]` per chunk and decoded objects per row,
+where the Arrow path handed out views onto engine memory.
 
-So RSS used to be a fair proxy for "streamed rather than materialized" and is not one now. A
-test in `NonStreamableResultsIT` had been using it as one and now measures live heap instead.
+So RSS is no longer a proxy for "streamed rather than materialized". A test in
+`NonStreamableResultsIT` had been using it as one and measures live heap now.
 
-Reusing the chunk buffer across fetches would cut the largest single contributor without
-changing any answer. Deliberately not done: it is an allocation-rate change with no behavioural
-evidence behind it, and the change that created the cost was about correctness.
+Reusing the chunk buffer would cut the largest contributor without changing any answer.
+Deliberately not done: no behavioural evidence asks for it yet.
 
 ## One route is not bounded: `SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK`
 

@@ -410,13 +410,13 @@ Ordered by what a first release would most regret missing.
 | **JPMS module path** | `Automatic-Module-Name` is set; nothing has run on the module path. | half a day |
 | **Spring `JdbcTemplate`** | HikariCP, MyBatis and jOOQ are done and each found something. This one is lower yield. | half a day |
 | **ShardingSphere** | Not closable here: `StandardJdbcUrlParser` rejects every `jdbc:chdb:` form, so no config reaches the driver. Pinned by `ShardingSphereIT` so it flips when upstream fixes it. | upstream |
-| **The §3.3 batch-access benchmark** | The plan requires three access approaches measured before the data path is fixed, and that comparison has still not been run. The data path itself did change on evidence — off Arrow, whose writer loses the type, onto `RowBinaryWithNamesAndTypes` — and its allocation cost is measured (+683 MB RSS against +10 KB live heap on a 430 MB result), which is the strongest argument for running the benchmark rather than a substitute for it. | a day |
+| **The §3.3 batch-access benchmark** | Still not run. The data path itself changed on evidence — off Arrow, whose writer loses the type — and its allocation cost is measured (+683 MB RSS against +10 KB live heap), which argues for running the benchmark rather than substituting for it. | a day |
 | **Full-process ASan and LSan** | Blocked on a sanitizer build of chdb-core. Not ours to close. | upstream |
 | **Bit-identical shim builds** | Measured, and the answer is "no, by 116 bytes of build metadata" — `.github/workflows/release.yml`'s header has the breakdown. Nothing in the release gate depends on it. | not planned |
 
 ### What is already covered
 
-350 tests — 175 unit and 175 integration, counted from a run rather than estimated — across
+351 tests — 176 unit and 175 integration, counted from a run rather than estimated — across
 sixteen platform-and-JDK combinations, a 107-check native sanitizer harness, UBSan over the
 whole suite, the full suite again on AlmaLinux 8 to demonstrate the glibc floor, and a consumer
 that resolves the driver from a repository rather than from the reactor.

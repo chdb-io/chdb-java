@@ -1,5 +1,6 @@
 package org.chdb.internal;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.time.ZoneOffset;
@@ -137,10 +138,8 @@ class JdbcValuesTest {
     @Test
     @DisplayName("getBigDecimal refuses infinity and NaN with a SQLException, not an unchecked one")
     void bigDecimalHasNoInfinity() throws Exception {
-        // Found by the differential run against clickhouse-jdbc, in the one category it has for
-        // this: both drivers refuse these, and only we did it by letting a
-        // NumberFormatException out of a JDBC accessor. BigDecimal.valueOf(double) formats the
-        // double and then fails on the text, so the throw came from inside the JDK.
+        // Found by the differential run: both drivers refuse these, and only we did it by
+        // letting a NumberFormatException out of a JDBC accessor, thrown from inside the JDK.
         ClickHouseType f64 = ClickHouseType.parse("Float64");
         JdbcValues.Column col = new JdbcValues.Column(1, "v", f64);
         String[] vectors = {"000000000000f07f", "000000000000f0ff", "000000000000f87f"};
@@ -162,16 +161,11 @@ class JdbcValuesTest {
     @Test
     @DisplayName("a Float32 reads the same BigDecimal on every JDK, which is why it is not the float's own text")
     void float32BigDecimalIsTheSameOnEveryJdk() throws Exception {
-        // These two strings are the whole point of the test, and CI running it on Java 11, 17,
-        // 21, 25 and 26 is what makes it one.
-        //
-        // clickhouse-jdbc answers new BigDecimal(Float.toString(f)), which is shorter and
-        // reads better: 3.4028235E+38 rather than 3.4028234663852886E+38. Matching it was
-        // tried and reverted, because Float.toString changed algorithm in JDK 19
-        // (JDK-4511638): Float.MIN_NORMAL renders as 1.17549435E-38 on Java 11 and 17 and as
-        // 1.1754944E-38 on Java 19 and later. Measured, on this machine, both ways. A driver
-        // that answers getBigDecimal differently depending on which JVM it is running in is a
-        // worse thing than one that answers with more digits than the value carries.
+        // The two strings are the point, and CI running this on Java 11, 17, 21, 25 and 26 is
+        // what makes it an assertion. Matching clickhouse-jdbc's shorter
+        // new BigDecimal(Float.toString(f)) was tried and reverted: Float.toString changed
+        // algorithm in JDK 19, so it renders MIN_NORMAL as 1.17549435E-38 on Java 11 and 17
+        // and 1.1754944E-38 later. Answering differently per JVM is the worse defect.
         ClickHouseType f32 = ClickHouseType.parse("Float32");
         JdbcValues.Column col = new JdbcValues.Column(1, "v", f32);
 
@@ -183,5 +177,34 @@ class JdbcValuesTest {
 
         // And it is the float's value, not a different number: it round-trips.
         assertEquals(Float.MIN_NORMAL, JdbcValues.asBigDecimal(col, tiny).floatValue());
+    }
+
+    @Test
+    @DisplayName("where both answers are defensible, the reference's answer is ours")
+    void followsTheReferenceWhereBothAreDefensible() throws Exception {
+        // NaN through getBoolean. JDBC settles zero, not NaN, so there is nothing to read the
+        // answer off -- and an arbitrary difference from the reference is worth nothing.
+        ClickHouseType f64 = ClickHouseType.parse("Float64");
+        JdbcValues.Column num = new JdbcValues.Column(1, "v", f64);
+        Object nan = RowBinaryDecoder.decode(f64, new RowBinaryInput(hex("000000000000f87f")), OPTIONS);
+        assertEquals(false, JdbcValues.asBoolean(num, nan));
+        // Still "non-zero is true" for every real number, which the reference gets wrong for
+        // the smallest normal Float32.
+        Object tiny = RowBinaryDecoder.decode(
+                ClickHouseType.parse("Float32"), new RowBinaryInput(hex("00008000")), OPTIONS);
+        assertEquals(true, JdbcValues.asBoolean(
+                new JdbcValues.Column(1, "v", ClickHouseType.parse("Float32")), tiny));
+
+        // getBytes on an address. Refusing was over-strict: an address is bytes.
+        ClickHouseType ip4 = ClickHouseType.parse("IPv4");
+        Object v4 = RowBinaryDecoder.decode(ip4, new RowBinaryInput(hex("0101a8c0")), OPTIONS);
+        assertArrayEquals(
+                new byte[] {(byte) 192, (byte) 168, 1, 1},
+                JdbcValues.asBytes(new JdbcValues.Column(1, "v", ip4), v4));
+
+        ClickHouseType ip6 = ClickHouseType.parse("IPv6");
+        Object v6 = RowBinaryDecoder.decode(
+                ip6, new RowBinaryInput(hex("20010db8000000000000000000000001")), OPTIONS);
+        assertEquals(16, JdbcValues.asBytes(new JdbcValues.Column(1, "v", ip6), v6).length);
     }
 }

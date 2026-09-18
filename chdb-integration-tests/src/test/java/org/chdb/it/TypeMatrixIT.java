@@ -441,18 +441,13 @@ class TypeMatrixIT extends NativeTestBase {
     }
 
     /**
-     * Every declared type reads the same from a real table column as from the expression that
-     * produced the value.
+     * Every declared type reads the same from a table column as from the expression that made
+     * the value: all seven {@code ResultSetMetaData} answers, {@code getObject}, {@code
+     * getString}.
      *
-     * <p>Every other test here, and the whole clickhouse-jdbc parity harness, reads a `SELECT`
-     * expression. That is deliberate — both drivers then see an identical column type with no
-     * table definition to disagree about — but it leaves one thing unchecked: a `CAST` in a
-     * projection could in principle reach the wire format as something other than what a column
-     * of that type reaches it as, and the whole exercise would then be an artifact of how the
-     * cases are written. It is not, and this is what says so.
-     *
-     * <p>Compared per column: all seven `ResultSetMetaData` answers, `getObject` and
-     * `getString`.
+     * <p>Here because every other test and the whole parity harness read {@code SELECT}
+     * expressions. Without this, a {@code CAST} reaching the wire format differently from a
+     * declared column would make the comparison an artifact of how the cases are written.
      */
     @Test
     @DisplayName("a table column reads identically to the expression that produced it")
