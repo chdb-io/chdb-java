@@ -2,62 +2,94 @@
 
 ## How types are decided
 
-Not by parsing ClickHouse type names. Results arrive over the Arrow C Data Interface, and each
-column's Arrow format string is what the driver maps. That means the mapping is decided by the
-engine's own converter and cannot drift from it: `LowCardinality(String)` arrives as Arrow
-`utf8` and is a `String` here without the driver knowing what LowCardinality is, `Nullable(T)`
-arrives as `T` with the nullable flag set, and `Enum8` arrives as its underlying integer.
+By the type the engine declares. Results arrive as `RowBinaryWithNamesAndTypes`, whose header
+names every column's type exactly as ClickHouse would print it —
+`Enum8('a' = 6, 'b' = 7)`, `Nullable(Int32)`, `DateTime64(3, 'UTC')` — and `ClickHouseType`
+parses that into what decoding and `ResultSetMetaData` need.
+
+This replaced reading over the Arrow C Data Interface, and the reason is worth recording because
+the old design was defensible and still wrong. Arrow looked like the safer choice: the mapping
+was made by the engine's own converter, so it could not drift from it. But that converter is a
+*lossy* projection of ClickHouse's type system, and the loss is not recoverable downstream —
+`CHColumnToArrowColumn.cpp` writes `Enum8` as a plain `Int8` with the labels nowhere in the
+stream, `Int128`, `IPv6` and `UUID` all as sixteen bytes of fixed-size binary, `DateTime` as a
+`UInt32`, and it attaches no ClickHouse type name to the field. So an `Int128` read back as a
+`java.util.UUID`, an `IPv4` as a `Long`, and every temporal accessor on a `DateTime` threw. The
+mapping could not drift from the engine, and was wrong anyway.
+
+The answers below are matched to clickhouse-jdbc, captured by reading the same expressions
+through it against the same engine version: a column's reported type should not change for an
+application moving between the two drivers. `docs/type-parity-clickhouse-jdbc.md` records the
+comparison, including the handful of places we differ on purpose and why.
 
 ## Reading
 
-| ClickHouse | Arrow | `getColumnType()` | `getObject()` returns | Also readable as |
+Precision and scale are what `ResultSetMetaData` reports.
+
+| ClickHouse | `getColumnType()` | `getObject()` returns | Precision | Scale |
 |---|---|---|---|---|
-| `Bool` | `b` | `BOOLEAN` | `Boolean` | `getInt` (0/1), `getString` (`"true"`/`"false"`) |
-| `Int8` | `c` | `TINYINT` | `Byte` | any wider integer accessor |
-| `Int16` | `s` | `SMALLINT` | `Short` | |
-| `Int32` | `i` | `INTEGER` | `Integer` | |
-| `Int64` | `l` | `BIGINT` | `Long` | |
-| `UInt8` | `C` | `SMALLINT` | `Short` | `getInt`, `getLong` |
-| `UInt16` | `S` | `INTEGER` | `Integer` | `getLong` |
-| `UInt32` | `I` | `BIGINT` | `Long` | `getLong`; **not** `getInt` — see below |
-| `UInt64` | `L` | `NUMERIC` | `BigInteger` | `getBigDecimal`, `getString`; `getLong` only below 2⁶³ |
-| `Float32` | `f` | `REAL` | `Float` | `getDouble` |
-| `Float64` | `g` | `DOUBLE` | `Double` | |
-| `Decimal(P,S)` | `d:P,S[,bits]` | `NUMERIC` | `BigDecimal` | `getString` (plain notation) |
-| `String` | `u` | `VARCHAR` | `String` | `getBytes` (UTF-8), `getCharacterStream` |
-| `FixedString(N)` | `w:N` | `BINARY` | `byte[]` | `getString` (lowercase hex) |
-| `UUID` | `w:16` | `BINARY` | `UUID` | `getString`, `getBytes` |
-| `Date`, `Date32` | `tdD` | `DATE` | `LocalDate` | `getDate`, `getString` (ISO-8601) |
-| `DateTime64(p)` | `tsX:` | `TIMESTAMP` | `Instant` | `getTimestamp`, `getLocalDateTime` via `getObject` |
-| `DateTime64(p,'tz')` | `tsX:tz` | `TIMESTAMP_WITH_TIMEZONE` | `Instant` | as above |
-| `Nullable(T)` | T's format | T's type | `null`, or T's value | every accessor; `wasNull()` |
-| `LowCardinality(T)` | T's format | T's type | T's value | materialized, not dictionary-encoded |
-| `Enum8`, `Enum16` | `c` / `s` | `TINYINT` / `SMALLINT` | `Byte` / `Short` | the underlying value; use `toString(col)` for the name |
+| `Bool` | `BOOLEAN` | `Boolean` | 1 | 0 |
+| `Int8` | `TINYINT` | `Byte` | 3 | 0 |
+| `Int16` | `SMALLINT` | `Short` | 5 | 0 |
+| `Int32` | `INTEGER` | `Integer` | 10 | 0 |
+| `Int64` | `BIGINT` | `Long` | 19 | 0 |
+| `Int128` | `NUMERIC` | `BigInteger` | 39 | 0 |
+| `Int256` | `NUMERIC` | `BigInteger` | 77 | 0 |
+| `UInt8` | `SMALLINT` | `Short` | 3 | 0 |
+| `UInt16` | `INTEGER` | `Integer` | 5 | 0 |
+| `UInt32` | `BIGINT` | `Long` | 10 | 0 |
+| `UInt64` | `NUMERIC` | `BigInteger` | 20 | 0 |
+| `UInt128` | `NUMERIC` | `BigInteger` | 39 | 0 |
+| `UInt256` | `NUMERIC` | `BigInteger` | 78 | 0 |
+| `Float32` | `REAL` | `Float` | 12 | 0 |
+| `Float64` | `DOUBLE` | `Double` | 22 | 0 |
+| `BFloat16` | `REAL` | `Float` | 3 | 0 |
+| `Decimal(18, 4)` | `DECIMAL` | `BigDecimal` | 18 | 4 |
+| `String` | `VARCHAR` | `String` | 0 | 0 |
+| `FixedString(6)` | `VARCHAR` | `String` | 6 | 0 |
+| `Enum8('a' = 1)` | `VARCHAR` | `String` | 0 | 0 |
+| `Enum16('a' = 1)` | `VARCHAR` | `String` | 0 | 0 |
+| `UUID` | `OTHER` | `UUID` | 69 | 0 |
+| `IPv4` | `OTHER` | `InetAddress` | 10 | 0 |
+| `IPv6` | `OTHER` | `InetAddress` | 39 | 0 |
+| `Date` | `DATE` | `Date` | 10 | 0 |
+| `Date32` | `DATE` | `Date` | 10 | 0 |
+| `DateTime` | `TIMESTAMP` | `Timestamp` | 29 | 0 |
+| `DateTime('UTC')` | `TIMESTAMP` | `Timestamp` | 29 | 0 |
+| `DateTime64(3)` | `TIMESTAMP` | `Timestamp` | 29 | 3 |
+| `Time` | `TIME` | `Time` | 9 | 0 |
+| `Time64(3)` | `TIME` | `Time` | 9 | 3 |
+| `IntervalDay` | `BIGINT` | `Long` | 19 | 0 |
+| `Nullable(Int32)` | `INTEGER` | `Integer` | 10 | 0 |
+| `LowCardinality(String)` | `VARCHAR` | `String` | 0 | 0 |
+| `Array(Int32)` | `ARRAY` | `Array` | 0 | 0 |
+| `Tuple(a Int32)` | `OTHER` | `[Ljava.lang.Object;` | 0 | 0 |
+| `Map(String, Int32)` | `OTHER` | `Map` | 0 | 0 |
+| `Nested(a Int32)` | `OTHER` | `[Ljava.lang.Object;` | 0 | 0 |
+| `JSON` | `OTHER` | `Map` | 0 | 0 |
+| `Dynamic` | `OTHER` | `Object` | 0 | 0 |
+| `Variant(Int64, String)` | `OTHER` | `Object` | 0 | 0 |
+| `Point` | `ARRAY` | `[D` | 0 | 0 |
+| `Ring` | `ARRAY` | `[[D` | 0 | 0 |
+| `LineString` | `ARRAY` | `[[D` | 0 | 0 |
+| `Polygon` | `ARRAY` | `[[[D` | 0 | 0 |
+| `MultiPolygon` | `ARRAY` | `[[[[D` | 0 | 0 |
+| `SimpleAggregateFunction(sum, Int64)` | `OTHER` | `Object` | 0 | 0 |
+| `AggregateFunction(quantile(0.5), UInt64)` | `OTHER` | `Object` | 0 | 0 |
 
-`Bool` reads as `Boolean` for `getObject`; `getInt` gives 0 or 1, which is JDBC's numeric view
-of a boolean.
+`getString` is defined for every readable type. An `Enum` gives its label, an address gives its
+text form, a composite gives ClickHouse's own rendering — `[1, 2, 3]`, `['a', 'b']` with string
+elements quoted, `[1, NULL, 3]` with an absent element uppercase, `(1.0,2.0)` for a `Point` — and
+a timestamp gives exactly as many fractional digits as its scale, or none when the value has no
+fraction.
 
-### Types V1 will not read
+`getObject(column, Class)` reaches the `java.time` types, `BigInteger`, `InetAddress`, `UUID`
+and `byte[]` where the plain `getObject` returns the `java.sql` type the specification requires.
 
-`Array`, `Map`, `Tuple`, `Nested`, `Variant`, `Dynamic`, `JSON`, `AggregateFunction`, `Point`,
-`Ring`, `Polygon`, `IPv4`, `IPv6` and anything else with no flat Arrow mapping.
+An `AggregateFunction` state cannot be decoded: it is an opaque per-function blob. That fails
+the whole row rather than the column, because a row-wise format offers no way to skip a value
+whose length cannot be worked out. Cast it in the query.
 
-`ResultSetMetaData.getColumnTypeName()` reports these as
-`Unsupported(arrow=<format>)` and `getColumnType()` as `OTHER`, so a framework can see the
-column exists. Reading one raises `SQLFeatureNotSupportedException` naming the column and the
-workaround. It never returns a wrong value and never mis-slices the buffers.
-
-The workaround is a cast in SQL:
-
-```sql
-SELECT toString(tags) AS tags,      -- Array(String)  -> "['a','b']"
-       toString(attrs) AS attrs,    -- Map(String,..) -> "{'k':1}"
-       toString(addr) AS addr       -- IPv6           -> "::1"
-FROM events
-```
-
-`IPv4` and `IPv6` are worth calling out: they are common, and `toString()` gives exactly the
-textual form you want.
 
 ## Numeric range: reads that refuse rather than truncate
 
@@ -157,6 +189,9 @@ p.setBytes(1, payload);
 
 ### Arrays
 
+Reading one gives a `java.sql.Array`, from `getObject` and from `getArray` alike;
+`getBaseTypeName()` is the element's ClickHouse type name and `getArray()` its decoded elements.
+
 There is no `setArray`. Build the array in SQL from a text parameter:
 
 ```java
@@ -180,22 +215,36 @@ wrong value. See [upstream findings §4](upstream-findings.md).
 
 ## Driver properties affecting types
 
-| Property | Default | Effect |
-|---|---|---|
-| `stringAsString` | `true` | `String` columns as Arrow `utf8`. Set `false` for columns holding bytes that are not valid UTF-8; they then read as `byte[]`. |
-| `unsupportedAsBinary` | `false` | Degrade `JSON`, `Dynamic` and `AggregateFunction` to binary instead of failing the query. The bytes are an engine-internal representation — `getBytes()` only. |
-| `lowCardinalityAsDictionary` | `false` | Emit `LowCardinality` as an Arrow dictionary. V1 cannot read dictionary-encoded columns, so this makes them unreadable; it exists for diagnosis. |
+None any more. `stringAsString`, `unsupportedAsBinary` and `lowCardinalityAsDictionary`
+configured the Arrow export and are accepted and ignored; `docs/unsupported.md` says why they
+are still accepted rather than rejected.
 
+One session setting is applied on your behalf and cannot be turned off:
+`output_format_binary_write_json_as_string`, pinned to `0`. A `JSON` column is written either
+as a length-prefixed string or as its own paths depending on it, and the header says `JSON`
+either way — so a decoder that guessed would read one as the other and return plausible
+rubbish. Changing it would make `JSON` unreadable rather than differently readable.
+
+### Reading a `JSON` column
+
+`getObject` gives a `Map` of the row's paths to typed values, which is what clickhouse-jdbc
+gives. `getString` is that map's text.
+
+```java
+// {"a":{"b":{"c":7}},"s":"x","arr":[1,2]}
+Map<String, Object> paths = (Map<String, Object>) rs.getObject("j");
+paths.get("a.b.c");   // Long 7
+paths.get("s");       // String "x"
+paths.get("arr");     // List.of(1L, 2L)
 ```
-jdbc:chdb:/data?unsupportedAsBinary=true
-```
+
+Two things the engine does to a JSON document before any driver sees it, so both drivers show
+them: **nesting is flattened to dotted paths** — `{"a":{"b":1}}` and `{"a.b":1}` are the same
+value afterwards — and **a null is not a path**, so `{"a":null,"b":true}` keeps only `b`. The
+engine's own text output does the same.
 
 ## `UUID` and `FixedString(16)`
 
-The engine exports both as Arrow `w:16`, with nothing to tell them apart, and the public Arrow
-options offer no way to change that. The driver reports `UUID`, because a UUID column is far
-more common than a 16-byte `FixedString`.
-
-If you have a `FixedString(16)`, nothing is lost: `getBytes()` returns the 16 raw bytes.
-`getString()` will render them in UUID notation rather than hex, so use `getBytes()`, or
-`hex(col)` in SQL.
+No longer ambiguous. Over Arrow both were sixteen bytes of fixed-size binary, along with
+`Int128`, `UInt128` and `IPv6`, and the driver had to guess — it guessed `UUID`, which was right
+for one of the five. The stream's header says which it is.

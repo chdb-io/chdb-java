@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * A lock held only for the duration of {@code executeQuery} does not achieve that: the fetches
  * happen later, in {@code ResultSet.next()}. Two threads would each open a stream, and their
  * interleaved fetches would meet an engine that has one streaming query per connection --
- * which surfaces as {@code chdb_stream_fetch_arrow failed} on whichever thread loses.
+ * which surfaces as {@code No active streaming query} on whichever thread loses.
  *
  * <p>So the slot is held from the start of execution until the result set is closed or
  * exhausted. A statement with no result set holds it only for its own duration, since there is

@@ -388,6 +388,19 @@ public final class ChdbUrl {
             }
             arguments.add("--" + entry.getKey() + "=" + entry.getValue());
         }
+        // Last, so it wins over anything the URL set. A JSON column is written either as a
+        // length-prefixed string or in its own structured form depending on this setting, and
+        // the stream's header says JSON either way -- so a decoder cannot tell which arrived,
+        // and a caller who changed it would make JSON columns unreadable rather than
+        // differently readable.
+        //
+        // 0, which is the engine's default and what clickhouse-jdbc reads: a JSON value
+        // arrives as its paths, and getObject hands back a Map of them.
+        //
+        // A session setting rather than text appended to each statement. Appending
+        // "SETTINGS ..." is the obvious thing and it is wrong: a statement that already ends
+        // in a clause, or in a {name:Type} parameter placeholder, becomes a syntax error.
+        arguments.add("--output_format_binary_write_json_as_string=0");
         return arguments;
     }
 

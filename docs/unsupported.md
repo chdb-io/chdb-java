@@ -65,12 +65,12 @@ a temporary table and swap it in with `EXCHANGE TABLES` or `RENAME TABLE`.
 Result sets are `TYPE_FORWARD_ONLY` and `CONCUR_READ_ONLY`, and asking `createStatement` for
 anything else is refused at creation rather than silently downgraded.
 
-Forward-only is what makes streaming work: one Arrow batch is live at a time, so a 100 GB
-result reads in the footprint of a 100 MB one. Supporting `previous()` would mean buffering the
-whole result, which defeats that.
+Forward-only is what makes streaming work: one chunk is live at a time, so a 100 GB result
+reads in the footprint of a 100 MB one. Supporting `previous()` would mean buffering the whole
+result, which defeats that.
 
 `isLast()` throws rather than guessing, because answering needs a one-row lookahead — which for
-a stream means fetching a batch the caller may never read, and would be wrong at every batch
+a stream means fetching a chunk the caller may never read, and would be wrong at every chunk
 boundary.
 
 **Instead:** collect the rows you need into a Java collection, or re-run the query with
@@ -117,7 +117,7 @@ column-list overloads throw. ClickHouse has no auto-increment or sequences.
 |---|---|
 | `getBlob()`, `setBlob()`, `createBlob()` | throw — use `getBytes`/`setBytes` |
 | `getClob()`, `getNClob()`, `setClob()` | throw — use `getString`/`setString` |
-| `getArray()`, `setArray()`, `createArrayOf()` | throw — see [type mapping](type-mapping.md) |
+| `setArray()`, `createArrayOf()` | throw — there is no INSERT binding for an array. `getArray()` works. |
 | `getRef()`, `setRef()` | throw |
 | `getRowId()`, `setRowId()` | throw — chDB tables have no row identity |
 | `getSQLXML()`, `setSQLXML()`, `createSQLXML()` | throw |
@@ -127,33 +127,41 @@ column-list overloads throw. ClickHouse has no auto-increment or sequences.
 
 ## Columns V1 cannot read
 
-`Array`, `Map`, `Tuple`, `Nested`, `Variant`, `Dynamic`, `JSON`, `AggregateFunction`, the
-geometry types, `IPv4` and `IPv6`.
+`AggregateFunction`, and nothing else.
 
-`ResultSetMetaData` reports these as `Unsupported(arrow=<format>)` with type `OTHER`, so a
-framework can see the column. Reading one throws, naming the column and the workaround: cast in
-SQL with `toString(col)`, `hex(col)` or a type-specific function. Full detail in
-[type mapping](type-mapping.md).
+Its serialized state is the aggregate function's own, with no documented shape a reader outside
+the engine can rely on. `SimpleAggregateFunction` is not in this list: it stores the plain nested
+type and reads as that.
 
-The alternative — decoding buffers the driver does not understand — risks silently wrong values,
-which is worse than an error.
+`Array`, `Map`, `Tuple`, `Nested`, `Variant`, `Dynamic`, `JSON`, the geometry types, `IPv4` and
+`IPv6` used to be here and **are** readable now — see [type mapping](type-mapping.md). A `JSON`
+column reads as a `Map` of the row's paths.
+
+`ResultSetMetaData` reports the real type name with `DATA_TYPE` `OTHER`, so a framework can see
+the column. Reading it throws SQLSTATE `0A000` naming the column and its type, with the
+workaround: `toString(col)`, `hex(col)`, or a `-Merge` to finalize it.
 
 ## Other
 
 | | |
 |---|---|
-| `?` parameters on `SHOW`, `DESCRIBE`, `EXPLAIN`, `EXISTS`, `CHECK` | throws (SQLSTATE `0A000`) |
+| `?` parameters on `SHOW ... LIKE ?` | throws (SQLSTATE `0A000`) |
 | `setMaxFieldSize(n)` for `n != 0` | throws; the driver does not truncate values |
 | `getMoreResults(KEEP_CURRENT_RESULT)` | throws; a statement has one result |
 | `Driver.getParentLogger()` | throws; the driver does not use `java.util.logging` |
 | `Connection.unwrap(x)` for an unrelated `x` | throws |
 
-A `SHOW`/`DESCRIBE`/`EXPLAIN`/`EXISTS`/`CHECK` statement goes through the engine's materialized
-Arrow entry point, because the streaming one accepts only a SELECT pipeline — and the engine
-exports `chdb_query_arrow_n` but no parameter-binding form of it. So those statements execute,
-with their full result set, but cannot carry server-side bindings; a `PreparedStatement` with a
-`?` in one is refused rather than having its values interpolated into the SQL, which is the
-injection server-side binding exists to avoid.
+A `SHOW`/`DESCRIBE`/`EXPLAIN`/`EXISTS`/`CHECK` statement goes through the engine's
+materializing entry point, because the streaming one accepts only a SELECT pipeline. That entry
+point does take parameters — `chdb_query_with_params_n` — so `DESCRIBE`, `EXPLAIN` and `EXISTS`
+carry server-side bindings like a `SELECT` does. `SHOW ... LIKE ?` does not: the engine
+substitutes `{name:Type}` while parsing and does not do it inside a `SHOW`'s pattern, so the
+placeholder reaches the parser as text and the statement fails to parse. The driver reports
+that as unsupported rather than interpolating the value into the SQL, which is the injection
+server-side binding exists to avoid.
+
+This used to be all five of them, because the Arrow entry point the driver read results through
+had no parameter-binding form at all.
 
 **Instead: ask the `system` tables.** They answer every one of these questions, they are
 `SELECT`s, so they take parameters, and `DatabaseMetaData` already works this way:
@@ -203,6 +211,17 @@ honouring them is not possible:
 | `setClientInfo(...)` | stored and returned; not sent anywhere. |
 | `setCatalog(name)` | stored and returned. ClickHouse has one namespace level and it is mapped to JDBC's *schema*, so use `setSchema`. |
 
+## Accepted and ignored since the move off Arrow
+
+`lowCardinalityAsDictionary`, `unsupportedAsBinary` and `stringAsString` configured the Arrow
+export the driver used to read results through. It reads `RowBinaryWithNamesAndTypes` now, where
+the engine names every type as it declared it, so there is nothing for them to configure.
+
+They are still accepted, and still swallowed rather than forwarded to the engine. A property the
+driver stopped recognising would be passed on as `--<key>=<value>` and fail the connection on an
+unknown setting, which is a worse answer than "accepted and ignored" for a URL somebody already
+has.
+
 ## Constraints, not refusals
 
 These are supported, with a rule you have to know:
@@ -239,6 +258,19 @@ and the failure that produced named handle numbers rather than the close: `strea
 does not belong to connection handle 18576`, once in 11 860 soak iterations. A read whose
 connection is closed underneath it now says so, with SQLSTATE `08003`; a read whose result set
 was closed underneath it says that, with `HY010`.
+
+**A column this driver cannot decode fails the row, not just the column.** `AggregateFunction`
+states are the case that remains: an opaque per-function blob with no documented layout. The
+error arrives from `next()` rather than from the accessor, and it has to — a row-wise format
+gives no way to skip a value whose length cannot be worked out, so the rest of the row is
+unreachable too. Cast it in the query; `toString(col)` always works.
+
+**The `Calendar` overloads of `getDate`, `getTime` and `getTimestamp` do not shift the value.**
+Those overloads exist to interpret a value whose zone is unknown. A ClickHouse `DateTime` either
+declares its zone or takes the engine's session zone, so the wall clock a caller is given is
+already the column's own; shifting it by the caller's calendar would move a moment that was
+never ambiguous. The calendar is accepted and ignored. `getObject(column, Instant.class)` gives
+the instant when that is what is wanted.
 
 **Stop your query threads before the JVM exits.** The driver installs a shutdown hook that
 closes connections the application forgot, which covers a leaked result set: without it, a JVM
@@ -346,10 +378,12 @@ render the value into the statement and let the framework escape it. For jOOQ th
 Splicing the value into the SQL string yourself is the one thing not to do: the escaping is what
 `bind()` exists for, and `PreparedStatementIT` is the evidence it holds.
 
-**`getColumns()`** reports the ClickHouse type name and leaves `DATA_TYPE` as `OTHER`. Mapping a
-type *name* to a JDBC type would be a second implementation of the Arrow mapping, and the two
-would drift. For a column's JDBC type, run `SELECT * FROM t LIMIT 0` and read its
-`ResultSetMetaData`, which goes through the one mapping that matters.
+**`getColumns()`** reports real answers: `TYPE_NAME` is the ClickHouse type name and
+`DATA_TYPE`, `COLUMN_SIZE`, `DECIMAL_DIGITS` and `NULLABLE` come from the same
+`JdbcTypeMapping` that `ResultSetMetaData` uses, so the two agree. They were `OTHER` and zeroes
+while the result-set mapping lived in the Arrow reader and a second implementation here would
+have drifted from it. `SELECT * FROM t LIMIT 0` and its `ResultSetMetaData` is still the way to
+get a type without a metadata call.
 
 **`jdbcCompliant()` returns `false`**, and will keep doing so. Compliance requires full SQL-92
 entry level and the whole API surface; chDB has no transactions, no scrollable cursors and

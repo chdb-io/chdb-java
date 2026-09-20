@@ -33,7 +33,11 @@ public final class ChdbNative {
     /** Handle kinds, for {@link #openHandleCount(int)}. */
     public static final int KIND_CONNECTION = 1;
     public static final int KIND_RESULT = 2;
-    public static final int KIND_STREAM = 3;
+    /**
+     * 4 rather than 3: the Arrow stream kind was 3 and is gone, and reusing its number would
+     * make an old shim and a new driver agree on a number while disagreeing on its meaning.
+     */
+    public static final int KIND_ROW_BINARY = 4;
 
     static {
         // Loads libchdb and then the shim, in that order, and verifies the ABI.
@@ -149,109 +153,43 @@ public final class ChdbNative {
      */
     public static native int[] classifyQuery(long connection, byte[] sql);
 
-    // ---------------------------------------------------------------- arrow streaming query
+    // ---------------------------------------------------------------- RowBinary streaming
 
     /**
-     * {@code chdb_stream_query_arrow_n}, or the {@code _with_params_n} variant when {@code
-     * paramNames} is non-empty.
+     * {@code chdb_stream_query_with_params_n} with a {@code RowBinaryWithNamesAndTypes} format.
      *
-     * <p>The shim fetches the first batch eagerly, because that is what produces the Arrow
-     * schema, and JDBC requires {@code getMetaData()} to answer before the first {@code
-     * next()}. The batch is held as the stream's pending batch and handed out by the first
-     * {@link #streamAdvance(long, long)}.
+     * <p>The one path results arrive on. It hands over the bytes of a RowBinary stream whose
+     * header names every type as the engine declared it; nothing is decoded natively. The Arrow
+     * entry points this replaced typed a column off the Arrow schema instead, which is the
+     * engine's own lossy projection of its type system.
      *
-     * @return a stream handle
-     * @throws ChdbNativeException if the engine refuses to stream the statement
-     */
-    public static native long streamOpen(
-            long connection,
-            byte[] sql,
-            byte[][] paramNames,
-            byte[][] paramValues,
-            boolean lowCardinalityAsDictionary,
-            boolean unsupportedAsBinary,
-            boolean stringAsString);
-
-    /**
-     * {@code chdb_query_arrow_n}: runs the statement to completion and exports the whole
-     * result set through the same Arrow C Data Interface the streaming path consumes.
+     * <p>It has a parameterised variant, which those did not: a parameterised {@code SHOW} or
+     * {@code DESCRIBE} has a path here where it had none before.
      *
-     * <p>The route for a statement that has a result set the engine refuses to stream --
-     * {@code SHOW}, {@code DESCRIBE}, {@code EXPLAIN}, {@code EXISTS}, {@code CHECK}. The
-     * engine's streaming door admits only a SELECT pipeline, so without this every non-SELECT
-     * read failed with {@code Streaming query is not supported} (issue #12).
-     *
-     * <p>Returns a handle of the same kind as {@link #streamOpen}, driven by the same {@code
-     * stream*} methods: the batches come from the exported Arrow stream instead of from the
-     * engine's pipeline, and nothing above the shim can tell the difference.
-     *
-     * <p>Differences a caller has to know about:
-     *
-     * <ul>
-     *   <li>Memory is not bounded by one batch. The result is fully materialized in the engine
-     *       before this returns, which is what makes it safe only for the statements above:
-     *       their results are bounded by the schema, not by the data.
-     *   <li>No server-side parameters. The engine exports {@code chdb_query_arrow_n} but no
-     *       {@code _with_params_n} variant of it, so a parameterized non-streamable statement
-     *       has no route at all; {@code ChdbStatement} reports that rather than silently
-     *       dropping the bindings.
-     *   <li>{@link #streamCancel(long, long)} cannot stop the execution, only the iteration:
-     *       the statement has already run by the time there is a handle to cancel.
-     * </ul>
-     *
-     * @return a stream handle
+     * @param format the ClickHouse output format, normally {@code RowBinaryWithNamesAndTypes}
+     * @return a stream handle of {@link #KIND_ROW_BINARY}
      * @throws ChdbNativeException carrying the engine's error text if the statement failed
      */
-    public static native long streamOpenMaterialized(
-            long connection,
-            byte[] sql,
-            boolean lowCardinalityAsDictionary,
-            boolean unsupportedAsBinary,
-            boolean stringAsString);
-
-    /** Column names from the Arrow schema, in ordinal order. */
-    public static native String[] streamColumnNames(long stream);
+    public static native long rowBinaryOpen(
+            long connection, byte[] sql, byte[] format, byte[][] paramNames, byte[][] paramValues);
 
     /**
-     * Arrow C Data Interface format strings, in ordinal order -- {@code "i"}, {@code "u"},
-     * {@code "tsu:UTC"}, {@code "d:38,10"} and so on. The schema is stable for the lifetime
-     * of the stream, so these are read once.
-     */
-    public static native String[] streamColumnFormats(long stream);
-
-    /** Per-column {@code ARROW_FLAG_NULLABLE}, in ordinal order. */
-    public static native boolean[] streamColumnNullable(long stream);
-
-    /**
-     * Releases the current batch and makes the next one current.
+     * The next chunk of the stream, or null once it has ended.
      *
-     * @return the new batch's row count, or -1 at end of stream
+     * <p>Each chunk is a whole document: its own header followed by whole rows, never a row
+     * split across two chunks. Measured rather than documented, so {@link RowBinaryCursor}
+     * checks it instead of trusting it. The bytes are copied out of the engine's buffer before
+     * it is released, so the array is the caller's to keep.
+     *
      * @throws ChdbNativeException if the engine reported a mid-stream error
      */
-    public static native long streamAdvance(long connection, long stream);
+    public static native byte[] rowBinaryFetch(long connection, long stream);
 
-    /**
-     * Direct views onto the current batch's Arrow buffers, one entry per column.
-     *
-     * <p>Each entry is {@code {long[] meta, ByteBuffer validity, ByteBuffer b1,
-     * ByteBuffer b2}} where {@code meta} is {@code {length, offset, nullCount}}. Buffers chDB did not
-     * supply are null. One call per batch, not per cell.
-     *
-     * <p>The buffers are owned by the batch. {@link #streamAdvance(long, long)} and {@link
-     * #streamClose(long)} free them, so the Java side must drop its references first --
-     * reading a buffer whose batch has been released is a use-after-free the JVM cannot
-     * catch. {@code ArrowBatch} is what enforces that; nothing else should call this.
-     */
-    public static native Object[] streamBatchColumns(long stream);
+    /** {@code chdb_stream_cancel_query}. Safe on a stream that already ended. */
+    public static native void rowBinaryCancel(long connection, long stream);
 
-    /** {@code chdb_stream_cancel_query}. Safe to call on a stream that already ended. */
-    public static native void streamCancel(long connection, long stream);
-
-    /**
-     * Releases the current batch, the Arrow schema and the engine's stream handle.
-     * Idempotent.
-     */
-    public static native void streamClose(long stream);
+    /** Releases the engine's stream handle. Idempotent. */
+    public static native void rowBinaryClose(long stream);
 
     // ---------------------------------------------------------------- diagnostics
 

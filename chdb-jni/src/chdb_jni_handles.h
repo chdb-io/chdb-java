@@ -9,7 +9,7 @@
 // so a stale id would eventually pass a magic check and dereference reused memory. An id
 // that is gone from the registry is simply absent, which turns every use-after-free into
 // a clean Java exception. Lookup takes one mutex; the data path makes native calls per
-// batch rather than per cell (work plan section 3.3), so that cost is not on a hot loop.
+// chunk rather than per cell (work plan section 3.3), so that cost is not on a hot loop.
 
 #pragma once
 
@@ -30,12 +30,12 @@ enum HandleKind : int32_t
 {
     kKindConnection = 1,
     kKindResult = 2,
-    kKindStream = 3,
+    kKindRowBinary = 4,
 };
 
 // Lock order, for every mutex in the shim. Acquire left to right, never right to left.
 //
-//     StreamHandle::mutex  ->  ConnHandle::mutex  ->  HandleRegistry::mutex_
+//     RowBinaryHandle::mutex  ->  ConnHandle::mutex  ->  HandleRegistry::mutex_
 //
 // and, separately and never nested with any of the above:
 //
@@ -137,7 +137,7 @@ private:
     {
         counts_.emplace(kKindConnection, 0);
         counts_.emplace(kKindResult, 0);
-        counts_.emplace(kKindStream, 0);
+        counts_.emplace(kKindRowBinary, 0);
     }
 
     mutable std::mutex mutex_;

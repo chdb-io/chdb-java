@@ -30,9 +30,10 @@ import org.junit.jupiter.api.io.TempDir;
  *
  * <p>{@code SHOW}, {@code DESCRIBE}, {@code DESC}, {@code EXPLAIN}, {@code EXISTS} and {@code
  * CHECK} all produce rows, and none of them parses as the SELECT pipeline {@code
- * chdb_stream_query_arrow_n} requires, so every one of them used to fail with {@code Streaming
- * query is not supported}. They go through {@code chdb_query_arrow_n} instead, which exports
- * the same Arrow C Data Interface materialized.
+ * chdb_stream_query} requires, so every one of them used to fail with {@code Streaming query is
+ * not supported}. They go through {@code chdb_query_with_params_n} instead, which returns the
+ * whole result in one buffer -- the same {@code RowBinaryWithNamesAndTypes} the streaming route
+ * reads, and one buffer with a header and its rows is a stream of exactly one chunk.
  *
  * <p>The assertions are on column names, JDBC types and row content rather than on "no
  * exception was thrown", because the failure this guards against is not only an error: routing
@@ -181,7 +182,7 @@ class NonStreamableResultsIT extends NativeTestBase {
             assertTrue(rs.next());
             String ddl = rs.getString(1);
             // Multi-line, so this is also the one assertion here that a newline survives the
-            // Arrow round trip on this route.
+            // round trip on this route.
             assertTrue(ddl.startsWith("CREATE TABLE " + DB + ".d"), ddl);
             assertTrue(ddl.contains("`x` Int32"), ddl);
             assertTrue(ddl.contains("ENGINE = MergeTree"), ddl);
@@ -323,8 +324,8 @@ class NonStreamableResultsIT extends NativeTestBase {
             }
 
             // Trivial count() is answered from metadata, so there is nothing to estimate.
-            // A zero-row materialized result set is its own case in the engine's Arrow export
-            // (arrow::Table::MakeEmpty), and it has to keep the schema.
+            // A zero-row materialized result set still has to carry its header: the columns
+            // come from the header whether or not a row follows it.
             try (ResultSet rs =
                     statement.executeQuery("EXPLAIN ESTIMATE SELECT count() FROM " + DB + ".d")) {
                 assertEquals(
@@ -533,9 +534,11 @@ class NonStreamableResultsIT extends NativeTestBase {
     // ------------------------------------------------------------------ the route's limits
 
     /**
-     * {@code chdb_query_arrow_n} has no {@code _with_params_n} variant, so a non-streamable
-     * statement with server-side bindings has no route. The driver says so rather than
-     * interpolating the value into the SQL, which is the injection its server-side binding
+     * The materializing entry point does take parameters -- {@code chdb_query_with_params_n}
+     * -- and the engine substitutes them in {@code EXPLAIN}, {@code DESCRIBE} and {@code EXISTS}.
+     * It does not substitute them in {@code SHOW ... LIKE}: the placeholder reaches the parser
+     * as text and the statement fails to parse. The driver reports that as unsupported rather
+     * than interpolating the value into the SQL, which is the injection server-side binding
      * exists to avoid.
      */
     @Test
@@ -557,8 +560,8 @@ class NonStreamableResultsIT extends NativeTestBase {
      * A query timeout has to be reported even though the materialized route cannot be
      * interrupted.
      *
-     * <p>{@code chdb_query_arrow_n} runs the statement to completion before it returns, and
-     * every cancel the C ABI exports takes a handle the call is still producing -- so there is
+     * <p>{@code chdb_query_with_params_n} runs the statement to completion before it returns,
+     * and every cancel the C ABI exports takes a handle the call is still producing -- so there is
      * nothing for the timer thread to cancel. Before this was handled, {@code executeQuery}
      * came back <em>successfully</em>, with a full result set, after the deadline had passed.
      *
@@ -615,12 +618,11 @@ class NonStreamableResultsIT extends NativeTestBase {
      * A materialized result of tens of thousands of rows arrives whole.
      *
      * <p>Every other test here reads a handful of rows, which would not notice a result
-     * truncated at the point the engine's Arrow export changes shape. Measured on v26.7.0: the
-     * engine builds each of these statements as a single block, so 30,001 rows of {@code SHOW
-     * TABLES} and 24,005 rows of {@code EXPLAIN AST} both come back as exactly one Arrow batch
-     * -- the multi-batch path {@code chdb_query_arrow_n} does take for a large SELECT (16
-     * batches at a million rows) is not reachable from any statement that needs this route.
-     * That is worth knowing rather than assuming, and this test is what pins the row count.
+     * truncated where the engine's output changes shape. Measured on v26.7.0: the engine builds
+     * each of these statements as a single block, so 30,001 rows of {@code SHOW TABLES} and
+     * 24,005 rows of {@code EXPLAIN AST} both come back in one buffer -- the multi-block shape
+     * a large SELECT produces is not reachable from any statement that needs this route. That is
+     * worth knowing rather than assuming, and this test is what pins the row count.
      */
     @Test
     @DisplayName("a materialized result of tens of thousands of rows is not truncated")
@@ -656,8 +658,8 @@ class NonStreamableResultsIT extends NativeTestBase {
      *
      * <p>This looks like a redundant pairing and is not. Measured on v26.7.2-rc.2 by driving the
      * shim directly: opening a stream and closing it <em>without</em> cancelling leaves the
-     * engine in streaming mode, and the next {@code chdb_query_arrow_n} on that connection comes
-     * back with {@code Streaming query is not supported for query: SHOW DATABASES} -- the
+     * engine in streaming mode, and the next materializing call on that connection comes back
+     * with {@code Streaming query is not supported for query: SHOW DATABASES} -- the
      * streaming refusal, from the materialized entry point. Cancelling first clears it, and so
      * does draining the stream to its end.
      *
@@ -706,15 +708,14 @@ class NonStreamableResultsIT extends NativeTestBase {
     /**
      * A failed open on the materialized route leaks nothing, over enough repetitions to see it.
      *
-     * <p>The engine writes the exported Arrow stream into a struct the handle owns, and it does
-     * that before it can report whether the call succeeded -- so a failure partway is the one
-     * path where the handle can be destroyed holding something that still needs releasing.
-     * {@code StreamHandle::closeNow()} therefore releases on the callback being set rather than
-     * on a flag the success path assigns.
+     * <p>A failed statement is the path where the engine's result can exist and still carry an
+     * error, so it is the path where the shim can drop one without destroying it. The counters
+     * are the check that it does not: {@code KIND_RESULT} is the handle the materializing call
+     * produces, {@code KIND_ROW_BINARY} the one a streaming open would.
      *
      * <p>ASan cannot run against the released engine (findings §8), so this asserts on the
      * handle counters and on RSS not growing across a thousand failures. A syntax error is
-     * enough to make {@code chdb_query_arrow_n} fail after the handle exists.
+     * enough to make the call fail after the engine's result exists.
      */
     @Test
     @DisplayName("a failed materialized open leaks no handle and no memory")
@@ -722,8 +723,8 @@ class NonStreamableResultsIT extends NativeTestBase {
     void failedMaterializedOpenLeaksNothing() throws Exception {
         try (Connection connection = openMemory();
                 Statement statement = connection.createStatement()) {
-            // EXPLAIN is a materialized keyword, so this reaches chdb_query_arrow_n and fails
-            // inside it rather than being refused by the driver first.
+            // EXPLAIN is a materialized keyword, so this reaches the engine and fails inside
+            // it rather than being refused by the driver first.
             String broken = "EXPLAIN SELECT FROM WHERE ###";
 
             for (int i = 0; i < 50; i++) {
@@ -731,8 +732,8 @@ class NonStreamableResultsIT extends NativeTestBase {
             }
             assertEquals(
                     0,
-                    ChdbNative.openHandleCount(ChdbNative.KIND_STREAM),
-                    "a failed materialized open leaked a stream handle");
+                    ChdbNative.openHandleCount(ChdbNative.KIND_ROW_BINARY),
+                    "a failed open leaked a row-binary stream handle");
 
             long baseline = residentKb();
             for (int i = 0; i < 1000; i++) {
@@ -742,16 +743,16 @@ class NonStreamableResultsIT extends NativeTestBase {
 
             assertEquals(
                     0,
-                    ChdbNative.openHandleCount(ChdbNative.KIND_STREAM),
-                    "a failed materialized open leaked a stream handle");
+                    ChdbNative.openHandleCount(ChdbNative.KIND_ROW_BINARY),
+                    "a failed open leaked a row-binary stream handle");
             assertEquals(
                     0,
                     ChdbNative.openHandleCount(ChdbNative.KIND_RESULT),
                     "a failed materialized open leaked a result handle");
 
-            // A leaked ArrowArrayStream from the engine's Arrow converter is not a few bytes;
-            // a thousand of them would be plainly visible. The allowance is for allocator and
-            // JIT noise, not for a per-failure leak.
+            // A leaked engine result is not a few bytes; a thousand of them would be plainly
+            // visible. The allowance is for allocator and JIT noise, not for a per-failure
+            // leak.
             long growthKb = afterFailures - baseline;
             assertTrue(
                     growthKb < 64 * 1024,
@@ -765,6 +766,19 @@ class NonStreamableResultsIT extends NativeTestBase {
     }
 
     /** Resident set size in KB, from ps. Coarse, but enough to tell a leak from noise. */
+    /**
+     * Bytes the collector cannot reclaim, which is what "streamed rather than materialized"
+     * means. Collected a few times first, because one System.gc() is a suggestion.
+     */
+    private static long liveHeapKb() throws InterruptedException {
+        Runtime runtime = Runtime.getRuntime();
+        for (int i = 0; i < 4; i++) {
+            System.gc();
+            Thread.sleep(80);
+        }
+        return (runtime.totalMemory() - runtime.freeMemory()) / 1024;
+    }
+
     private static long residentKb() throws Exception {
         long pid = ProcessHandle.current().pid();
         Process process =
@@ -784,10 +798,11 @@ class NonStreamableResultsIT extends NativeTestBase {
      *
      * <p>ClickHouse nests block comments, and a scan that stopped at the first {@code *}{@code /}
      * read the text after the inner close as the keyword. With the classifier reporting the
-     * statement {@code READ_ONLY}, that routed it to {@code chdb_query_arrow_n}, which buffers
-     * the whole result: measured at +496 MB of RSS for this query against +2 MB behind a
-     * non-nested comment. So this asserts the memory, not just the rows -- the rows were always
-     * right.
+     * statement {@code READ_ONLY}, that routed it to the materializing call, which buffers the
+     * whole result. So this asserts the memory, not just the rows -- the rows were always right.
+     * The original measurement was +496 MB of RSS against +2 MB behind a non-nested comment,
+     * taken while the driver read Arrow; what it measures now is live heap, for the reason given
+     * in the body.
      */
     @Test
     @DisplayName("a SELECT behind a nested block comment still streams")
@@ -806,14 +821,24 @@ class NonStreamableResultsIT extends NativeTestBase {
                         "/*/**/*/ ",
                         "-- banner\n/* /* */ */ "
                     }) {
-                long baseline = residentKb();
+                long baseline = liveHeapKb();
                 assertEquals(4_000_000L, drain(statement, prefix + body), prefix);
-                long growthKb = residentKb() - baseline;
-                // The streamed path grew by kilobytes on every shape measured; the materialized
-                // one by ~500 MB. Anything under 128 MB can only be the streaming route.
+                long growthKb = liveHeapKb() - baseline;
+                // Live heap after a collection, not RSS.
+                //
+                // RSS was the measure while the driver read Arrow, where a batch was a view
+                // onto engine memory and reading a row allocated almost nothing -- so RSS
+                // tracked what was retained. Reading RowBinary allocates: a byte[] per chunk
+                // and decoded objects per row. Measured on this very query, RSS grows by
+                // 683 MB against a 512 MB heap while live heap grows by 10 KB, so RSS now
+                // says how hard the collector was worked and nothing about what is held.
+                //
+                // What the test is for is that nothing accumulates, and that is live heap: the
+                // materialized route holds the whole result, the streamed one holds a chunk.
+                // 32 MB is far above a chunk and far below a 430 MB result.
                 assertTrue(
-                        growthKb < 128 * 1024,
-                        () -> "RSS grew " + growthKb + " KB reading a 4M-row result behind "
+                        growthKb < 32 * 1024,
+                        () -> "live heap grew " + growthKb + " KB reading a 4M-row result behind "
                                 + prefix.replace("\n", "\\n")
                                 + "-- it was materialized rather than streamed");
             }
@@ -913,7 +938,7 @@ class NonStreamableResultsIT extends NativeTestBase {
         // NativeTestBase asserts the counters after the test; this makes the round count part
         // of the failure message if they are not zero.
         assertEquals(
-                0, ChdbNative.openHandleCount(ChdbNative.KIND_STREAM), "leaked a stream handle");
+                0, ChdbNative.openHandleCount(ChdbNative.KIND_ROW_BINARY), "leaked a stream handle");
         assertEquals(
                 0,
                 ChdbNative.openHandleCount(ChdbNative.KIND_CONNECTION),
@@ -928,8 +953,10 @@ class NonStreamableResultsIT extends NativeTestBase {
             try (ResultSet rs = statement.executeQuery("EXPLAIN QUERY TREE SELECT 1")) {
                 assertTrue(rs.next());
                 // Left half-read on purpose. assertNoLeakedHandles() in NativeTestBase is the
-                // assertion: closing the result set has to release the exported Arrow stream
-                // and its batch, not only the ones that were drained.
+                // assertion. On this route the engine's result is copied into Java and destroyed
+                // before executeQuery returns, so what a half-read close must not leave behind
+                // is a handle of either kind, and the statement slot -- which the second
+                // statement below is what checks.
             }
             // The connection's statement slot has to come back too, or this second statement
             // would block.

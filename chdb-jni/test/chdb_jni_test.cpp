@@ -9,9 +9,6 @@
 // So ASan is pointed at the parts of the shim that can be exercised without either a JVM or
 // the engine, which is where its pointer arithmetic and lifetime logic live:
 //
-//   - Arrow format-string parsing, including malformed input, which decides how many bytes of
-//     each buffer Java is allowed to see. Getting a width wrong here is how a caller would end
-//     up reading past a producer's allocation.
 //   - The handle registry, which is the mechanism that turns a use-after-close into an
 //     exception instead of a dereference.
 //   - The signal guard's snapshot and restore.
@@ -30,7 +27,6 @@
 #include <thread>
 #include <vector>
 
-#include "chdb_jni_arrow.h"
 #include "chdb_jni_handles.h"
 #include "chdb_jni_signals.h"
 
@@ -61,88 +57,6 @@ void checkEqual(int64_t actual, int64_t expected, const std::string & what)
         std::printf("FAIL  %s: got %lld, expected %lld\n", what.c_str(),
                     static_cast<long long>(actual), static_cast<long long>(expected));
     }
-}
-
-// ---------------------------------------------------------------- arrow layout
-
-void testArrowLayout()
-{
-    struct Case
-    {
-        const char * format;
-        ArrowLayout layout;
-        int32_t bytes;
-    };
-
-    const Case cases[] = {
-        {"b", ArrowLayout::kBitmap, 0},
-        {"c", ArrowLayout::kFixedWidth, 1},
-        {"C", ArrowLayout::kFixedWidth, 1},
-        {"s", ArrowLayout::kFixedWidth, 2},
-        {"S", ArrowLayout::kFixedWidth, 2},
-        {"e", ArrowLayout::kFixedWidth, 2},
-        {"i", ArrowLayout::kFixedWidth, 4},
-        {"I", ArrowLayout::kFixedWidth, 4},
-        {"f", ArrowLayout::kFixedWidth, 4},
-        {"l", ArrowLayout::kFixedWidth, 8},
-        {"L", ArrowLayout::kFixedWidth, 8},
-        {"g", ArrowLayout::kFixedWidth, 8},
-        {"u", ArrowLayout::kVarBinary32, 0},
-        {"z", ArrowLayout::kVarBinary32, 0},
-        {"U", ArrowLayout::kVarBinary64, 0},
-        {"Z", ArrowLayout::kVarBinary64, 0},
-        {"d:18,3", ArrowLayout::kFixedWidth, 16},
-        {"d:9,2,128", ArrowLayout::kFixedWidth, 16},
-        {"d:76,10,256", ArrowLayout::kFixedWidth, 32},
-        {"w:16", ArrowLayout::kFixedWidth, 16},
-        {"w:3", ArrowLayout::kFixedWidth, 3},
-        {"w:1", ArrowLayout::kFixedWidth, 1},
-        {"tdD", ArrowLayout::kFixedWidth, 4},
-        {"tdm", ArrowLayout::kFixedWidth, 8},
-        {"tss:UTC", ArrowLayout::kFixedWidth, 8},
-        {"tsm:", ArrowLayout::kFixedWidth, 8},
-        {"tsu:Europe/Berlin", ArrowLayout::kFixedWidth, 8},
-        {"tsn:UTC", ArrowLayout::kFixedWidth, 8},
-        {"tts", ArrowLayout::kFixedWidth, 4},
-        {"ttm", ArrowLayout::kFixedWidth, 4},
-        {"ttu", ArrowLayout::kFixedWidth, 8},
-        {"ttn", ArrowLayout::kFixedWidth, 8},
-        {"tDs", ArrowLayout::kFixedWidth, 8},
-    };
-
-    for (const auto & c : cases)
-    {
-        const ArrowColumnLayout layout = parseArrowFormat(c.format);
-        check(layout.layout == c.layout, std::string("layout of \"") + c.format + "\"");
-        if (c.layout == ArrowLayout::kFixedWidth)
-            checkEqual(layout.element_bytes, c.bytes, std::string("width of \"") + c.format + "\"");
-    }
-
-    // Anything not recognized has to come back unsupported. The shim then hands Java no data
-    // buffers for the column, which is what turns an unknown type into a typed error rather
-    // than a mis-sliced read.
-    const char * unsupported[] = {
-        "",       "+l",   "+L",  "+s",     "+m",   "+ud:0,1", "+r",   "+w:3",
-        "vu",     "vz",   "qqq", "d:9",    "d:",   "d:a,b",   "d:9,2,64",
-        "w:",     "w:0",  "w:-1", "w:abc", "tdX",  "tt",      "ttX",  "ts",
-        "tsX:UTC", "tiM", "n",   "Q",      "\x01",
-    };
-    for (const char * format : unsupported)
-    {
-        const ArrowColumnLayout layout = parseArrowFormat(format);
-        check(layout.layout == ArrowLayout::kUnsupported,
-              std::string("\"") + format + "\" must be unsupported");
-    }
-
-    // A very long malformed format must not read past its end.
-    std::string longFormat(4096, 'd');
-    longFormat[1] = ':';
-    check(parseArrowFormat(longFormat).layout != ArrowLayout::kBitmap, "long malformed format");
-
-    // A width that would overflow the multiplication the shim does to size a buffer.
-    const ArrowColumnLayout huge = parseArrowFormat("w:2147483647");
-    check(huge.layout == ArrowLayout::kFixedWidth, "w:2147483647 parses");
-    checkEqual(huge.element_bytes, 2147483647, "w:2147483647 width");
 }
 
 // ---------------------------------------------------------------- handle registry
@@ -178,7 +92,7 @@ void testHandleRegistry()
     // The kind is part of the identity: a result id must not resolve as a connection, or a
     // handle would be reinterpreted as the wrong type.
     check(registry.get(id, kKindResult) == nullptr, "wrong kind does not resolve");
-    check(registry.get(id, kKindStream) == nullptr, "wrong kind does not resolve (stream)");
+    check(registry.get(id, kKindRowBinary) == nullptr, "wrong kind does not resolve (stream)");
 
     // Ids never seen, and ids that cannot exist.
     check(registry.get(id + 1000000, kKindConnection) == nullptr, "unknown id does not resolve");
@@ -234,15 +148,15 @@ void testHandleRegistryConcurrency()
             for (int i = 0; i < kPerThread; ++i)
             {
                 const int64_t id
-                    = registry.insert(std::make_shared<TestHandle>(kKindStream, nullptr));
-                auto found = registry.get(id, kKindStream);
+                    = registry.insert(std::make_shared<TestHandle>(kKindRowBinary, nullptr));
+                auto found = registry.get(id, kKindRowBinary);
                 if (found)
                     ++resolved;
                 else
                     ++missed;
-                registry.remove(id, kKindStream);
+                registry.remove(id, kKindRowBinary);
                 // A removed id must stay gone even while other threads are inserting.
-                if (registry.get(id, kKindStream) != nullptr)
+                if (registry.get(id, kKindRowBinary) != nullptr)
                     ++missed;
             }
         });
@@ -252,7 +166,7 @@ void testHandleRegistryConcurrency()
 
     checkEqual(resolved.load(), kThreads * kPerThread, "every handle resolved on its own thread");
     checkEqual(missed.load(), 0, "no handle was missed or resurrected");
-    checkEqual(registry.openCount(kKindStream), 0, "stream count back to zero");
+    checkEqual(registry.openCount(kKindRowBinary), 0, "stream count back to zero");
 }
 
 // ---------------------------------------------------------------- signal guard
@@ -376,7 +290,6 @@ int main()
 {
     std::printf("chdb_java_jni sanitizer harness\n\n");
 
-    testArrowLayout();
     testHandleRegistry();
     testHandleRegistryConcurrency();
     testSignalGuard();

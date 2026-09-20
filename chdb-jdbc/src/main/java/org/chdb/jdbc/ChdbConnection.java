@@ -68,6 +68,9 @@ public final class ChdbConnection implements Connection {
      */
     private final Object closeLock = new Object();
 
+    /** Resolved on first use by {@link #sessionTimeZone()}. */
+    private volatile java.time.ZoneId sessionTimeZone;
+
     /**
      * Serializes statement execution on this connection, for as long as a statement is live.
      * Not taken by {@code cancel}: the whole point of cancel is to interrupt the holder.
@@ -342,6 +345,46 @@ public final class ChdbConnection implements Connection {
 
     // ------------------------------------------------------------------ lifecycle
 
+    /**
+     * The engine's own timezone, from {@code SELECT timezone()}, read once per connection.
+     *
+     * <p>Needed to read a {@code DateTime} column that does not declare a zone: the stored
+     * value is an instant, and the wall clock a caller is given is only defined relative to the
+     * session's zone. The engine takes that from the host, so it is not necessarily the JVM's.
+     *
+     * <p>Falls back to the JVM's zone if the query fails, which is the closest available answer
+     * and better than failing a statement over metadata.
+     */
+    java.time.ZoneId sessionTimeZone() {
+        java.time.ZoneId cached = sessionTimeZone;
+        if (cached != null) {
+            return cached;
+        }
+        java.time.ZoneId resolved = java.time.ZoneId.systemDefault();
+        try {
+            long result =
+                    ChdbNative.query(
+                            handle,
+                            Utf8.encode("SELECT timezone()"),
+                            Utf8.encode("TabSeparated"),
+                            Utf8.NONE,
+                            Utf8.NONE);
+            try {
+                String name = new String(ChdbNative.resultBytes(result), java.nio.charset.StandardCharsets.UTF_8).trim();
+                if (!name.isEmpty()) {
+                    resolved = java.time.ZoneId.of(name);
+                }
+            } finally {
+                ChdbNative.destroyResult(result);
+            }
+        } catch (RuntimeException ignored) {
+            // A connection that cannot answer this can still run queries; the JVM's zone is
+            // the closest thing to the engine's and is what the old path effectively used.
+        }
+        sessionTimeZone = resolved;
+        return resolved;
+    }
+
     @Override
     public void close() throws SQLException {
         synchronized (closeLock) {
@@ -372,7 +415,7 @@ public final class ChdbConnection implements Connection {
         // ExecutionGate.closeToNewEntrantsWaiting() for why waiting here costs nothing.
         executionGate.closeToNewEntrantsWaiting();
 
-        // Statements first, so their streams and batches are released before the connection
+        // Statements first, so their streams and chunks are released before the connection
         // they were opened on. The shim keeps a strong reference from stream to connection,
         // so the other order would leak rather than crash -- but leaking is still wrong.
         for (ChdbStatement statement : openStatements.toArray(new ChdbStatement[0])) {

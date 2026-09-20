@@ -630,7 +630,7 @@ public final class ChdbPreparedStatement extends ChdbStatement implements Prepar
      * Column metadata before execution.
      *
      * <p>Not available: chDB's C ABI has no "describe this statement" call, and the schema of
-     * an Arrow stream only exists once the engine has produced a batch. Executing the
+     * the stream's header only exists once the engine has started producing it. Executing the
      * statement to find out would run the caller's query as a side effect of asking about it.
      */
     @Override
