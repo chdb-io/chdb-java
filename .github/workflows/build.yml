@@ -178,6 +178,16 @@ jobs:
       - name: Integration tests on Java 11, 17, 21 and 25
         run: |
           set -eu
+          # stdin closed for everything below. chDB embeds clickhouse-local, whose
+          # ClientBase treats the process's own stdin as external data for an INSERT when it
+          # is not a TTY and has bytes available (src/Client/ClientBase.cpp). A runner's stdin
+          # sometimes does, and then "INSERT ... VALUES" fails with "Processing async inserts
+          # with both inlined and external data". Reproducible on demand:
+          #   printf '(9999)\n' | java ... "INSERT INTO t VALUES (1)"
+          # This closes it for our own test processes. It is not a fix -- the hazard is real
+          # for any application embedding chDB whose stdin is a pipe with data.
+          exec </dev/null
+
           case "${{ matrix.platform }}" in
             macos-*) OS=macos ;;
             *)       OS=linux ;;
@@ -237,6 +247,9 @@ jobs:
         # The production path: unpack into a content-addressed cache, verify the checksums,
         # load. Exercised separately because the integration tests use chdb.library.path.
         run: |
+          # See the note on the integration-test step: chDB reads the process's stdin as
+          # external data for an INSERT, and QuickStart inserts.
+          exec </dev/null
           mvn $MAVEN_ARGS -pl chdb-examples -am compile
           # Globbed rather than spelled out: the driver JAR carries the project version, which
           # moves with the engine baseline, and a hardcoded name here goes stale silently.
@@ -259,7 +272,9 @@ jobs:
         # outside this checkout with its own empty local repository. Run here, on every platform,
         # so that the answer does not go stale between releases; the one thing it cannot cover is
         # a real network transfer, which only Central can.
-        run: scripts/verify-consumer.sh ${{ matrix.platform }}
+        # stdin closed: the consumer project runs QuickStart, which inserts. See the note on
+        # the integration-test step.
+        run: scripts/verify-consumer.sh ${{ matrix.platform }} </dev/null
 
       - name: Archive debug symbols
         # Kept out of the runtime JAR (they are several times its size) but needed to read a
@@ -417,14 +432,14 @@ jobs:
         run: scripts/fetch-libchdb.sh ${{ matrix.platform }} target/engine/${{ matrix.platform }}
 
       - name: ASan and UBSan over the shim's own logic
-        # chdb_jni_test: Arrow format parsing, the handle registry and the signal guard, with
-        # no JVM and no engine in the process, so ASan's allocator interception is safe.
+        # chdb_jni_test: the handle registry and the signal guard, with no JVM and no engine
+        # in the process, so ASan's allocator interception is safe.
         run: scripts/run-sanitizer-tests.sh ${{ matrix.platform }} address,undefined
 
       - name: UBSan over the whole JDBC suite
         # In a real JVM against the real engine. UBSan instruments arithmetic rather than
         # intercepting allocation, so unlike ASan it coexists with both.
-        run: scripts/run-sanitizer-tests.sh ${{ matrix.platform }} undefined
+        run: scripts/run-sanitizer-tests.sh ${{ matrix.platform }} undefined </dev/null
 
       - name: Archive sanitizer output
         if: failure()
