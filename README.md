@@ -4,21 +4,9 @@ A JDBC driver for [chDB](https://github.com/chdb-io/chdb-core), the embedded bui
 ClickHouse. It runs the engine in your JVM's process — no server, no network — and gives you
 streaming, forward-only result sets over ClickHouse SQL.
 
-> **Status: pre-release.** V1 is under construction against the work plan in
-> [`CHDB_JAVA_V1_WORK_PLAN.md`](CHDB_JAVA_V1_WORK_PLAN.md). Nothing is published to Maven
-> Central yet, and the public API is not frozen. See [What works today](#what-works-today).
-
-```java
-try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
-        PreparedStatement statement = connection.prepareStatement(
-                "SELECT count() FROM url(?, 'JSONEachRow') WHERE status = 200")) {
-    statement.setString(1, "https://example.com/logs.jsonl");
-    try (ResultSet rs = statement.executeQuery()) {
-        rs.next();
-        System.out.println(rs.getLong(1));
-    }
-}
-```
+> **Status: preview.** The first release is `v1.0.0-preview.1`, built with chDB Core `26.7.3`.
+> Maven Central is not available yet; the preview is installed from GitHub. The public API is
+> not frozen. See [What works today](#what-works-today).
 
 ## Support matrix
 
@@ -48,57 +36,7 @@ and is loaded from a real packaged JAR, in CI:
 
 ## Installing
 
-Two artifacts: the driver, which is pure Java, and one native package for the platform you run
-on. The native package pulls in the driver, so declaring it alone is enough.
-
-```xml
-<dependency>
-  <groupId>org.chdb</groupId>
-  <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
-  <version>1.0.0</version>
-</dependency>
-```
-
-Building for several platforms — a CI matrix, or a distribution your users install on either
-architecture — declare the driver plus each native package you need:
-
-```xml
-<dependencyManagement>
-  <dependencies>
-    <dependency>
-      <groupId>org.chdb</groupId>
-      <artifactId>chdb-bom</artifactId>
-      <version>1.0.0</version>
-      <type>pom</type>
-      <scope>import</scope>
-    </dependency>
-  </dependencies>
-</dependencyManagement>
-
-<dependencies>
-  <dependency>
-    <groupId>org.chdb</groupId>
-    <artifactId>chdb-jdbc</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.chdb</groupId>
-    <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.chdb</groupId>
-    <artifactId>chdb-native-macos-aarch64</artifactId>
-  </dependency>
-</dependencies>
-```
-
-The BOM keeps the driver and every native package on one version, which they must be.
-
-### Trying a GitHub Preview
-
-Until Maven Central publishing is available, preview releases are provided as one GitHub
-Release bundle per platform. The installer downloads the matching bundle, verifies its SHA-256
-checksum, and installs the driver, native package, parent POM and BOM into your local Maven
-cache. It does not add anything to the project repository or download anything at runtime.
+Install the preview bundle into your local Maven cache:
 
 ```bash
 curl -fsSL -o /tmp/install-chdb-java-preview.sh \
@@ -107,10 +45,33 @@ chmod +x /tmp/install-chdb-java-preview.sh
 /tmp/install-chdb-java-preview.sh v1.0.0-preview.1
 ```
 
-The installer prints the exact Maven coordinates after installation. The bundle also contains
-the exact POMs used for the build, so it remains usable if the group ID changes before the first
-Maven Central release. To install into another local repository, pass
-`--maven-repo /path/to/repository`.
+Add one native package for the platform you run on. It pulls in the pure-Java JDBC driver:
+
+```xml
+<dependency>
+  <groupId>org.chdb</groupId>
+  <artifactId>chdb-native-macos-aarch64</artifactId>
+  <version>1.0.0-preview.1</version>
+</dependency>
+```
+
+Use `chdb-native-linux-x86_64-gnu`, `chdb-native-linux-aarch64-gnu` or
+`chdb-native-macos-x86_64` on the other supported platforms. For a custom Maven cache, add
+`--maven-repo /path/to/repository` to the installer command.
+
+## Use
+
+```java
+try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
+        Statement statement = connection.createStatement();
+        ResultSet results = statement.executeQuery("SELECT 42")) {
+    results.next();
+    System.out.println(results.getInt(1));
+}
+```
+
+Use `jdbc:chdb:/path/to/data` for on-disk storage. The engine runs in the JVM process, so no
+ClickHouse server or network connection is required.
 
 **A native package is large**, because it contains the whole engine: 112 MB for macOS arm64,
 128 MB for macOS x86_64, 130 MB for Linux aarch64, 167 MB for Linux x86_64, and around 350 MB
