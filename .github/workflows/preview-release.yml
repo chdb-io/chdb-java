@@ -112,6 +112,11 @@ jobs:
       contents: write
       actions: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
       - name: Download platform bundles
         uses: actions/download-artifact@v4
         with:

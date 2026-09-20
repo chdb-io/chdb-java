@@ -223,7 +223,8 @@ jobs:
       - name: Package the platform JAR and check its layout
         run: |
           mvn $MAVEN_ARGS -pl chdb-jdbc,chdb-native-${{ matrix.platform }} package -DskipTests
-          JAR=$(ls chdb-native-${{ matrix.platform }}/target/*.jar | head -1)
+          JAR=$(find chdb-native-${{ matrix.platform }}/target -maxdepth 1 -type f -name 'chdb-native-*.jar' -print -quit)
+          test -n "$JAR"
           echo "packaged $JAR ($(du -h "$JAR" | cut -f1))"
           # Every file the loader reads has to be there, and the licences and SBOM the plan
           # requires must ship with it.
@@ -238,7 +239,11 @@ jobs:
         # load. Exercised separately because the integration tests use chdb.library.path.
         run: |
           mvn $MAVEN_ARGS -pl chdb-examples -am compile
-          java -cp "chdb-jdbc/target/chdb-jdbc-26.7.0.1-SNAPSHOT.jar:$(ls chdb-native-${{ matrix.platform }}/target/*.jar | head -1):chdb-examples/target/classes" \
+          JDBC_JAR=$(find chdb-jdbc/target -maxdepth 1 -type f -name 'chdb-jdbc-*.jar' -print -quit)
+          NATIVE_JAR=$(find chdb-native-${{ matrix.platform }}/target -maxdepth 1 -type f -name 'chdb-native-*.jar' -print -quit)
+          test -n "$JDBC_JAR"
+          test -n "$NATIVE_JAR"
+          java -cp "$JDBC_JAR:$NATIVE_JAR:chdb-examples/target/classes" \
             -Dchdb.cache.dir="$PWD/target/ci-cache" \
             org.chdb.examples.QuickStart
 
@@ -248,7 +253,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-symbols-${{ matrix.platform }}-java${{ matrix.java }}
+          name: debug-symbols-${{ matrix.platform }}
           path: target/debug-symbols/
           if-no-files-found: ignore
           retention-days: 14
@@ -257,7 +262,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports-${{ matrix.platform }}-java${{ matrix.java }}
+          name: test-reports-${{ matrix.platform }}
           path: |
             chdb-jdbc/target/surefire-reports/
             chdb-integration-tests/target/failsafe-reports/
@@ -318,6 +323,8 @@ jobs:
 
           # The workspace and the local Maven repository are mounted at the paths they already
           # have, so the classpath file needs no rewriting.
+          ENGINE_VERSION=$(sed -n 's/^engine.version=//p' scripts/engine.properties | head -n1)
+          test -n "$ENGINE_VERSION"
           docker run --rm             -v "$PWD:$PWD"             -v "$HOME/.m2:$HOME/.m2:ro"             -w "$PWD"             ${{ matrix.image }}             bash -c '
               set -eu
               echo "target system:"
@@ -331,7 +338,7 @@ jobs:
               ldd '"$LIBS"'/libchdb_java_jni.so
 
               echo
-              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.7.0                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
+              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version='"$ENGINE_VERSION"'                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
             '
 
       - name: Report the floor this package actually needs
