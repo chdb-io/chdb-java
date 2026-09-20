@@ -102,8 +102,11 @@ public final class JdbcTypeMapping {
             case STRING:
             case FIXED_STRING:
             case ENUM8:
-            case ENUM16:
-            case JSON: return String.class.getName();
+            case ENUM16: return String.class.getName();
+            // What getObject manufactures: the row's JSON paths. clickhouse-jdbc answers
+            // java.lang.Object here while its own getObject returns a Map -- one of the
+            // thirteen declared divergences.
+            case JSON: return java.util.Map.class.getName();
             case DATE:
             case DATE32: return java.sql.Date.class.getName();
             case DATETIME:

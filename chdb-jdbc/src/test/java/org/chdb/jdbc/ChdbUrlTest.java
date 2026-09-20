@@ -43,18 +43,18 @@ class ChdbUrlTest {
     @Test
     @DisplayName("the JSON-as-string setting is applied at connect, and cannot be turned off")
     void jsonAsStringIsForced() throws SQLException {
-        // The driver reads results as RowBinaryWithNamesAndTypes, in which a JSON column is
-        // written either as a length-prefixed string or in its own structured binary form
-        // depending on this setting -- and the header says JSON either way, so a decoder cannot
-        // tell which arrived. A caller turning it off would make JSON columns unreadable.
-        String setting = "--output_format_binary_write_json_as_string=1";
+        // A JSON column is written either as a length-prefixed string or as its own paths
+        // depending on this setting, and the header says JSON either way -- so a decoder
+        // cannot tell which arrived and a caller changing it would make JSON unreadable.
+        // Pinned to 0, which is what clickhouse-jdbc reads: getObject hands back a Map.
+        String setting = "--output_format_binary_write_json_as_string=0";
         assertTrue(
                 ChdbUrl.parse("jdbc:chdb::memory:", null).toConnectArguments().contains(setting));
 
         // Last wins in the engine's argument handling, so ours has to come after the URL's.
         List<String> overridden =
                 ChdbUrl.parse(
-                                "jdbc:chdb::memory:?output_format_binary_write_json_as_string=0",
+                                "jdbc:chdb::memory:?output_format_binary_write_json_as_string=1",
                                 null)
                         .toConnectArguments();
         assertEquals(setting, overridden.get(overridden.size() - 1), overridden.toString());

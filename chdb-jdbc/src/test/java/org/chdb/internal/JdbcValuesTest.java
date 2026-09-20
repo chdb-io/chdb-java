@@ -180,22 +180,20 @@ class JdbcValuesTest {
     }
 
     @Test
-    @DisplayName("where both answers are defensible, the reference's answer is ours")
-    void followsTheReferenceWhereBothAreDefensible() throws Exception {
-        // NaN through getBoolean. JDBC settles zero, not NaN, so there is nothing to read the
-        // answer off -- and an arbitrary difference from the reference is worth nothing.
+    @DisplayName("getBytes on an address follows the reference; getBoolean on NaN does not")
+    void followsTheReferenceOnlyWhereItIsConsidered() throws Exception {
+        // NaN stays true here: not zero, and JDBC's rule is "zero is false". The reference says
+        // false, but its convertToBoolean is longValue() != 0, so 0.5 and 1.17e-38 are false
+        // there too while the same 0.5 as a Decimal is true. That is a bug to not copy.
         ClickHouseType f64 = ClickHouseType.parse("Float64");
-        JdbcValues.Column num = new JdbcValues.Column(1, "v", f64);
         Object nan = RowBinaryDecoder.decode(f64, new RowBinaryInput(hex("000000000000f87f")), OPTIONS);
-        assertEquals(false, JdbcValues.asBoolean(num, nan));
-        // Still "non-zero is true" for every real number, which the reference gets wrong for
-        // the smallest normal Float32.
-        Object tiny = RowBinaryDecoder.decode(
-                ClickHouseType.parse("Float32"), new RowBinaryInput(hex("00008000")), OPTIONS);
-        assertEquals(true, JdbcValues.asBoolean(
-                new JdbcValues.Column(1, "v", ClickHouseType.parse("Float32")), tiny));
+        assertEquals(true, JdbcValues.asBoolean(new JdbcValues.Column(1, "v", f64), nan));
+        Object half = RowBinaryDecoder.decode(f64, new RowBinaryInput(hex("000000000000e03f")), OPTIONS);
+        assertEquals(true, JdbcValues.asBoolean(new JdbcValues.Column(1, "v", f64), half));
 
-        // getBytes on an address. Refusing was over-strict: an address is bytes.
+        // getBytes on an address. Refusing was over-strict: an address is bytes, and the
+        // reference has an explicit branch for it (getPrimitiveArray: value instanceof
+        // InetAddress -> getAddress()), so this is a considered answer and not a side effect.
         ClickHouseType ip4 = ClickHouseType.parse("IPv4");
         Object v4 = RowBinaryDecoder.decode(ip4, new RowBinaryInput(hex("0101a8c0")), OPTIONS);
         assertArrayEquals(

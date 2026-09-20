@@ -431,6 +431,32 @@ class TypeMatrixIT extends NativeTestBase {
     }
 
     @Test
+    @DisplayName("JSON reads as the row's paths, typed, which is what clickhouse-jdbc returns")
+    void jsonIsAMapOfPaths() throws SQLException {
+        withRow(
+                "SELECT CAST('{\"a\":{\"b\":{\"c\":7}},\"s\":\"x\",\"n\":null,"
+                        + "\"arr\":[1,2],\"big\":12345678901234567890}', 'JSON') AS v",
+                (rs, meta) -> {
+                    assertEquals("JSON", meta.getColumnTypeName(1));
+                    assertEquals(java.util.Map.class.getName(), meta.getColumnClassName(1));
+
+                    java.util.Map<?, ?> paths = (java.util.Map<?, ?>) rs.getObject(1);
+
+                    // ClickHouse stores a JSON document as paths, so nesting is flattened and
+                    // a null is not a path at all. Both are the engine's doing and show up the
+                    // same way in its own text output.
+                    assertEquals(7L, paths.get("a.b.c"));
+                    assertFalse(paths.containsKey("n"));
+
+                    // Usable values, not wire shapes: a String rather than a byte[], a List
+                    // rather than an Object[]. Same as the reference.
+                    assertEquals("x", paths.get("s"));
+                    assertEquals(java.util.Arrays.asList(1L, 2L), paths.get("arr"));
+                    assertEquals(new java.math.BigInteger("12345678901234567890"), paths.get("big"));
+                });
+    }
+
+    @Test
     @DisplayName("an unsupported type read as text works, which is the documented workaround")
     void unsupportedTypeAsText() throws SQLException {
         withRow("SELECT toString([1, 2, 3]) AS arr, toString(map('a', 1)) AS m", (rs, meta) -> {

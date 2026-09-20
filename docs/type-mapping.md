@@ -66,7 +66,7 @@ Precision and scale are what `ResultSetMetaData` reports.
 | `Tuple(a Int32)` | `OTHER` | `[Ljava.lang.Object;` | 0 | 0 |
 | `Map(String, Int32)` | `OTHER` | `Map` | 0 | 0 |
 | `Nested(a Int32)` | `OTHER` | `[Ljava.lang.Object;` | 0 | 0 |
-| `JSON` | `OTHER` | `String` | 0 | 0 |
+| `JSON` | `OTHER` | `Map` | 0 | 0 |
 | `Dynamic` | `OTHER` | `Object` | 0 | 0 |
 | `Variant(Int64, String)` | `OTHER` | `Object` | 0 | 0 |
 | `Point` | `ARRAY` | `[D` | 0 | 0 |
@@ -220,10 +220,28 @@ configured the Arrow export and are accepted and ignored; `docs/unsupported.md` 
 are still accepted rather than rejected.
 
 One session setting is applied on your behalf and cannot be turned off:
-`output_format_binary_write_json_as_string`. A `JSON` column is written either as a
-length-prefixed string or in its own structured binary form depending on it, and the header says
-`JSON` either way — so a decoder that guessed would read one as the other and return plausible
-rubbish. Turning it off would make `JSON` columns unreadable, so it is not offered.
+`output_format_binary_write_json_as_string`, pinned to `0`. A `JSON` column is written either
+as a length-prefixed string or as its own paths depending on it, and the header says `JSON`
+either way — so a decoder that guessed would read one as the other and return plausible
+rubbish. Changing it would make `JSON` unreadable rather than differently readable.
+
+### Reading a `JSON` column
+
+`getObject` gives a `Map` of the row's paths to typed values, which is what clickhouse-jdbc
+gives. `getString` is that map's text.
+
+```java
+// {"a":{"b":{"c":7}},"s":"x","arr":[1,2]}
+Map<String, Object> paths = (Map<String, Object>) rs.getObject("j");
+paths.get("a.b.c");   // Long 7
+paths.get("s");       // String "x"
+paths.get("arr");     // List.of(1L, 2L)
+```
+
+Two things the engine does to a JSON document before any driver sees it, so both drivers show
+them: **nesting is flattened to dotted paths** — `{"a":{"b":1}}` and `{"a.b":1}` are the same
+value afterwards — and **a null is not a path**, so `{"a":null,"b":true}` keeps only `b`. The
+engine's own text output does the same.
 
 ## `UUID` and `FixedString(16)`
 

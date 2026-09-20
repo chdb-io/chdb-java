@@ -93,6 +93,7 @@ final class BinaryTypeEncoding {
                 return in.readString();
             case 0x2D: return "Bool";
             case 0x2F: return readNested(in);
+            case 0x30: return readJson(in);
             case 0x31: return "BFloat16";
             case 0x32: return "Time";
             case 0x34: return "Time64(" + in.readUInt8() + ")";
@@ -100,6 +101,36 @@ final class BinaryTypeEncoding {
                 throw new UnsupportedEncodingException(
                         String.format("no reader for binary type tag 0x%02X", tag));
         }
+    }
+
+    /**
+     * {@code JSON}, as it appears inside a Dynamic.
+     *
+     * <p>Only reachable there: a JSON column names itself in the stream header, and a JSON
+     * inside an Array or a Map is named by the containing type. A Dynamic is the one place a
+     * value has to say "I am a JSON" for itself.
+     *
+     * <p>Everything but the declared paths is consumed and dropped. It has to be consumed --
+     * the cursor would be left mid-value otherwise -- and none of it changes how a value
+     * reads.
+     */
+    private static String readJson(RowBinaryInput in) {
+        in.readUInt8();                     // serialization version
+        long maxDynamicPaths = in.readVarUInt();
+        int maxDynamicTypes = in.readUInt8();
+        StringBuilder sb = new StringBuilder("JSON(max_dynamic_paths=").append(maxDynamicPaths)
+                .append(", max_dynamic_types=").append(maxDynamicTypes);
+        long typedPaths = in.readVarUInt();
+        for (long i = 0; i < typedPaths; i++) {
+            sb.append(", ").append(in.readString()).append(' ').append(readName(in));
+        }
+        for (long i = in.readVarUInt(); i > 0; i--) {
+            sb.append(", SKIP ").append(quote(in.readString()));
+        }
+        for (long i = in.readVarUInt(); i > 0; i--) {
+            sb.append(", SKIP REGEXP ").append(quote(in.readString()));
+        }
+        return sb.append(')').toString();
     }
 
     private static String decimal(RowBinaryInput in, int width) {

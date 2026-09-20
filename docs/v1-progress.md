@@ -243,7 +243,7 @@ made it more worth running: a `byte[]` per chunk and decoded objects per row, me
 | Version and symbol mismatch fails before first use | ✅ |
 | Signal handlers preserved across load/connect/query/close | ✅ on macOS arm64 |
 | ASan, LSan, UBSan clean | 🟡 UBSan clean over the whole suite and ASan clean over the shim harness, on Linux and macOS; full-process ASan and LSan blocked on an upstream sanitizer build of chdb-core |
-| Native handle count zero after every test | ✅ all 175 integration tests |
+| Native handle count zero after every test | ✅ all 176 integration tests |
 | Large results stream in bounded memory | ✅ 20M rows in a 512 MB heap, +79 KB live heap (+202 MB RSS, transient — see [memory](memory.md#rss-is-not-what-to-measure-any-more)) |
 | 1000 queries and a soak show no linear RSS growth | 🟡 1000 queries ✅, soak ⬜ |
 | Cancel, timeout, early close and cascading close leak-free and deadlock-free | ✅ |

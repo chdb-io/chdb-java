@@ -134,7 +134,8 @@ the engine can rely on. `SimpleAggregateFunction` is not in this list: it stores
 type and reads as that.
 
 `Array`, `Map`, `Tuple`, `Nested`, `Variant`, `Dynamic`, `JSON`, the geometry types, `IPv4` and
-`IPv6` used to be here and **are** readable now — see [type mapping](type-mapping.md).
+`IPv6` used to be here and **are** readable now — see [type mapping](type-mapping.md). A `JSON`
+column reads as a `Map` of the row's paths.
 
 `ResultSetMetaData` reports the real type name with `DATA_TYPE` `OTHER`, so a framework can see
 the column. Reading it throws SQLSTATE `0A000` naming the column and its type, with the

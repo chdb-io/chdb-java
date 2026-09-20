@@ -416,7 +416,7 @@ Ordered by what a first release would most regret missing.
 
 ### What is already covered
 
-351 tests — 176 unit and 175 integration, counted from a run rather than estimated — across
+354 tests — 178 unit and 176 integration, counted from a run rather than estimated — across
 sixteen platform-and-JDK combinations, a 107-check native sanitizer harness, UBSan over the
 whole suite, the full suite again on AlmaLinux 8 to demonstrate the glibc floor, and a consumer
 that resolves the driver from a repository rather than from the reactor.

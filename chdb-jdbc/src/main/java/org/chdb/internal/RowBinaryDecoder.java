@@ -11,6 +11,8 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -175,10 +177,7 @@ public final class RowBinaryDecoder {
             case JSON:
                 // A length-prefixed string when, and only when, the engine was told to write
                 // it as one. Guessing is not an option: see Options.
-                if (!options.jsonAsString()) {
-                    throw new UnsupportedTypeException(type);
-                }
-                return in.readByteString();
+                return options.jsonAsString() ? in.readByteString() : decodeJson(type, in, options);
 
             case VARIANT:
                 return decodeVariant(type, in, options);
@@ -235,6 +234,56 @@ public final class RowBinaryDecoder {
      * {@code Variant(String, Int64)} is reported as {@code Variant(Int64, String)} — so the
      * parsed argument list can be indexed directly. 255 is the NULL discriminator.
      */
+    /**
+     * A JSON value: the paths the row actually has, each with its own value.
+     *
+     * <p>ClickHouse does not store a JSON document as text. It stores a set of paths, so
+     * {@code {"a":{"b":1}}} is the single path {@code a.b} -- which is also what
+     * {@code {"a.b":1}} becomes, and the two are indistinguishable from here on. A JSON null
+     * is not a path at all, so it is simply absent. Both are the engine's doing and show up
+     * the same way in its text output.
+     *
+     * <p>A path declared in the type carries no type tag, because the type already named it.
+     * Every other path is a Dynamic: its own type first, then the value.
+     *
+     * <p>A {@code HashMap}, and empty means {@link Collections#emptyMap()}, because that is
+     * what clickhouse-jdbc returns and iteration order is part of what a caller sees through
+     * {@code getString}.
+     */
+    private static Object decodeJson(ClickHouseType type, RowBinaryInput in, Options options) {
+        int paths = (int) in.readVarUInt();
+        if (paths == 0) {
+            return Collections.emptyMap();
+        }
+        Map<String, Object> out = new HashMap<>();
+        for (int i = 0; i < paths; i++) {
+            String path = in.readString();
+            ClickHouseType declared = declaredPath(type, path);
+            if (declared != null) {
+                out.put(path, decode(declared, in, options));
+                continue;
+            }
+            ClickHouseType actual = BinaryTypeEncoding.read(in);
+            if (actual.kind() == ClickHouseType.Kind.NOTHING) {
+                // The engine can write a path whose value is Nothing rather than omitting it.
+                continue;
+            }
+            out.put(path, decode(actual, in, options));
+        }
+        return out;
+    }
+
+    /** The type {@code JSON(a UInt32)} declares for a path, or null if it declares none. */
+    private static ClickHouseType declaredPath(ClickHouseType type, String path) {
+        List<String> names = type.fieldNames();
+        for (int i = 0; i < names.size(); i++) {
+            if (path.equals(names.get(i))) {
+                return type.arguments().get(i);
+            }
+        }
+        return null;
+    }
+
     private static Object decodeVariant(ClickHouseType type, RowBinaryInput in, Options options) {
         int discriminator = in.readUInt8();
         if (discriminator == 255) {

@@ -214,20 +214,70 @@ class RowBinaryDecoderTest {
     @DisplayName("JSON is refused rather than guessed at when the engine was not told to write it as a string")
     void jsonNeedsTheSettingItWasCapturedWith() {
         // The header says JSON whether or not output_format_binary_write_json_as_string was
-        // set, so the bytes alone cannot say which encoding arrived. Reading the structured
-        // form as a length-prefixed string would return plausible rubbish, which is worse than
-        // refusing -- so the decoder refuses unless told.
+        // set, so the bytes alone cannot say which encoding arrived, and reading one as the
+        // other returns plausible rubbish. The setting travels with the bytes for that reason,
+        // and these are the same bytes read both ways.
         ClickHouseType json = ClickHouseType.parse("JSON");
+
+        // The string form, which the driver no longer asks for.
         byte[] asString = hex("0f7b2261223a312c2262223a2278227d");
-
-        assertThrows(
-                RowBinaryDecoder.UnsupportedTypeException.class,
-                () -> RowBinaryDecoder.decode(json, new RowBinaryInput(asString), RowBinaryDecoder.STRICT));
-
-        Object decoded = RowBinaryDecoder.decode(json, new RowBinaryInput(asString), OPTIONS);
+        Object text = RowBinaryDecoder.decode(
+                json, new RowBinaryInput(asString), new RowBinaryDecoder.Options(true, java.time.ZoneOffset.UTC));
         assertEquals(
                 "{\"a\":1,\"b\":\"x\"}",
-                new String((byte[]) decoded, java.nio.charset.StandardCharsets.UTF_8));
+                new String((byte[]) text, java.nio.charset.StandardCharsets.UTF_8));
+
+        // The paths form, which it does: two paths, "d" a String and "a.b.c" an Int64.
+        // Captured from the engine -- see docs/type-parity-clickhouse-jdbc.md.
+        byte[] asPaths = hex("02016415017805612e622e630a0700000000000000");
+        Object decoded = RowBinaryDecoder.decode(
+                json, new RowBinaryInput(asPaths), RowBinaryDecoder.STRICT);
+        java.util.Map<?, ?> paths = (java.util.Map<?, ?>) decoded;
+        assertEquals(2, paths.size());
+        assertEquals(7L, paths.get("a.b.c"));
+        assertEquals("x", new String((byte[]) paths.get("d"), java.nio.charset.StandardCharsets.UTF_8));
+
+        // Read the paths form as a string and it is not an error, just nonsense -- which is
+        // why the setting is pinned rather than guessed at.
+        assertEquals(
+                2,
+                ((byte[]) RowBinaryDecoder.decode(
+                        json,
+                        new RowBinaryInput(asPaths),
+                        new RowBinaryDecoder.Options(true, java.time.ZoneOffset.UTC))).length);
+    }
+
+    @Test
+    @DisplayName("a JSON path declared in the type carries no type tag; an undeclared one does")
+    void jsonTypedPathsAreReadByTheirDeclaredType() {
+        // JSON(a UInt32) holding {"a":1,"b":2}. Captured from the engine: "a" is four bytes
+        // with no tag, because the type already said UInt32; "b" is a Dynamic, so it names
+        // Int64 first.
+        ClickHouseType json = ClickHouseType.parse("JSON(a UInt32)");
+        byte[] bytes = hex("0201610100000001620a0200000000000000");
+        Map<?, ?> paths = (Map<?, ?>) RowBinaryDecoder.decode(
+                json, new RowBinaryInput(bytes), RowBinaryDecoder.STRICT);
+        assertEquals(2, paths.size());
+        assertEquals(1L, paths.get("a"));
+        assertEquals(2L, paths.get("b"));
+    }
+
+    @Test
+    @DisplayName("a JSON nested inside a Dynamic names itself, parameters and all")
+    void jsonInsideADynamicNamesItself() {
+        // {"a":{"b":[1,"2",{"c":7}]}} -- one path a.b holding an Array(Dynamic) whose third
+        // element is itself a JSON. That element is the only place a JSON value has to carry
+        // its own type tag, so it is the only thing that exercises the 0x30 reader.
+        ClickHouseType json = ClickHouseType.parse("JSON");
+        byte[] bytes = hex("0103612e621e2b20030a010000000000000015013230008008200000000101630a0700000000000000");
+        Map<?, ?> paths = (Map<?, ?>) RowBinaryDecoder.decode(
+                json, new RowBinaryInput(bytes), RowBinaryDecoder.STRICT);
+        assertEquals(1, paths.size());
+        Object[] elements = (Object[]) paths.get("a.b");
+        assertEquals(3, elements.length);
+        assertEquals(1L, elements[0]);
+        assertEquals("2", new String((byte[]) elements[1], java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals(7L, ((Map<?, ?>) elements[2]).get("c"));
     }
 
     @Test

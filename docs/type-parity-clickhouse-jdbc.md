@@ -9,16 +9,22 @@ which question you ask, so all three:
 | measure | result |
 |---|---|
 | cases identical on **every** compared answer | 36 of 84 |
-| cases identical on `getObject` **and** `getString` | 79 of 84 |
-| differing answers, over ~19 accessors × 84 cases | 72 |
+| cases identical on `getObject` **and** `getString` | 80 of 84 |
+| differing answers, over ~19 accessors × 84 cases | 70 |
 
 The first two are both here because neither alone is honest: the strict one counts a case as
 differing when only `getColumnClassName` does, and the other treats two `java.sql.Array`s with
 different `toString` output as agreeing, which they are.
 
-Of the 72 differing answers, **28 are the reference refusing what we answer**, **14 are us
-refusing what it answers**, **1 is a query that fails there**, and **29 are both answering
+Of the 70 differing answers, **27 are the reference refusing what we answer**, **14 are us
+refusing what it answers**, **1 is a query that fails there**, and **28 are both answering
 differently**. The matrix below has all of them, grouped by why.
+
+Every verdict below was checked against both drivers' source, not inferred from behaviour.
+`chdb-core` is the same ClickHouse the comparison server runs, and the wire bytes are
+identical: ten representative types — `UInt64`, `Float32`, `Decimal`, `Enum8`, `IPv6`,
+`DateTime64` with a zone, `Variant`, `Dynamic`, `Point`, `LowCardinality` — come off chdb and
+off `clickhouse-server:26.7.3` byte for byte the same. **No difference here is the engine's.**
 
 ---
 
@@ -150,19 +156,19 @@ Every difference, and why. "Us" is chdb-jdbc.
 
 | case | accessor | us | reference | why we are right |
 |---|---|---|---|---|
-| `UInt64`, `Int128`, `Int256`, `UInt128`, `UInt256` at max | `getInt` | throws `22003` | `-1` | The value does not fit 32 bits. They let it overflow, and `-1` looks like data. JDBC says throw. |
-| `Float64` `nan` | `getInt` | throws `22003` | `0` | NaN is not zero. |
-| `Float32` smallest normal | `getBoolean` | `true` | `false` | JDBC is "zero is false, non-zero is true". `1.17e-38` is not zero. |
-| `String` with invalid UTF-8 | `getBytes` | the 16 stored bytes | 34 bytes | A ClickHouse `String` is arbitrary bytes. They decode to a `String` and re-encode, so each invalid byte becomes `EF BF BD` and both length and content change. Silent data loss. |
-| `Tuple`, `Tuple named` | `getString` | `(1,'a')` | `[Ljava.lang.Object;@10163d6` | They hand a Java array to `String.valueOf`. |
-| `Nullable(*)` holding NULL | `getDate`, `getTime`, `getTimestamp` | `null` | throws | JDBC requires `null` for SQL NULL. |
-| `Date`, `Date32` | `getTimestamp` | midnight that day | throws | JDBC's conversion table allows DATE to Timestamp. |
-| `Decimal32`, `Decimal64`, `Float32` | `getLong` | truncates | throws | JDBC allows the conversion. Refusing a legal one is its own error. |
+| `UInt64`, `Int128`, `Int256`, `UInt128`, `UInt256` at max | `getInt` | throws `22003` | `-1` | They mean to throw: `NumberConverter.toInt` is `if (intValue() == longValue()) return intValue(); else throw`. For a `BigInteger` both are truncations, so both are `-1` and the guard cannot fire. `-1` then looks like data. |
+| `Float64` `nan` | `getInt` | throws `22003` | `0` | Same guard: `NaN.intValue()` and `NaN.longValue()` are both `0`. |
+| `Float32` smallest normal, `Float64` `nan`, any fraction below 1 | `getBoolean` | `true` | `false` | Their `SerializerUtils.convertToBoolean` is `longValue() != 0`, which truncates before comparing, so `0.5` and `0.999` are false there too — while the same `0.5` as a `Decimal` is `true`, because that path uses `compareTo(ZERO)`. Aligning NaN to their `false` was tried and reverted: it is this bug, not a reading of NaN. |
+| `String` with invalid UTF-8 | `getBytes` | the 16 stored bytes | 34 bytes | A ClickHouse `String` is arbitrary bytes. Their `stringLikeToBytes` re-encodes a decoded `String`, so each invalid byte becomes `EF BF BD` and both length and content change. They have a `binary_string_support` flag that keeps the raw bytes, but it is **off by default** and covers top-level columns only. |
+| `Tuple`, `Tuple named` | `getString` | `(1,'a')` | `[Ljava.lang.Object;@10163d6` | `DataTypeConverter.convertToString` has a case for String, Date, Enum, IP, Array, geometry and Variant, none for Tuple, so it falls to `default: value.toString()` on the `Object[]`. |
+| `Date`, `Date32` | `getTimestamp` | midnight that day | throws | Their allow-list is `DateTime64, DateTime, DateTime32` — no `Date` — while `getDate`'s allow-list *does* include the `DateTime` types. The asymmetry is theirs; JDBC's conversion table allows DATE to Timestamp. |
+| `Decimal32`, `Decimal64`, `Float32` | `getLong` | truncates | throws | `NumberConverter.toLong` is `longValue() == doubleValue()`, one expression doing two jobs and neither well: too strict for a fraction, and too lax for a big integer (the same guard in `toInt` lets `UInt64` max through as `-1`). We keep range overflow and fractional truncation separate. |
 | `IntervalDay` | every accessor but `getString` | `3` | throws | It is a number of days. |
 | `Enum8`, `Enum16` | `getBigDecimal` | the underlying number | throws | An Enum stores a number. |
-| `BFloat16` | the query | reads | **fails in the driver** | They cannot read the type. |
+| `BFloat16` | the query | reads | **fails in the driver** | `BinaryStreamReader` throws `"BFloat16 is not supported yet"`. A declared gap, not a bug. |
 | `Float32`, `BFloat16` | `getColumnType` | `REAL` | `FLOAT` | `REAL` is JDBC's single-precision code. |
-| `IPv4`, `IPv6`, `Map`, `Tuple`, `JSON`, geometry | `getColumnClassName` | the class `getObject` returns | `Object`, or `java.sql.Array` for geometry | The specification defines the method as the class `getObject` manufactures. Their own `getObject` returns `InetAddress`, `Map`, `Object[]`, `double[]`. |
+| `IPv4`, `IPv6`, `Map`, `Tuple`, `JSON` | `getColumnClassName` | the class `getObject` returns | `Object` | Deliberate on their side — the code says *"should be mapped to Object because require conversion"* — but the specification defines the method as the class `getObject` manufactures, and theirs returns `InetAddress`, `Map`, `Object[]`. |
+| geometry | `getColumnClassName` | `double[]`, `double[][]`, … | `java.sql.Array` | A located bug: `JdbcUtils` maps `Point` to `JDBCType.ARRAY`, but the switch that would give it `double[].class` is guarded by `if (type == JDBCType.OTHER)`, so `case Point:` is dead code and it falls to the `ARRAY` default. Our answer is the one they intended. |
 
 ### Where we are stricter, and mean to be
 
@@ -171,13 +177,14 @@ Every difference, and why. "Us" is chdb-jdbc.
 | `String`, `LowCardinality(String)`, `Dynamic` holding text | `getBoolean` | throws `22018` | `false` | Calling `"hello"` false is a guess. An empty string is arguable; `"hello"` is not. |
 | `Array` | `getBytes` | throws | empty `byte[]` | An array has no byte form. |
 | any number | `getBytes` | throws | throws | Agreed. Noted because the Arrow path used to return the UTF-8 of the decimal text. |
+| `Nullable(*)` holding NULL | `getDate`, `getTime`, `getTimestamp` | `null` | throws | **Arguable, and the one place we do not follow them.** They check the column type before the value, so a NULL `Int32` is *"Value of Int32 type cannot be converted to Date value"*. The javadoc says "if the value is SQL NULL, the value returned is null" without qualification; the specification's conversion table does not define `getDate` on an integer column at all. Returning `null` is what a framework reading a nullable column expects. |
 
 ### Where both are defensible, and we follow the reference
 
 | case | accessor | both | note |
 |---|---|---|---|
-| `Float64` `nan` | `getBoolean` | `false` | JDBC settles zero, not NaN. Followed the reference rather than reason from "not zero". |
-| `IPv4`, `IPv6` | `getBytes` | the address bytes | 4, 16, or 4 for a v4-mapped IPv6. An address is naturally bytes, so refusing was over-strict. |
+| `IPv4`, `IPv6` | `getBytes` | the address bytes | 4, 16, or 4 for a v4-mapped IPv6. Their `getPrimitiveArray` has an explicit `instanceof InetAddress` branch, so it is a considered answer; refusing was over-strict. |
+| `JSON` | `getObject`, `getString` | the row's paths as a `Map` | Both drivers implement both wire forms and read the same setting; only the default differed. Ours is pinned to theirs now. |
 | `Enum8`, `Enum16` | `getObject`, `getInt` | the underlying number | `toString(col)` in SQL is how to ask for the label. |
 
 ### Where the difference is ours, deliberately
@@ -185,7 +192,6 @@ Every difference, and why. "Us" is chdb-jdbc.
 | case | accessor | us | reference | why |
 |---|---|---|---|---|
 | `Float32` | `getBigDecimal` | `3.4028234663852886E+38` | `3.4028235E+38` | Theirs is `new BigDecimal(Float.toString(f))`, which reads better and is **not stable across JDKs**: `Float.toString` changed algorithm in [JDK 19][jdk19], so `Float.MIN_NORMAL` renders differently on Java 11 and on Java 21. Matching them would inherit that. See below. |
-| `JSON` | `getObject`, `getString` | the text the engine sent | a `HashMap` | Parsing to a `Map` loses the difference between `1` and `"1"` and cannot be handed back to a query; the text can. Also the only alignment that would cost a hand-written JSON parser in a driver with no dependencies. |
 
 ### Not differences
 

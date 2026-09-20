@@ -497,12 +497,13 @@ public class ChdbStatement implements Statement {
     /**
      * What the engine was asked for, handed to the decoder so it does not have to guess.
      *
-     * <p>{@code jsonAsString} is true because {@link #openStream} appends the setting that
-     * makes it true. Keeping the two together in one place is the point: the decoder refuses
-     * JSON unless told, and the only thing entitled to tell it is the code that asked.
+     * <p>{@code jsonAsString} is false because {@link ChdbUrl#toConnectArguments} pins the
+     * setting to 0. Keeping the two together is the point: nothing in the stream says which
+     * form a JSON column arrived in, so the code that asked the engine is the code that says
+     * so here.
      */
     private RowBinaryDecoder.Options decoderOptions() {
-        return new RowBinaryDecoder.Options(true, connection.sessionTimeZone());
+        return new RowBinaryDecoder.Options(false, connection.sessionTimeZone());
     }
 
     private void runMaterialized(String sql, List<String> parameterNames, List<String> parameterValues)

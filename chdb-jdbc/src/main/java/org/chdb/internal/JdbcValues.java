@@ -10,6 +10,9 @@ import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -94,8 +97,11 @@ public final class JdbcValues {
         switch (t.kind()) {
             case STRING:
             case FIXED_STRING:
-            case JSON:
                 return text(v);
+            case JSON:
+                // The row's JSON paths as a Map, which is what getColumnClassName promises.
+                // A byte[] only when the engine was asked for the string form.
+                return v instanceof byte[] ? text(v) : jsonValue(v);
             case ENUM8:
             case ENUM16:
                 return label(c, t, v);
@@ -137,6 +143,42 @@ public final class JdbcValues {
     }
 
     /** Elements of a composite need the same byte[]-to-text treatment as a top-level value. */
+    /**
+     * A decoded JSON value, in the shapes a caller sees rather than the ones the wire uses.
+     *
+     * <p>A string is a {@code String} and an array is a {@code List}, both of which
+     * clickhouse-jdbc also produces here. The wire shapes -- {@code byte[]} for text and
+     * {@code Object[]} for an array -- are the decoder's, and they are right for a column
+     * whose type is known, where the accessor decides what to make of them. Inside a JSON
+     * value there is no such type: the caller reaches into the map and gets whatever is
+     * there, so what is there has to be usable.
+     */
+    private static Object jsonValue(Object v) {
+        if (v instanceof byte[]) {
+            return new String((byte[]) v, StandardCharsets.UTF_8);
+        }
+        if (v instanceof Object[]) {
+            Object[] in = (Object[]) v;
+            List<Object> out = new ArrayList<>(in.length);
+            for (Object e : in) {
+                out.add(jsonValue(e));
+            }
+            return out;
+        }
+        if (v instanceof Map) {
+            Map<?, ?> in = (Map<?, ?>) v;
+            if (in.isEmpty()) {
+                return in;
+            }
+            Map<String, Object> out = new HashMap<>();
+            for (Map.Entry<?, ?> e : in.entrySet()) {
+                out.put(String.valueOf(e.getKey()), jsonValue(e.getValue()));
+            }
+            return out;
+        }
+        return v;
+    }
+
     private static Object nested(ClickHouseType element, Object v) {
         if (v == null) {
             return null;
@@ -207,8 +249,12 @@ public final class JdbcValues {
         switch (t.kind()) {
             case STRING:
             case FIXED_STRING:
-            case JSON:
                 return text(v);
+            case JSON:
+                // A Map of the row's JSON paths, or the engine's text if it was asked for the
+                // string form. String.valueOf on the map is what clickhouse-jdbc's getString
+                // answers, so it is what this answers.
+                return v instanceof byte[] ? text(v) : String.valueOf(jsonValue(v));
             case ENUM8:
             case ENUM16:
                 return label(c, t, v);
@@ -309,8 +355,9 @@ public final class JdbcValues {
         switch (t.kind()) {
             case STRING:
             case FIXED_STRING:
-            case JSON:
                 return "'" + text(v) + "'";
+            case JSON:
+                return v instanceof byte[] ? "'" + text(v) + "'" : String.valueOf(v);
             case ENUM8:
             case ENUM16: {
                 String name = t.enumNameByValue().get(((Number) v).longValue());
@@ -515,10 +562,12 @@ public final class JdbcValues {
         if (n instanceof BigDecimal) {
             return ((BigDecimal) n).signum() != 0;
         }
-        // NaN is false, as the reference has it. JDBC's rule is "zero is false", and NaN is
-        // neither zero nor not-zero, so this is a choice rather than a reading.
-        double d = ((Number) n).doubleValue();
-        return !Double.isNaN(d) && d != 0;
+        // NaN is true, because it is not zero and JDBC's rule is "zero is false". The
+        // reference answers false, but not as a considered reading of NaN: its
+        // SerializerUtils.convertToBoolean does longValue() != 0, so 0.5 and 1.17e-38 are false
+        // there too, while the same 0.5 as a Decimal is true because that path uses
+        // compareTo(ZERO). Aligning here would have been aligning to that.
+        return ((Number) n).doubleValue() != 0;
     }
 
     /**

@@ -353,7 +353,31 @@ public final class ClickHouseType {
             case "Date": b.kind = Kind.DATE; return;
             case "Date32": b.kind = Kind.DATE32; return;
             case "JSON":
-            case "Object": b.kind = Kind.JSON; return;
+            case "Object": {
+                // JSON(a UInt32, max_dynamic_paths=8, SKIP b, SKIP REGEXP '^tmp')
+                //
+                // Only the declared paths matter to a reader: their values carry no type tag
+                // on the wire, because the type already said what they are. The rest -- the
+                // max_dynamic_* limits, SKIP, SKIP REGEXP -- shapes what the engine stores and
+                // says nothing about how to read a value, so it stays in the name only.
+                b.kind = Kind.JSON;
+                List<ClickHouseType> types = new ArrayList<>();
+                List<String> names = new ArrayList<>();
+                for (String arg : args) {
+                    String trimmed = arg.trim();
+                    if (trimmed.startsWith("SKIP") || isSetting(trimmed)) {
+                        continue;
+                    }
+                    int cut = splitFieldName(trimmed);
+                    if (cut > 0) {
+                        names.add(unquote(trimmed.substring(0, cut).trim()));
+                        types.add(parse(trimmed.substring(cut).trim()));
+                    }
+                }
+                b.arguments = types;
+                b.fieldNames = names.isEmpty() ? null : names;
+                return;
+            }
             case "Dynamic": b.kind = Kind.DYNAMIC; return;
             case "Nothing": b.kind = Kind.NOTHING; return;
             case "Point": b.kind = Kind.POINT; return;
@@ -482,6 +506,19 @@ public final class ClickHouseType {
      * <p>Scanning rather than splitting on the first space: {@code Tuple(Map(String, Int32))}
      * has a space in it and no field name, and a quoted field name may contain one.
      */
+    /**
+     * {@code max_dynamic_paths=8} and friends: a setting, not a path.
+     *
+     * <p>Checked as "an = before any space" so that a path whose type name contains one --
+     * there is no such type today, but Enum labels are arbitrary text -- is not mistaken for
+     * one.
+     */
+    private static boolean isSetting(String arg) {
+        int eq = arg.indexOf('=');
+        int space = arg.indexOf(' ');
+        return eq >= 0 && (space < 0 || eq < space);
+    }
+
     private static int splitFieldName(String arg) {
         int depth = 0;
         for (int n = 0; n < arg.length(); n++) {
