@@ -41,18 +41,18 @@
 #   mvn -pl chdb-jdbc compile && scripts/build-native.sh <platform>
 #
 # Needs network on first run: the consumer's empty local repository has to fetch Maven's own
-# plugins. Everything under org.chdb comes from the file repository, and the script asserts it.
+# plugins. Everything under com.clickhouse.chdb comes from the file repository, and the script asserts it.
 #
 # What is isolated, and what is not:
 #
-#   org.chdb artifacts   isolated. The consumer's project repositories are the throwaway file
+#   com.clickhouse.chdb artifacts isolated. The consumer's project repositories are the throwaway file
 #                        repository and a disabled `central`, and every downloaded file's
 #                        recorded provenance is checked afterwards. Nothing else may serve
 #                        them, because a good copy on Central masking a bad one we just
 #                        deployed is the single failure this script exists to detect.
 #   Maven's own plugins  not isolated, on purpose. They come from the real Central through the
 #                        inherited pluginRepositories. Vendoring them would make this script
-#                        unrunnable for no gain: org.chdb is never a plugin dependency.
+#                        unrunnable for no gain: com.clickhouse.chdb is never a plugin dependency.
 #   the local repository overridden, not shared: -Dmaven.repo.local points at an empty
 #                        directory, so nothing can be satisfied from a previous build.
 #   settings.xml         not suppressed. A caller's mirrors and profiles still apply, and a
@@ -121,7 +121,7 @@ VERSION="$(cd "$ROOT" && mvn "${MVN_FLAGS[@]}" -q -DforceStdout help:evaluate -D
 
 # cd/pwd rather than mktemp's own answer: TMPDIR usually ends in a slash, so mktemp hands back
 # a path with a doubled separator, and Maven reports the normalised form. The check below that
-# every org.chdb artifact came from the consumer's own local repository compares paths as
+# every com.clickhouse.chdb artifact came from the consumer's own local repository compares paths as
 # strings, and would fail on that difference alone.
 WORK="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/chdb-verify-consumer.XXXXXX")" && pwd)"
 
@@ -176,10 +176,10 @@ step "Deploying to a throwaway file:// repository"
 # Every artifact a consumer needs has to be in there, POM included -- a jar with no POM
 # resolves for a direct dependency and then fails to bring in chdb-jdbc.
 for coord in \
-  "org/chdb/chdb-java-parent/${VERSION}" \
-  "org/chdb/chdb-bom/${VERSION}" \
-  "org/chdb/chdb-jdbc/${VERSION}" \
-  "org/chdb/${MODULE}/${VERSION}"; do
+  "com/clickhouse/chdb/chdb-java-parent/${VERSION}" \
+  "com/clickhouse/chdb/chdb-bom/${VERSION}" \
+  "com/clickhouse/chdb/chdb-jdbc/${VERSION}" \
+  "com/clickhouse/chdb/${MODULE}/${VERSION}"; do
   [ -d "${REPO}/${coord}" ] || die "nothing published at ${coord}"
   # A JAR with no POM resolves for a direct dependency and then quietly brings in nothing.
   compgen -G "${REPO}/${coord}/*.pom" > /dev/null || die "no POM published at ${coord}"
@@ -192,14 +192,14 @@ case "$VERSION" in
     # chdb-jdbc-26.7.0.1-20260909.053707-1.jar and a maven-metadata.xml that maps -SNAPSHOT
     # onto that timestamp, and a consumer cannot resolve the version without it. Nothing in
     # the reactor exercises that indirection, which is the sort of thing issue #10 is about.
-    [ -f "${REPO}/org/chdb/chdb-jdbc/${VERSION}/maven-metadata.xml" ] \
+    [ -f "${REPO}/com/clickhouse/chdb/chdb-jdbc/${VERSION}/maven-metadata.xml" ] \
       || die "no snapshot metadata for chdb-jdbc; a consumer could not resolve ${VERSION}"
     ok "snapshot metadata maps ${VERSION} onto the timestamped filenames"
     ;;
 esac
 
 NATIVE_JAR=""
-for candidate in "${REPO}/org/chdb/${MODULE}/${VERSION}/"*.jar; do
+for candidate in "${REPO}/com/clickhouse/chdb/${MODULE}/${VERSION}/"*.jar; do
   case "$candidate" in *-sources.jar|*-javadoc.jar) continue ;; esac
   NATIVE_JAR="$candidate"
   break
@@ -233,7 +233,7 @@ cat > "${CONSUMER}/pom.xml" <<EOF
       The Super POM's \`central\`, switched off rather than merely outranked.
 
       A repository declared here is *added* to the inherited \`central\`, not substituted for
-      it, so with only the block above there were two places an org.chdb artifact could come
+      it, so with only the block above there were two places a com.clickhouse.chdb artifact could come
       from. That is fatal to the point of this script: once we publish, a broken artifact we
       have just deployed to \${REPO} could be masked by a good one on Central, and the check
       would report that consuming the driver from a repository works. The one thing it exists
@@ -309,10 +309,10 @@ ok "resolved with no version declared, so the imported BOM supplied it"
 IFS=':' read -r -a CP_ENTRIES <<< "$CP"
 for entry in "${CP_ENTRIES[@]}"; do
   case "$entry" in
-    *org/chdb/*)
+    *com/clickhouse/chdb/*)
       case "$entry" in
         "${CONSUMER_M2}"/*) ;;
-        *) die "an org.chdb artifact resolved from outside the consumer's local repository: ${entry}" ;;
+        *) die "a com.clickhouse.chdb artifact resolved from outside the consumer's local repository: ${entry}" ;;
       esac
       ;;
   esac
@@ -338,7 +338,7 @@ while IFS= read -r record; do
     case "$line" in
       *">chdb-verify="*) ;;
       *)
-        die "an org.chdb artifact was served by a repository other than the throwaway one:
+        die "a com.clickhouse.chdb artifact was served by a repository other than the throwaway one:
   ${record}
   ${line}
 Only 'chdb-verify' proves the artifact under test is the one this run deployed. If a mirror in
@@ -346,11 +346,11 @@ your settings.xml claims '*', run this with -s pointing at a settings file that 
         ;;
     esac
   done < "$record"
-done < <(find "${CONSUMER_M2}/org/chdb" -name '_remote.repositories' -type f)
+done < <(find "${CONSUMER_M2}/com/clickhouse/chdb" -name '_remote.repositories' -type f)
 [ "$PROVENANCE_LINES" -gt 0 ] \
-  || die "no _remote.repositories entries under ${CONSUMER_M2}/org/chdb: nothing was actually
+  || die "no _remote.repositories entries under ${CONSUMER_M2}/com/clickhouse/chdb: nothing was actually
 downloaded, so this run proved nothing about resolving from a repository."
-ok "all ${PROVENANCE_LINES} downloaded org.chdb files came from the throwaway repository, not from Central"
+ok "all ${PROVENANCE_LINES} downloaded com.clickhouse.chdb files came from the throwaway repository, not from Central"
 # Located by its repository path rather than by a file name, and this matters more than it
 # looks. A snapshot exists under two names at once: the remote repository holds
 # chdb-jdbc-26.7.2-rc.2.1-20260909.081309-1.jar, and Maven's local repository ends up with
@@ -361,11 +361,11 @@ ok "all ${PROVENANCE_LINES} downloaded org.chdb files came from the throwaway re
 # changed that would not fail this assertion, it would skip the two error paths below and
 # still print "all consumer checks passed".
 #
-# org/chdb/chdb-jdbc/ is the coordinate. It cannot drift.
+# com/clickhouse/chdb/chdb-jdbc/ is the coordinate. It cannot drift.
 JDBC_ONLY=""
 for entry in "${CP_ENTRIES[@]}"; do
   case "$entry" in
-    */org/chdb/chdb-jdbc/*.jar)
+    */com/clickhouse/chdb/chdb-jdbc/*.jar)
       [ -z "$JDBC_ONLY" ] || die "two chdb-jdbc jars on the consumer's classpath:
   ${JDBC_ONLY}
   ${entry}"

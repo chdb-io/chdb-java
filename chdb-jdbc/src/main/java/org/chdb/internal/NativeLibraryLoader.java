@@ -410,7 +410,7 @@ public final class NativeLibraryLoader {
                             + " shim and the chdb-jdbc JAR come from different releases. Use a"
                             + " chdb-native-"
                             + platform.id()
-                            + " package with the same version as chdb-jdbc, or import org.chdb:chdb-bom"
+                            + " package with the same version as chdb-jdbc, or import com.clickhouse.chdb:chdb-bom"
                             + " to keep them aligned.",
                     e);
         }
@@ -426,7 +426,7 @@ public final class NativeLibraryLoader {
                             + ". These come from different releases; align the versions of chdb-jdbc"
                             + " and chdb-native-"
                             + platform.id()
-                            + " (org.chdb:chdb-bom does this for you).");
+                            + " (com.clickhouse.chdb:chdb-bom does this for you).");
         }
 
         String expectedEngine = manifest.get("engine.version");

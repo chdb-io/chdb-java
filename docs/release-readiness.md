@@ -284,7 +284,7 @@ four platforms, so the answer cannot go stale between releases.
   there. Nothing exercised that indirection before. The consumer's *local* repository then ends
   up holding both names at once — the timestamped file it downloaded and a `-SNAPSHOT.jar`
   beside it — so anything that looks for the driver by file name is depending on a resolver
-  detail. `scripts/verify-consumer.sh` locates it by coordinate, `org/chdb/chdb-jdbc/`, for
+  detail. `scripts/verify-consumer.sh` locates it by coordinate, `com/clickhouse/chdb/chdb-jdbc/`, for
   that reason.
 - **"Declared the wrong platform package" was indistinguishable from "declared none".** Both
   produced the same message — three locations searched, none found, here is the coordinate to
