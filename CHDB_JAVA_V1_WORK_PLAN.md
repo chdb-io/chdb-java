@@ -201,47 +201,34 @@ META-INF/sbom/
 
 ### 4.3 Versioning rules
 
-The Java binding carries its own SemVer version, independent of the engine it embeds:
+The binding is versioned on its own, in SemVer — `MAJOR.MINOR.PATCH`, first release `1.0.0`.
+The number describes the Java API, which is the question a consumer asks it.
 
-```text
-MAJOR.MINOR.PATCH
-```
+The engine version is not in it. It is recorded in each native package's
+`manifest.properties`, pinned with its SHA-256 in `scripts/engine.properties`, and named in
+the release notes; the ABI check refuses any other engine build, so the pairing is enforced
+rather than spelled.
 
-The first release is `1.0.0`. What the number describes is the Java API — a `MAJOR` bump is a
-breaking change to it, `MINOR` adds, `PATCH` fixes — which is the question a consumer asks a
-version, and the only one it can answer.
+This replaces `<engine-version>.<binding-revision>`, which read the wrong way round in both
+directions: `26.7.2-rc.2.1` → `26.7.3.1` looked major and was not the binding's doing, while
+a break in the Java API could ship as a trailing `.2`.
 
-The engine version is not encoded in it. It is recorded where a machine can read it and a
-person can look it up: `engine.version` in each native package's `manifest.properties`, the
-pinned baseline plus SHA-256 in `scripts/engine.properties`, and the release notes. The
-driver still refuses to load an engine that is not the one it was built against, so the
-pairing is enforced by the ABI check rather than by the artifact's name.
-
-This replaces an engine-aligned scheme, `<engine-version>.<binding-revision>` — `26.7.3.1`
-for the first binding on engine 26.7.3. It read the wrong way round in both directions: the
-move from `26.7.2-rc.2.1` to `26.7.3.1` looked like a major change and was none of the
-binding's doing, while an actual break in the Java API could ship as a trailing `.2` that
-nothing about the number marked as breaking.
-
-Examples:
-
-| Case | Maven version | Meaning |
-|---|---|---|
-| First release | `1.0.0` | the API this document specifies |
-| Fix in the driver, loader or JNI shim | `1.0.1` | no API change |
-| New engine baseline, no Java API change | `1.1.0` | engine recorded in the manifest, not here |
-| Breaking change to the Java API | `2.0.0` | the only thing a major bump means |
-| Preview of `1.0.0` | `1.0.0-preview.1` | sorts below `1.0.0`; see [docs/publishing.md](docs/publishing.md) section 8 |
-| Release candidate for `1.0.0` | `1.0.0-rc.1` | sorts below `1.0.0` and above nothing else |
+| Case | Version |
+|---|---|
+| First release | `1.0.0` |
+| Fix in the driver, loader or JNI shim | `1.0.1` |
+| New engine baseline, no Java API change | `1.1.0` |
+| Breaking change to the Java API | `2.0.0` |
+| Preview of `1.0.0` | `1.0.0-preview.1` |
 
 Release rules:
 
-- A release artifact in a Maven repository is immutable. Never overwrite `1.0.0`. Any addon, JNI, Java, POM, loader, checksum or single-platform fix ships as `1.0.1`.
-- Within one binding release, `chdb-jdbc`, the four platform packages and `chdb-bom` carry exactly the same version. They ship together even when some platform content did not change, so the BOM and the platform packages never end up on mixed versions.
-- Any engine change still produces a new binding release and a full four-platform test run. It is a `MINOR` bump when it changes what the driver can do and a `PATCH` when it does not; what it is never is invisible, because `manifest.properties` and the release notes name the engine.
-- A Java artifact built on an engine RC is itself a preview: it ships as `-preview.<n>` and cannot be V1 GA. V1 GA has to bind a stable chDB Core release.
-- Development builds use `-SNAPSHOT`, which never enters a Maven Central release.
-- A pre-release qualifier is `-preview.<n>` or `-rc.<n>`, both of which Maven orders below the release they qualify. A candidate and the GA never reuse the same immutable artifact.
+- A published artifact is immutable. Never overwrite `1.0.0`; any fix ships as `1.0.1`.
+- `chdb-jdbc`, the four platform packages and `chdb-bom` always carry the same version.
+- An engine change is a `MINOR` bump when it changes what the driver can do and a `PATCH` when it does not. It is never invisible: the manifest and the release notes name the engine.
+- A binding built on an engine RC is a preview and cannot be V1 GA.
+- `-SNAPSHOT` is for development and never reaches Maven Central.
+- **`-preview.<n>` sorts *above* the release it previews.** Maven's `ComparableVersion` orders unknown qualifiers after the final release, so `1.0.0-preview.1` compares newer than `1.0.0` — measured, not assumed. It costs nothing here because previews are installed by hand into a local repository and never published beside a GA, and consumers name exact versions. If a preview ever has to live in a shared repository, use `-rc.<n>`, which Maven does order below the release.
 
 To remove string-parsing ambiguity, every artifact manifest records these separately:
 

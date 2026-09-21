@@ -5,7 +5,7 @@ marked by who can do it. The short version: the mechanics are done and tested, t
 needs one DNS record, and one licence question needs somebody with authority to answer it.
 
 Until those land there is nothing for `mvn` to resolve, so releases go out as preview bundles
-on GitHub instead — section 8.
+on GitHub — section 8.
 
 ---
 
@@ -393,18 +393,14 @@ Each step can invalidate the next, so:
 
 ## 8. Previews, until Central exists
 
-A preview is this same release, published somewhere a user can reach today. Same four
-runners, same `build-native.sh`, same integration tests against the staged package; the
-difference is only where the bytes go, and it is one workflow apart:
-`.github/workflows/preview-release.yml` uploads one zip per platform to a GitHub Release,
-and `scripts/install-preview.sh` installs a zip into a local Maven repository with
-`install-file`. The POMs inside the bundle are the POMs the build produced, so what a user
-installs is what CI packaged rather than something reconstructed from a template.
+A preview is this release published somewhere reachable today. Same runners, same
+`build-native.sh`, same integration tests; the difference is one workflow:
+`.github/workflows/preview-release.yml` uploads one zip per platform to a GitHub Release, and
+`scripts/install-preview.sh` installs a zip into a local Maven repository. The POMs in the
+bundle are the ones the build produced. A GitHub Release rather than files in the repository,
+because a native package is 112–167 MB.
 
-Why a GitHub Release and not files in the repository: a native package is 112–167 MB, past
-what a repository file may be.
-
-Cutting one is the same shape as cutting a release, because it *is* one:
+Cutting one is cutting a release, because it is one:
 
 ```bash
 mvn versions:set -DnewVersion=1.0.0-preview.1 -DgenerateBackupPoms=false
@@ -414,16 +410,13 @@ git tag -a v1.0.0-preview.1 -m "chdb-java 1.0.0-preview.1"
 git push origin v1.0.0-preview.1
 ```
 
-`preview-release.yml` refuses the tag unless the POMs at that commit carry exactly that
-version, the tag points at that commit, the commit is an ancestor of `main`, and `build`
-concluded successfully for it. Those four checks are not theatre: the first preview,
-`v1.0.0-preview.1`, was tagged on a side branch 67 commits behind `main` and published
-binaries missing thirteen merged fixes, under a README whose install command pointed at a
-script that only existed on that branch. Nothing had downloaded it, so it was deleted and the
-number reused rather than left standing as the repository's newest release. Afterwards,
-the ordinary "back to development" commit returns the POMs to a `-SNAPSHOT`.
+The workflow refuses the tag unless the POMs at that commit carry that version, the tag points
+at that commit, the commit is an ancestor of `main`, and `build` was green for it. The first
+attempt at `v1.0.0-preview.1` failed all four: tagged on a side branch 67 commits behind
+`main`, it published binaries missing thirteen merged fixes. Nothing had downloaded it, so it
+was deleted and the number reused. Afterwards the usual back-to-development commit returns the
+POMs to a `-SNAPSHOT`.
 
-A preview tag is excluded from `release.yml`'s trigger, so it can never start the Central
-path, and the release it creates is always marked pre-release, so it never becomes the
-repository's "Latest release".
+A preview tag cannot start the Central path — `release.yml` excludes it — and the release is
+always marked pre-release.
 

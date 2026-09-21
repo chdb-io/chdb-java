@@ -5,10 +5,10 @@ ClickHouse. It runs the engine in your JVM's process — no server, no network �
 streaming, forward-only result sets over ClickHouse SQL.
 
 > **Status: pre-release.** V1 is under construction against the work plan in
-> [`CHDB_JAVA_V1_WORK_PLAN.md`](CHDB_JAVA_V1_WORK_PLAN.md). Nothing is published to Maven
-> Central yet, and the public API is not frozen. Until the namespace exists, releases are
-> published as [preview bundles](#a-preview-from-a-github-release) you install into your local
-> Maven repository. See [What works today](#what-works-today).
+> [`CHDB_JAVA_V1_WORK_PLAN.md`](CHDB_JAVA_V1_WORK_PLAN.md). Nothing is on Maven Central yet
+> and the public API is not frozen; releases ship as
+> [preview bundles](#a-preview-from-a-github-release). See
+> [What works today](#what-works-today).
 
 ```java
 try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
@@ -64,18 +64,13 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 </dependency>
 ```
 
-**These coordinates do not resolve yet, and `org.chdb` is provisional.** Nothing is on Maven
-Central: the namespace needs a DNS record and a licence decision first, tracked in
-[docs/release-readiness.md](docs/release-readiness.md), and the published group id may end up
-being `com.clickhouse` instead. A preview does not depend on that being settled — the bundle
-carries the POMs it was built with and the installer reads the group id out of them — so a
-change of namespace changes what you declare, not whether an installed preview keeps working.
+**These coordinates do not resolve yet, and `org.chdb` is provisional** — nothing is on Maven
+Central, and the published group id may end up being `com.clickhouse`. See
+[docs/release-readiness.md](docs/release-readiness.md). Until then, install a preview.
 
 ### A preview from a GitHub Release
 
-A preview is the same four artifacts a Central release would carry — the driver, one native
-package, the parent POM and the BOM — published as one zip per platform and installed into
-your local Maven repository:
+Previews ship as one zip per platform, holding the same artifacts a Central release would:
 
 ```bash
 curl -fsSL -o /tmp/install-chdb-java-preview.sh \
@@ -84,15 +79,13 @@ chmod +x /tmp/install-chdb-java-preview.sh
 /tmp/install-chdb-java-preview.sh v1.0.0-preview.1
 ```
 
-It downloads the bundle for the platform it runs on, checks it against the release's
-`SHA256SUMS`, installs it with `mvn install-file`, and prints the coordinates. Nothing is
-fetched at runtime afterwards: the engine is inside the native package. Pass
-`--maven-repo /path/to/repository` to install somewhere other than `~/.m2/repository`, and
-`--repo OWNER/REPO` to install from a fork's releases.
+It downloads the bundle for this platform, verifies it against the release's `SHA256SUMS`,
+installs it with `mvn install-file`, and prints the coordinates. Use `--maven-repo PATH` for a
+repository other than `~/.m2/repository`. Then declare the dependency as above with
+`1.0.0-preview.1`; because the bundle carries its own POMs, a later change of group id does
+not strand an installed preview.
 
-Then declare the dependency at the preview's version — the same XML as above with
-`1.0.0-preview.1`. [Releases](https://github.com/chdb-io/chdb-java/releases) lists the
-preview tags; each one is a commit on `main`, built and tested on all four platforms by
+Each preview tag is a commit on `main`, built and tested on all four platforms by
 [`preview-release.yml`](.github/workflows/preview-release.yml).
 
 Building for several platforms — a CI matrix, or a distribution your users install on either
@@ -135,15 +128,15 @@ unpacked. There is no all-platforms package, on purpose: it would be the sum of 
 
 ### Versioning
 
-The binding is versioned on its own, in SemVer: `1.0.0` is the first release, a major bump
-means a breaking change to the Java API, and the engine version is not part of it. Which
-engine a package embeds is recorded in its `manifest.properties`, pinned by SHA-256 in
-[`scripts/engine.properties`](scripts/engine.properties), and named in the release notes —
-`26.7.3` today. The driver refuses to load any other engine build, so that pairing is checked
-rather than implied by a version string. See [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
+SemVer, on the binding alone: `1.0.0` is the first release and a major bump means a breaking
+change to the Java API. The engine version is not part of it — it is in each package's
+`manifest.properties`, pinned in [`scripts/engine.properties`](scripts/engine.properties) and
+named in the release notes (`26.7.3` today), and the driver refuses to load any other build.
+See [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
-A preview is that version with a `-preview.<n>` qualifier: `1.0.0-preview.1` sorts below
-`1.0.0` in Maven's ordering. Same coordinates, same scheme, published somewhere else.
+A preview is that version with a `-preview.<n>` qualifier. Maven orders an unknown qualifier
+*after* the release, so `1.0.0-preview.1` compares newer than `1.0.0`: name the version you
+want rather than a range, and note that previews are never published beside a GA.
 
 ## Connecting
 
