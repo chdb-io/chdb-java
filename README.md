@@ -29,12 +29,15 @@ public class Hello {
 ```
 
 ```bash
-java -cp chdb-jdbc.jar:chdb-native-<your platform>.jar Hello
+javac Hello.java
+java -cp .:chdb-jdbc-<version>.jar:chdb-native-<your platform>-<version>.jar Hello
 ```
 
 No `Class.forName`: the driver registers itself. You need the driver **and the native package
 for the platform you run on** — `chdb-native-linux-x86_64-gnu`, `chdb-native-linux-aarch64-gnu`,
-`chdb-native-macos-aarch64` or `chdb-native-macos-x86_64`. See [Installing](#installing).
+`chdb-native-macos-aarch64` or `chdb-native-macos-x86_64`. See [Installing](#installing), which
+is where those jars come from; in a Maven project, declare the native package and skip the
+classpath entirely.
 
 A query can still reach the network when you ask it to — it is the engine that is in-process,
 not the data:
@@ -44,8 +47,15 @@ not the data:
 ```
 
 [`QuickStart.java`](chdb-examples/src/main/java/org/chdb/examples/QuickStart.java) is the
-longer version — parameters, types, streaming — runnable from a source checkout with
-`mvn -pl chdb-examples exec:java -Dexec.mainClass=org.chdb.examples.QuickStart`.
+longer version — parameters, types, streaming. From a source checkout it needs the native
+package built first ([Building from source](#building-from-source)):
+
+```bash
+mvn -pl chdb-jdbc compile
+scripts/build-native.sh <platform>
+mvn -pl chdb-examples -am compile
+mvn -pl chdb-examples exec:java -Dexec.mainClass=org.chdb.examples.QuickStart
+```
 
 ## Support matrix
 
