@@ -62,7 +62,14 @@ on:
     # A release is a tag on a commit whose POMs already carry the release version. `build` does
     # not run on tags (it filters on branches), which is why preflight checks that `build`
     # succeeded for this exact commit rather than assuming a tag implies a tested tree.
-    tags: ["v*"]
+    tags:
+      - "v*"
+      # Never a preview. `v26.7.3.1-preview.1` matches `v*`, and without this exclusion a
+      # preview tag would start the Central path as well: preflight would accept it -- the
+      # POMs carry that exact version and the tag names the commit -- and the run would go
+      # on to stage, sign and offer a preview as a release bundle in the portal, where a
+      # release cannot be unpublished. Previews are published by preview-release.yml.
+      - "!v*-preview.*"
   workflow_dispatch:
     inputs:
       channel:

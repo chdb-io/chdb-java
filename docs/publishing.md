@@ -4,6 +4,9 @@ Everything needed to put `org.chdb:chdb-jdbc` on Maven Central, in the order it 
 marked by who can do it. The short version: the mechanics are done and tested, the namespace
 needs one DNS record, and one licence question needs somebody with authority to answer it.
 
+Until those land there is nothing for `mvn` to resolve, so releases go out as preview bundles
+on GitHub instead — section 8.
+
 ---
 
 ## Status
@@ -17,6 +20,7 @@ needs one DNS record, and one licence question needs somebody with authority to 
 | Third-party licence inventory | **done** — generated from the engine, shipped in the package, drift-tested |
 | `org.chdb` namespace | **not started** — needs a DNS TXT record, and there is no fallback |
 | A way to stage all four platforms for one release | **done** — `.github/workflows/release.yml`, issue #15 |
+| A way to ship before the namespace exists | **done** — preview bundles, section 8 |
 | Proof that the artifacts work when consumed from a repository | **done, locally** — `scripts/verify-consumer.sh`, issue #10 |
 | GPG key for the project | **not started** — needs a decision about whose key |
 | Position on the LGPL components | **not started** — needs chdb-io |
@@ -384,3 +388,41 @@ Each step can invalidate the next, so:
 | A publishing-limit exception | Sonatype support | yes, if the numbers need it |
 | **Position on the twelve copyleft components** | **chdb-io / ClickHouse legal** | **yes — the only real gate** |
 | Whether chDB is "commercial" for Central | whoever owns the Sonatype relationship | yes |
+
+---
+
+## 8. Previews, until Central exists
+
+A preview is this same release, published somewhere a user can reach today. Same four
+runners, same `build-native.sh`, same integration tests against the staged package; the
+difference is only where the bytes go, and it is one workflow apart:
+`.github/workflows/preview-release.yml` uploads one zip per platform to a GitHub Release,
+and `scripts/install-preview.sh` installs a zip into a local Maven repository with
+`install-file`. The POMs inside the bundle are the POMs the build produced, so what a user
+installs is what CI packaged rather than something reconstructed from a template.
+
+Why a GitHub Release and not files in the repository: a native package is 112–167 MB, past
+what a repository file may be.
+
+Cutting one is the same shape as cutting a release, because it *is* one:
+
+```bash
+mvn versions:set -DnewVersion=26.7.3.1-preview.1 -DgenerateBackupPoms=false
+git commit -am "Set the version for the 26.7.3.1-preview.1 release"
+# merge to main, let build.yml go green on the merge commit
+git tag -a v26.7.3.1-preview.1 -m "chdb-java 26.7.3.1-preview.1"
+git push origin v26.7.3.1-preview.1
+```
+
+`preview-release.yml` refuses the tag unless the POMs at that commit carry exactly that
+version, the tag points at that commit, the commit is an ancestor of `main`, and `build`
+concluded successfully for it. Those four checks are not theatre: the first preview,
+`v1.0.0-preview.1`, was tagged on a side branch 67 commits behind `main` and published
+binaries missing thirteen merged fixes, under a README whose install command pointed at a
+script that only existed on that branch. It was deleted rather than superseded. Afterwards,
+the ordinary "back to development" commit returns the POMs to a `-SNAPSHOT`.
+
+A preview tag is excluded from `release.yml`'s trigger, so it can never start the Central
+path, and the release it creates is always marked pre-release, so it never becomes the
+repository's "Latest release".
+
