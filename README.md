@@ -11,16 +11,41 @@ streaming, forward-only result sets over ClickHouse SQL.
 > [What works today](#what-works-today).
 
 ```java
-try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
-        PreparedStatement statement = connection.prepareStatement(
-                "SELECT count() FROM url(?, 'JSONEachRow') WHERE status = 200")) {
-    statement.setString(1, "https://example.com/logs.jsonl");
-    try (ResultSet rs = statement.executeQuery()) {
-        rs.next();
-        System.out.println(rs.getLong(1));
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.Statement;
+
+public class Hello {
+    public static void main(String[] args) throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
+                Statement statement = connection.createStatement();
+                ResultSet results = statement.executeQuery("SELECT 1")) {
+            results.next();
+            System.out.println(results.getInt(1));
+        }
     }
 }
 ```
+
+```bash
+java -cp chdb-jdbc.jar:chdb-native-<your platform>.jar Hello
+```
+
+No `Class.forName`: the driver registers itself. You need the driver **and the native package
+for the platform you run on** — `chdb-native-linux-x86_64-gnu`, `chdb-native-linux-aarch64-gnu`,
+`chdb-native-macos-aarch64` or `chdb-native-macos-x86_64`. See [Installing](#installing).
+
+A query can still reach the network when you ask it to — it is the engine that is in-process,
+not the data:
+
+```java
+"SELECT count() FROM url('https://example.com/logs.jsonl', 'JSONEachRow') WHERE status = 200"
+```
+
+[`QuickStart.java`](chdb-examples/src/main/java/org/chdb/examples/QuickStart.java) is the
+longer version — parameters, types, streaming — runnable from a source checkout with
+`mvn -pl chdb-examples exec:java -Dexec.mainClass=org.chdb.examples.QuickStart`.
 
 ## Support matrix
 
