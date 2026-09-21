@@ -11,10 +11,11 @@ name: preview release
 #
 # The rule release.yml's header calls decision 1 holds here too, and for the same reason: the
 # version lives in git, not in CI. This workflow never runs `versions:set`. A preview is a
-# commit whose POMs already carry `<engine>.<binding>-preview.<n>` and a tag naming it, so
-# `git show v26.7.3.1-preview.1` says exactly what was published. The first preview was cut
-# without that rule and shipped a tree 67 commits behind main under a tag nobody could relate
-# to a commit on main; every check in `preflight` below exists because of it.
+# commit whose POMs already carry `<version>-preview.<n>` and a tag naming it, so
+# `git show <tag>` says exactly what was published. The first attempt at v1.0.0-preview.1 was
+# cut without that rule: `versions:set` in CI on a side branch 67 commits behind main, under
+# a tag nothing on main could account for. Every check in `preflight` below exists because of
+# it, and it was withdrawn rather than superseded, so the tag name is in use again here.
 on:
   push:
     tags: ["v*-preview.*"]
@@ -67,7 +68,7 @@ jobs:
           case "$TAG" in
             v*-preview.*) ;;
             *)
-              echo "::error::expected a tag like v26.7.3.1-preview.1, got $TAG"
+              echo "::error::expected a tag like v1.0.0-preview.1, got $TAG"
               exit 1
               ;;
           esac
@@ -216,33 +217,14 @@ jobs:
           scripts/package-preview.sh "${{ needs.preflight.outputs.version }}" \
             '${{ matrix.platform }}' dist
 
-      - name: Install the bundle the way a user will, and query through it
-        # End to end over the artifact itself: install-preview.sh cannot be run against an
-        # unpublished release, so the same install-file path is exercised against the local
-        # zip. This is the step that would have caught a bundle whose POMs do not resolve.
+      - name: Consume the bundle from a project outside this checkout
+        # Not a classpath smoke test: a real Maven project, resolving from nothing but the
+        # repository the bundle was installed into, declaring the native package and letting
+        # the BOM and the POMs supply the rest. That is the half `install-file` can break and
+        # a hand-built `-cp` cannot see.
         run: |
-          set -euo pipefail
-          VERSION='${{ needs.preflight.outputs.version }}'
-          PLATFORM='${{ matrix.platform }}'
-          WORK="$RUNNER_TEMP/preview-install"
-          rm -rf "$WORK" && mkdir -p "$WORK"
-          unzip -q "dist/chdb-java-${VERSION}-${PLATFORM}.zip" -d "$WORK"
-          BUNDLE="$WORK/chdb-java-${VERSION}-${PLATFORM}"
-          REPO="$RUNNER_TEMP/preview-m2"
-          for spec in \
-            "$BUNDLE/maven-poms/chdb-java-parent.pom:$BUNDLE/maven-poms/chdb-java-parent.pom:pom" \
-            "$BUNDLE/lib/chdb-jdbc-${VERSION}.jar:$BUNDLE/maven-poms/chdb-jdbc.pom:jar" \
-            "$BUNDLE/lib/chdb-native-${PLATFORM}-${VERSION}.jar:$BUNDLE/maven-poms/chdb-native-${PLATFORM}.pom:jar" \
-            "$BUNDLE/maven-poms/chdb-bom.pom:$BUNDLE/maven-poms/chdb-bom.pom:pom"; do
-            FILE="${spec%%:*}"; REST="${spec#*:}"; POM="${REST%%:*}"; PACKAGING="${REST##*:}"
-            mvn $MAVEN_ARGS -q -Dmaven.repo.local="$REPO" \
-              org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file \
-              -Dfile="$FILE" -DpomFile="$POM" -Dpackaging="$PACKAGING" -DgeneratePom=false
-          done
-          mvn $MAVEN_ARGS -pl chdb-examples -am compile -DskipTests
-          java -cp "$REPO/org/chdb/chdb-jdbc/${VERSION}/chdb-jdbc-${VERSION}.jar:$REPO/org/chdb/chdb-native-${PLATFORM}/${VERSION}/chdb-native-${PLATFORM}-${VERSION}.jar:chdb-examples/target/classes" \
-            -Dchdb.cache.dir="$PWD/target/preview-cache" \
-            org.chdb.examples.QuickStart
+          scripts/verify-preview-bundle.sh \
+            "dist/chdb-java-${{ needs.preflight.outputs.version }}-${{ matrix.platform }}.zip"
 
       - name: Upload the platform bundle
         uses: actions/upload-artifact@v4
@@ -260,6 +242,16 @@ jobs:
       contents: write
       actions: read
     steps:
+      # gh resolves the repository from git when it can, and this job has no checkout of its
+      # own -- which is what failed the first attempt at publishing a preview: `gh release
+      # create` exited with `fatal: not a git repository`. Every call below passes --repo, so
+      # the checkout is belt and braces rather than the fix, and it also gives --generate-notes
+      # the history it reads.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+
       - name: Download every platform bundle
         uses: actions/download-artifact@v4
         with:
