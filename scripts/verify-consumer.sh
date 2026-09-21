@@ -265,14 +265,14 @@ cat > "${CONSUMER}/pom.xml" <<EOF
     pluginRepositories deliberately left inherited, so Maven's own plugins still come from the
     real Central. Isolating them would mean vendoring surefire, the dependency plugin and their
     transitive trees into \${REPO} to make this script run at all, and it would buy nothing:
-    plugin repositories are consulted for plugins and their dependencies, and org.chdb is
+    plugin repositories are consulted for plugins and their dependencies, and com.clickhouse.chdb is
     neither. The asymmetry is the point: our artifacts are isolated, Maven's are not.
   -->
 
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>org.chdb</groupId>
+        <groupId>com.clickhouse.chdb</groupId>
         <artifactId>chdb-bom</artifactId>
         <version>${VERSION}</version>
         <type>pom</type>
@@ -284,7 +284,7 @@ cat > "${CONSUMER}/pom.xml" <<EOF
   <dependencies>
     <!-- No version: if the BOM does not supply it, this project does not build. -->
     <dependency>
-      <groupId>org.chdb</groupId>
+      <groupId>com.clickhouse.chdb</groupId>
       <artifactId>${MODULE}</artifactId>
     </dependency>
   </dependencies>
@@ -292,7 +292,7 @@ cat > "${CONSUMER}/pom.xml" <<EOF
 EOF
 
 # A fresh, empty local repository, so nothing can be resolved from a previous build of this
-# checkout. Maven's own plugins come from Central; everything under org.chdb must come from
+# checkout. Maven's own plugins come from Central; everything under com.clickhouse.chdb must come from
 # the file repository, which is asserted below.
 (
   cd "$CONSUMER"

@@ -298,7 +298,7 @@ public final class NativeLibraryLoader {
                             + foreign
                             + "\nAdd the platform package for this machine:\n"
                             + "  <dependency>\n"
-                            + "    <groupId>org.chdb</groupId>\n"
+                            + "    <groupId>com.clickhouse.chdb</groupId>\n"
                             + "    <artifactId>chdb-native-" + platform.id() + "</artifactId>\n"
                             + "    <version>${chdb.version}</version>\n"
                             + "  </dependency>\n"
