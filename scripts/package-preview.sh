@@ -1,26 +1,19 @@
 #!/usr/bin/env bash
 #
-# Packages one platform's preview bundle: the zip that .github/workflows/preview-release.yml
-# uploads as a GitHub Release asset and scripts/install-preview.sh installs from.
+# Packages one platform's preview bundle: the jars Maven just built plus the POMs that
+# describe them, zipped for a GitHub Release. The POMs are copied, not generated, so
+# install-file keeps the parent relationship and the driver dependency.
 #
-# A preview bundle is not a second build of anything. It is the jars Maven just produced plus
-# the POMs that describe them, zipped, so that the bytes a user installs are the bytes CI
-# tested. That is also why the POMs are copied rather than generated: `install-file` with a
-# generated POM would drop the parent relationship and the dependency the native package
-# declares on the driver.
-#
-# The layout below is the installer's contract; changing it means changing both.
+# The layout is scripts/install-preview.sh's contract:
 #
 #   chdb-java-<version>-<platform>/
-#     lib/chdb-jdbc-<version>.jar
-#     lib/chdb-native-<platform>-<version>.jar
-#     maven-poms/{chdb-java-parent,chdb-jdbc,chdb-native-<platform>,chdb-bom}.pom
-#     preview.properties        groupId, version and platform, for the installer to read back
+#     lib/                 chdb-jdbc and chdb-native-<platform> jars
+#     maven-poms/          parent, driver, native, BOM
+#     preview.properties   groupId, version, platform
 #     LICENSE, README.md
 #
-# Usage:
 #   scripts/package-preview.sh <version> <platform> <output-dir>
-
+#
 set -euo pipefail
 
 usage() {

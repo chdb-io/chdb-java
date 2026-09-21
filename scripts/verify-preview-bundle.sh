@@ -1,30 +1,15 @@
 #!/usr/bin/env bash
 #
 # Consumes a preview bundle the way a user will: installs it into an empty local Maven
-# repository and builds a project that is not part of this reactor against it.
+# repository, then builds a project outside this checkout against it.
 #
-# The distinction matters, and an earlier version of this check missed it. Installing the
-# bundle and then running a class off a hand-built `-cp` proves the JARs execute; it says
-# nothing about whether Maven can resolve them. Everything a consumer depends on that a
-# classpath does not exercise lives in the POMs -- the parent relationship, the BOM's
-# dependencyManagement, the native package's dependency on the driver -- and all three are
-# things `install-file` can get wrong. So the consumer here is a real project, outside this
-# checkout, resolving from nothing but the repository the bundle was installed into:
+# A classpath smoke test would not do. What install-file can break lives in the POMs -- the
+# parent relationship, the BOM, the native package's dependency on the driver -- so the
+# consumer here declares the native package with no version and lets resolution supply the
+# rest, then runs a query in memory and one that has to survive a reopen.
 #
-#   - it declares the native package and nothing else, so `chdb-jdbc` has to arrive
-#     transitively through that POM;
-#   - it imports chdb-bom and omits every version, so the BOM has to be readable and complete;
-#   - it runs a query, on-disk and in-memory, so the engine inside the JAR has to unpack and
-#     load from a local repository path rather than from a build directory;
-#   - and every org.chdb artifact on the resulting classpath is checked to have come from that
-#     repository, because `org.chdb` not being on Central is a fact about today, not a
-#     guarantee.
-#
-# Usage:
 #   scripts/verify-preview-bundle.sh <bundle.zip>
 #
-# Needs unzip, mvn and a JDK. Writes only into a temporary directory, kept on failure.
-
 set -euo pipefail
 
 die() { printf 'verify-preview-bundle: %s\n' "$*" >&2; exit 1; }
@@ -58,8 +43,7 @@ mkdir -p "$M2" "$CONSUMER/src/main/java"
 
 step "Unpacking the bundle"
 unzip -q "$BUNDLE_ZIP" -d "$WORK/extracted"
-# By the directory that holds preview.properties, not by taking the first one: `jar --create`
-# writes a META-INF/MANIFEST.MF of its own beside the bundle directory.
+# By preview.properties, not the first directory: `jar --create` writes its own META-INF.
 PROPERTIES=$(find "$WORK/extracted" -mindepth 2 -maxdepth 2 -name preview.properties -print -quit)
 [[ -n "$PROPERTIES" ]] || die "the bundle has no preview.properties"
 BUNDLE_ROOT=$(dirname "$PROPERTIES")
@@ -96,9 +80,7 @@ install_file "$POMS/chdb-bom.pom" "$POMS/chdb-bom.pom" pom
 ok "parent, driver, native package and BOM installed"
 
 step "Building a project outside this checkout against it"
-# One dependency, no version: the BOM has to supply the version and the native package's POM
-# has to bring in the driver. A project that named both, with versions, would pass while the
-# metadata this check is about was broken.
+# One dependency, no version: the BOM supplies it and the native POM brings in the driver.
 cat > "$CONSUMER/pom.xml" <<POM
 <project xmlns="http://maven.apache.org/POM/4.0.0">
   <modelVersion>4.0.0</modelVersion>
@@ -136,7 +118,7 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
 
-/** A user's first five minutes: no Class.forName, one in-memory query, one that persists. */
+/** No Class.forName, one in-memory query, one that persists. */
 public final class PreviewConsumer {
     public static void main(String[] args) throws Exception {
         try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
@@ -169,7 +151,7 @@ public final class PreviewConsumer {
 }
 JAVA
 
-( cd "$CONSUMER" && mvn "${MVN_FLAGS[@]}" -q -Dmaven.repo.local="$M2" package ) \
+( cd "$CONSUMER" && mvn "${MVN_FLAGS[@]}" -q -Dmaven.repo.local="$M2" package </dev/null ) \
   > "$WORK/build.log" 2>&1 || { tail -40 "$WORK/build.log"; die "the consumer project did not build; see $WORK/build.log"; }
 ok "resolved and compiled with only the BOM and the native package declared"
 
@@ -177,13 +159,12 @@ ok "resolved and compiled with only the BOM and the native package declared"
     dependency:build-classpath -Dmdep.outputFile="$WORK/cp.txt" ) \
   > "$WORK/resolve.log" 2>&1 || { tail -40 "$WORK/resolve.log"; die "could not resolve the consumer's classpath"; }
 
-# The driver has to be here through the native package's POM, not because it was asked for.
+# Transitive, not asked for.
 grep -q "chdb-jdbc-${VERSION}.jar" "$WORK/cp.txt" \
   || die "chdb-jdbc is not on the classpath: the native package's POM did not bring it in"
 ok "chdb-jdbc arrived transitively"
 
-# Everything under the group has to have come from the repository the bundle was installed
-# into. A copy elsewhere serving these coordinates would make the whole run meaningless.
+# Nothing may have come from anywhere but the bundle's own repository.
 while IFS= read -r entry; do
   case "$entry" in
     *"/${GROUP_PATH}/"*)
@@ -194,8 +175,10 @@ done < <(tr ':' '\n' < "$WORK/cp.txt")
 ok "every $GROUP_ID artifact resolved from the bundle's repository"
 
 step "Running a query through it"
+# stdin closed: chDB reads a non-TTY stdin with bytes on it as external data for an INSERT,
+# and this consumer inserts. Same reason as the integration-test step in build.yml.
 OUTPUT=$( cd "$CONSUMER" && java -cp "target/classes:$(cat "$WORK/cp.txt")" \
-  -Dchdb.cache.dir="$WORK/native-cache" PreviewConsumer "$WORK/storage" )
+  -Dchdb.cache.dir="$WORK/native-cache" PreviewConsumer "$WORK/storage" </dev/null )
 printf '%s\n' "$OUTPUT"
 grep -q 'PREVIEW BUNDLE OK' <<<"$OUTPUT" || die "the consumer did not complete its queries"
 

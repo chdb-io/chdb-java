@@ -1,23 +1,11 @@
 #!/usr/bin/env bash
 #
-# Installs a published preview into a local Maven repository.
+# Installs a published preview into a local Maven repository: downloads the asset for this
+# platform, verifies it against the release's SHA256SUMS, and installs the jars with the POMs
+# the build produced. Needs curl, unzip and mvn.
 #
-# Until `org.chdb` exists on Maven Central there is nowhere for `mvn` to resolve the driver
-# from, so a preview ships as one GitHub Release asset per platform: a zip holding the driver
-# jar, the native package for that platform, and the four POMs the build produced. This script
-# downloads the asset for the host it runs on, verifies it against the release's SHA256SUMS,
-# and installs the contents with `install-file` so an ordinary `<dependency>` resolves.
-#
-# It is deliberately the same bytes a Central release would carry, installed by hand rather
-# than rebuilt: the POMs come out of the bundle rather than being generated here, so a preview
-# a user installs is the artifact CI packaged, not an approximation of it.
-#
-# Usage:
 #   install-preview.sh v1.0.0-preview.1 [--repo OWNER/REPO] [--maven-repo PATH]
 #
-# Needs curl, unzip and mvn. Writes nothing outside the local Maven repository and one
-# temporary directory.
-
 set -euo pipefail
 
 usage() {
@@ -36,7 +24,7 @@ die() {
 
 TAG=''
 REPO='chdb-io/chdb-java'
-MAVEN_REPO=${MAVEN_REPO:-"$HOME/.m2/repository"}
+MAVEN_REPO=${MAVEN_REPO:-"${HOME:-$PWD}/.m2/repository"}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -77,6 +65,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$TAG" ]] || { usage; exit 2; }
+# Before any cd: install_file runs Maven from $WORK, which the EXIT trap deletes.
+[[ "$MAVEN_REPO" = /* ]] || MAVEN_REPO="$PWD/$MAVEN_REPO"
 [[ "$REPO" =~ ^[^/]+/[^/]+$ ]] || die "repository must look like OWNER/REPO: $REPO"
 case "$TAG" in
   v*-preview.*) ;;
@@ -111,9 +101,7 @@ BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/chdb-java-preview.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
-# curl's own "error: 22" says nothing about which of the two plausible mistakes was made --
-# a tag that does not exist, or a release that never carried this platform -- and both are
-# ordinary enough to name.
+# curl's "error: 22" does not say whether the tag or the platform asset is the missing one.
 download() {
   local name=$1
   curl --fail --location --retry 3 --silent --show-error \
@@ -159,8 +147,7 @@ read_property() {
 GROUP_ID=$(read_property chdb.java.preview.groupId)
 [[ -n "$GROUP_ID" ]] || die "bundle does not declare a Maven groupId"
 
-# The asset name is chosen by this script from the tag, so a release that uploaded a bundle
-# built at a different version would be installed under a version it does not carry.
+# The asset name comes from the tag, so a mismatched bundle would install under the wrong version.
 BUNDLE_VERSION=$(read_property chdb.java.preview.version)
 [[ "$BUNDLE_VERSION" == "$VERSION" ]] || \
   die "bundle declares version $BUNDLE_VERSION but $TAG names $VERSION; the release asset does not match its tag"
@@ -171,8 +158,7 @@ install_file() {
   local packaging=${3:-jar}
 
   (
-    # Do not let Maven inspect the caller's project POM. The preview POMs are the only metadata
-    # this operation needs, and a caller may be installing from an unrelated Maven project.
+    # From $WORK so Maven does not read the caller's own project POM.
     cd "$WORK"
     mvn -q -B -Dmaven.repo.local="$MAVEN_REPO" \
       org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file \
@@ -183,7 +169,7 @@ install_file() {
   )
 }
 
-# Install the parent first because the module POMs retain their normal parent relationship.
+# Parent first: the module POMs keep their parent relationship.
 install_file "$PARENT_POM" "$PARENT_POM" pom
 install_file "$DRIVER_JAR" "$DRIVER_POM"
 install_file "$NATIVE_JAR" "$NATIVE_POM"
