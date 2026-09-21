@@ -4,6 +4,9 @@ Everything needed to put `org.chdb:chdb-jdbc` on Maven Central, in the order it 
 marked by who can do it. The short version: the mechanics are done and tested, the namespace
 needs one DNS record, and one licence question needs somebody with authority to answer it.
 
+Until those land there is nothing for `mvn` to resolve, so releases go out as preview bundles
+on GitHub — section 8.
+
 ---
 
 ## Status
@@ -17,6 +20,7 @@ needs one DNS record, and one licence question needs somebody with authority to 
 | Third-party licence inventory | **done** — generated from the engine, shipped in the package, drift-tested |
 | `org.chdb` namespace | **not started** — needs a DNS TXT record, and there is no fallback |
 | A way to stage all four platforms for one release | **done** — `.github/workflows/release.yml`, issue #15 |
+| A way to ship before the namespace exists | **done** — preview bundles, section 8 |
 | Proof that the artifacts work when consumed from a repository | **done, locally** — `scripts/verify-consumer.sh`, issue #10 |
 | GPG key for the project | **not started** — needs a decision about whose key |
 | Position on the LGPL components | **not started** — needs chdb-io |
@@ -39,7 +43,7 @@ scripts/build-native.sh macos-x86_64                      # on an Intel Mac
 JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-x86_64-gnu
 JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-aarch64-gnu
 
-mvn versions:set -DnewVersion=26.7.0.1     # a release, not the -SNAPSHOT in the POM
+mvn versions:set -DnewVersion=1.0.0        # a release, not the -SNAPSHOT in the POM
 mvn -Prelease deploy
 ```
 
@@ -103,7 +107,7 @@ workflow's own header and summarised here:
   What the workflow does instead is record what it shipped: every staged library's SHA-256 goes
   into the job summary and into `manifest.properties` inside the JAR.
 
-The version matters too: `deploy` on the `26.7.0.1-SNAPSHOT` currently in the POM publishes a
+The version matters too: `deploy` on the `-SNAPSHOT` currently in the POM publishes a
 snapshot, which goes to a different place and is never validated or promoted. A Central release
 bundle needs a non-`SNAPSHOT` version.
 
@@ -384,3 +388,35 @@ Each step can invalidate the next, so:
 | A publishing-limit exception | Sonatype support | yes, if the numbers need it |
 | **Position on the twelve copyleft components** | **chdb-io / ClickHouse legal** | **yes — the only real gate** |
 | Whether chDB is "commercial" for Central | whoever owns the Sonatype relationship | yes |
+
+---
+
+## 8. Previews, until Central exists
+
+A preview is this release published somewhere reachable today. Same runners, same
+`build-native.sh`, same integration tests; the difference is one workflow:
+`.github/workflows/preview-release.yml` uploads one zip per platform to a GitHub Release, and
+`scripts/install-preview.sh` installs a zip into a local Maven repository. The POMs in the
+bundle are the ones the build produced. A GitHub Release rather than files in the repository,
+because a native package is 112–167 MB.
+
+Cutting one is cutting a release, because it is one:
+
+```bash
+mvn versions:set -DnewVersion=1.0.0-preview.1 -DgenerateBackupPoms=false
+git commit -am "Set the version for the 1.0.0-preview.1 release"
+# merge to main, let build.yml go green on the merge commit
+git tag -a v1.0.0-preview.1 -m "chdb-java 1.0.0-preview.1"
+git push origin v1.0.0-preview.1
+```
+
+The workflow refuses the tag unless the POMs at that commit carry that version, the tag points
+at that commit, the commit is an ancestor of `main`, and `build` was green for it. The first
+attempt at `v1.0.0-preview.1` failed all four: tagged on a side branch 67 commits behind
+`main`, it published binaries missing thirteen merged fixes. Nothing had downloaded it, so it
+was deleted and the number reused. Afterwards the usual back-to-development commit returns the
+POMs to a `-SNAPSHOT`.
+
+A preview tag cannot start the Central path — `release.yml` excludes it — and the release is
+always marked pre-release.
+

@@ -136,6 +136,11 @@ in CI.
 
 Afterwards, the ordinary "back to development" commit returns the POMs to a `-SNAPSHOT`.
 
+**Before any of this, a preview can go out.** Step 1 gates Central, not shipping: a preview is
+the same commit and the same four-runner build, published as GitHub Release assets and
+installed with `scripts/install-preview.sh`. No namespace, no GPG key, no portal account. The
+runbook is [docs/publishing.md](publishing.md) section 8.
+
 ---
 
 ## Track 1 — Signing and publishing mechanics

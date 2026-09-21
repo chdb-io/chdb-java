@@ -6,7 +6,7 @@
 
   <groupId>org.chdb</groupId>
   <artifactId>chdb-java-parent</artifactId>
-  <version>26.7.3.1-SNAPSHOT</version>
+  <version>1.0.0-preview.1</version>
   <packaging>pom</packaging>
 
   <name>chDB Java Binding (parent)</name>

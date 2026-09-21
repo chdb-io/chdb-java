@@ -1,0 +1,276 @@
+name: preview release
+
+# Publishes a preview as GitHub Release assets, one zip per platform, because `org.chdb` is
+# not on Maven Central yet and a native package is too large to commit.
+#
+# Same four runners, same build-native.sh and same integration tests as release.yml; only the
+# last step differs. The version lives in git here too: no `versions:set` in CI, so the POMs
+# at the tagged commit already carry the tag's version. The first attempt at v1.0.0-preview.1
+# broke that rule and shipped a side branch 67 commits behind main, which is what every check
+# in `preflight` is for. It was withdrawn, so the tag name is in use again here.
+on:
+  push:
+    tags: ["v*-preview.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing preview tag to build and publish
+        required: true
+        type: string
+
+concurrency:
+  group: preview-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  MAVEN_ARGS: "--batch-mode --no-transfer-progress"
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On a dispatch `github.sha` is the branch, not what gets built.
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+
+      - name: Resolve the tag and check it against the POMs
+        id: resolve
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          case "$TAG" in
+            v*-preview.*) ;;
+            *)
+              echo "::error::expected a tag like v1.0.0-preview.1, got $TAG"
+              exit 1
+              ;;
+          esac
+          TAG_VERSION="${TAG#v}"
+
+          # From Maven, so an inherited or property-substituted version reads correctly.
+          VERSION=$(mvn $MAVEN_ARGS -q -DforceStdout help:evaluate -Dexpression=project.version)
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "::error::tag $TAG implies version $TAG_VERSION but the POMs say $VERSION. Commit the preview version, then tag that commit."
+            exit 1
+          fi
+          case "$VERSION" in
+            *-SNAPSHOT)
+              echo "::error::the POMs are at $VERSION. A published preview needs a non-SNAPSHOT version committed and tagged."
+              exit 1
+              ;;
+          esac
+
+          SHA=$(git rev-parse HEAD)
+          echo "tag $TAG, version $VERSION, commit $SHA"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "sha=$SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: The tag must point at the commit being built
+        # release.yml's script, for the same guarantee: what is published is what a commit says.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          scripts/check-release-tag.sh \
+            "${{ github.repository }}" \
+            "${{ steps.resolve.outputs.version }}" \
+            "${{ steps.resolve.outputs.sha }}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: The tagged commit must be on main
+        # Green on a branch says the tree works, not that it is the tree main has.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/${{ github.repository }}/compare/main...${{ steps.resolve.outputs.sha }}" \
+              --jq '.status' | grep -qx 'identical\|behind'; then
+            echo "::error::${{ steps.resolve.outputs.sha }} is not an ancestor of main. Merge the release commit to main, then tag it there."
+            exit 1
+          fi
+
+      - name: The `build` workflow must have passed for this commit
+        # `build` filters on branches, so a tag push does not run it.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CONCLUSION=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?head_sha=${{ steps.resolve.outputs.sha }}&per_page=100" \
+            --jq '[.workflow_runs[] | select(.name == "build")] | first | .conclusion // "none"')
+          echo "build workflow for ${{ steps.resolve.outputs.sha }}: $CONCLUSION"
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::the build workflow for this commit concluded '$CONCLUSION'. Let the matrix go green on main, then tag that commit."
+            exit 1
+          fi
+
+      - name: The engine version this preview carries
+        run: |
+          set -euo pipefail
+          ENGINE=$(sed -n 's/^engine.version=//p' scripts/engine.properties | head -1)
+          echo "engine $ENGINE, pinned by SHA-256 in scripts/engine.properties" >> "$GITHUB_STEP_SUMMARY"
+
+  # One job per platform: build-native.sh refuses to cross-build.
+  bundle:
+    name: bundle ${{ matrix.platform }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+          - platform: linux-aarch64-gnu
+            runner: ubuntu-22.04-arm
+          - platform: macos-aarch64
+            runner: macos-15
+          # macos-15-intel, not macos-15: the plain label is Apple Silicon.
+          - platform: macos-x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+
+      - uses: actions/setup-java@v4
+        with:
+          # The floor, deliberately: it is what makes maven.compiler.release=11 a fact.
+          distribution: temurin
+          java-version: "11"
+          cache: maven
+
+      - name: Cache the pinned engine download
+        uses: actions/cache@v4
+        with:
+          path: target/engine/download
+          key: chdb-engine-${{ matrix.platform }}-${{ hashFiles('scripts/engine.properties') }}
+
+      - name: Compile the Java side and run its unit tests
+        run: mvn $MAVEN_ARGS -pl chdb-jdbc -am test
+
+      - name: Fetch the engine, build the shim, stage the platform package
+        run: |
+          case "${{ matrix.platform }}" in
+            linux-*) scripts/build-native-in-container.sh ${{ matrix.platform }} ;;
+            *)       scripts/build-native.sh ${{ matrix.platform }} ;;
+          esac
+
+      - name: Integration tests against the staged package
+        # The bytes about to be zipped are new bytes, whatever `build` concluded for the commit.
+        run: |
+          set -eu
+          # stdin closed: chDB reads a non-TTY stdin with bytes on it as external data for an
+          # INSERT. See the same step in build.yml.
+          exec </dev/null
+          case "${{ matrix.platform }}" in
+            macos-*) OS=macos ;;
+            *)       OS=linux ;;
+          esac
+          case "${{ matrix.platform }}" in
+            *aarch64*) ARCH=aarch64 ;;
+            *)         ARCH=x86_64 ;;
+          esac
+          LIBS="$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/$OS/$ARCH"
+          mvn $MAVEN_ARGS -pl chdb-integration-tests -am verify \
+            -Dchdb.it.platform=${{ matrix.platform }} \
+            -Dchdb.it.library.path="$LIBS"
+
+      - name: Package the JARs and the preview bundle
+        run: |
+          set -euo pipefail
+          mvn $MAVEN_ARGS -pl chdb-jdbc,chdb-native-${{ matrix.platform }} package -DskipTests
+          scripts/package-preview.sh "${{ needs.preflight.outputs.version }}" \
+            '${{ matrix.platform }}' dist
+
+      - name: Consume the bundle from a project outside this checkout
+        # Resolution, not just execution: the POMs are what install-file can break.
+        run: |
+          scripts/verify-preview-bundle.sh \
+            "dist/chdb-java-${{ needs.preflight.outputs.version }}-${{ matrix.platform }}.zip"
+
+      - name: Upload the platform bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish
+    needs: [preflight, bundle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      # Every gh call below passes --repo, but `gh release create` with neither that nor a
+      # checkout is how the first preview publish failed: `fatal: not a git repository`.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Download every platform bundle
+        uses: actions/download-artifact@v4
+        with:
+          pattern: preview-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Checksum what is about to be uploaded
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+          test "$(ls -1 -- *.zip | wc -l)" -eq 4 || { echo "::error::expected four platform bundles"; exit 1; }
+          sha256sum -- *.zip | tee SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          EXPECTED_SHA: ${{ needs.preflight.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          # Re-resolved here, not just in preflight: staging takes tens of minutes and a tag
+          # can be moved or deleted inside that window, which would upload these bundles under
+          # a tag naming a different commit. --verify-tag only checks that the tag exists.
+          REMOTE_SHA=$(gh api "repos/${{ github.repository }}/commits/$TAG" --jq '.sha')
+          if [ "$REMOTE_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::$TAG now points at $REMOTE_SHA, not the $EXPECTED_SHA these bundles were built from"
+            exit 1
+          fi
+
+          # --prerelease so a preview never becomes "Latest release"; --draft=false because an
+          # existing draft would otherwise take the uploads and stay invisible.
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "${{ github.repository }}" --prerelease --draft=false
+          else
+            gh release create "$TAG" --repo "${{ github.repository }}" \
+              --title "chdb-java $TAG" --prerelease --verify-tag --generate-notes
+          fi
+          gh release upload "$TAG" --repo "${{ github.repository }}" \
+            release-assets/*.zip release-assets/SHA256SUMS --clobber
