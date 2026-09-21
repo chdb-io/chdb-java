@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>org.chdb</groupId>
+    <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-java-parent</artifactId>
     <version>1.0.0-preview.1</version>
   </parent>
@@ -23,27 +23,27 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>org.chdb</groupId>
+        <groupId>com.clickhouse.chdb</groupId>
         <artifactId>chdb-jdbc</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.chdb</groupId>
+        <groupId>com.clickhouse.chdb</groupId>
         <artifactId>chdb-native-macos-aarch64</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.chdb</groupId>
+        <groupId>com.clickhouse.chdb</groupId>
         <artifactId>chdb-native-macos-x86_64</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.chdb</groupId>
+        <groupId>com.clickhouse.chdb</groupId>
         <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.chdb</groupId>
+        <groupId>com.clickhouse.chdb</groupId>
         <artifactId>chdb-native-linux-aarch64-gnu</artifactId>
         <version>${project.version}</version>
       </dependency>

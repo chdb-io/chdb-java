@@ -1,11 +1,8 @@
 # Publishing runbook
 
-Everything needed to put `org.chdb:chdb-jdbc` on Maven Central, in the order it has to happen,
-marked by who can do it. The short version: the mechanics are done and tested, the namespace
-needs one DNS record, and one licence question needs somebody with authority to answer it.
-
-Until those land there is nothing for `mvn` to resolve, so releases go out as preview bundles
-on GitHub — section 8.
+Everything needed to publish `com.clickhouse.chdb` artifacts. The first test version is
+`1.0.0-rc.1`, published to GitHub Packages; stable releases go to Maven Central once the
+ClickHouse Publisher Pro setup is ready.
 
 ---
 
@@ -18,9 +15,9 @@ on GitHub — section 8.
 | GPG signing | **done and verified** — signs jar, sources, javadoc and pom |
 | Publishing plugin | **done** — `central-publishing-maven-plugin`, `autoPublish=false` |
 | Third-party licence inventory | **done** — generated from the engine, shipped in the package, drift-tested |
-| `org.chdb` namespace | **not started** — needs a DNS TXT record, and there is no fallback |
+| `com.clickhouse.chdb` namespace | **pending** — stable releases use the ClickHouse Central workspace |
 | A way to stage all four platforms for one release | **done** — `.github/workflows/release.yml`, issue #15 |
-| A way to ship before the namespace exists | **done** — preview bundles, section 8 |
+| GitHub Packages RC publishing | **implemented** — `.github/workflows/rc-release.yml` |
 | Proof that the artifacts work when consumed from a repository | **done, locally** — `scripts/verify-consumer.sh`, issue #10 |
 | GPG key for the project | **not started** — needs a decision about whose key |
 | Position on the LGPL components | **not started** — needs chdb-io |
@@ -158,17 +155,13 @@ For CI, two secrets — the ASCII-armoured private key and its passphrase:
 Signing the first release from a laptop is fine and is the faster way to find out whether the
 rest works.
 
-## 3. The namespace — needs DNS, approved automatically
+## 3. The namespace — ClickHouse Central workspace
 
-`org.chdb` is **unclaimed**. So are `io.chdb`, `com.chdb` and `io.github.chdb-io`; Maven Central
-returns zero artifacts for all four. There is no conflict to resolve, only a claim to make.
+All RC and stable artifacts use the permanent `com.clickhouse.chdb` namespace. The stable
+release will be published through the ClickHouse Sonatype Central workspace, so the maintainer
+needs workspace publisher/member access rather than a temporary personal namespace.
 
-1. Register at <https://central.sonatype.com>.
-2. Start a namespace claim for `org.chdb`.
-3. Add the TXT record Sonatype names to the `chdb.org` zone. `chdb.org` resolves, so whoever
-   administers that zone can do this.
-4. Sonatype's checker verifies it. No human review, no queue.
-5. Generate a portal token and put it in `~/.m2/settings.xml`:
+When Publisher Pro is ready, generate a Central Portal token and put it in `~/.m2/settings.xml`:
 
 ```xml
 <server>
@@ -241,7 +234,7 @@ much better case than a smoothed average would have been.
 real numbers at <https://central.sonatype.com/publishing/usage>, then mail
 `central-support@sonatype.com` with what the exception form asks for:
 
-- organisation and namespace (`org.chdb`)
+- organisation and namespace (`com.clickhouse.chdb`)
 - what it is: four per-platform packages of an embedded analytical database engine, where the
   size is a ~326 MB prebuilt native library per platform and cannot meaningfully be reduced
 - the publishing pattern: event-driven, one release every two to three months, tracking chDB
@@ -383,7 +376,7 @@ Each step can invalidate the next, so:
 | Release profile, signing config, licence inventory | done | no |
 | Generate and publish a GPG key | any maintainer | no |
 | Decide *whose* key signs | chdb-io | a decision, not an approval |
-| `org.chdb` namespace claim | whoever runs `chdb.org` DNS | automatic once the TXT record is up |
+| `com.clickhouse.chdb` namespace permission | ClickHouse Central workspace admin | required before stable release |
 | Sonatype account and portal token | any maintainer | no |
 | A publishing-limit exception | Sonatype support | yes, if the numbers need it |
 | **Position on the twelve copyleft components** | **chdb-io / ClickHouse legal** | **yes — the only real gate** |
@@ -391,32 +384,16 @@ Each step can invalidate the next, so:
 
 ---
 
-## 8. Previews, until Central exists
+## 8. RCs on GitHub Packages
 
-A preview is this release published somewhere reachable today. Same runners, same
-`build-native.sh`, same integration tests; the difference is one workflow:
-`.github/workflows/preview-release.yml` uploads one zip per platform to a GitHub Release, and
-`scripts/install-preview.sh` installs a zip into a local Maven repository. The POMs in the
-bundle are the ones the build produced. A GitHub Release rather than files in the repository,
-because a native package is 112–167 MB.
+The first test version is `1.0.0-rc.1`, released by pushing the tag `v1.0.0-rc.1`. The
+`.github/workflows/rc-release.yml` workflow builds all four native packages on native runners
+and publishes the parent POM, JDBC driver, platform packages and BOM to:
 
-Cutting one is cutting a release, because it is one:
-
-```bash
-mvn versions:set -DnewVersion=1.0.0-preview.1 -DgenerateBackupPoms=false
-git commit -am "Set the version for the 1.0.0-preview.1 release"
-# merge to main, let build.yml go green on the merge commit
-git tag -a v1.0.0-preview.1 -m "chdb-java 1.0.0-preview.1"
-git push origin v1.0.0-preview.1
+```text
+https://maven.pkg.github.com/chdb-io/chdb-java
 ```
 
-The workflow refuses the tag unless the POMs at that commit carry that version, the tag points
-at that commit, the commit is an ancestor of `main`, and `build` was green for it. The first
-attempt at `v1.0.0-preview.1` failed all four: tagged on a side branch 67 commits behind
-`main`, it published binaries missing thirteen merged fixes. Nothing had downloaded it, so it
-was deleted and the number reused. Afterwards the usual back-to-development commit returns the
-POMs to a `-SNAPSHOT`.
-
-A preview tag cannot start the Central path — `release.yml` excludes it — and the release is
-always marked pre-release.
-
+Consumers configure that repository and a GitHub classic PAT with `read:packages`. Stable
+versions keep the same coordinates and later move to Maven Central; no dependency coordinate
+change is required.

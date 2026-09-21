@@ -1,0 +1,172 @@
+name: Maven RC release
+
+# RCs are published to GitHub Packages while Maven Central Publisher Pro is being arranged.
+# The permanent Maven coordinates are used from the first RC, so the later Central migration
+# changes only the repository URL, not users' dependencies.
+on:
+  push:
+    tags:
+      - 'v*-rc.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing RC tag to build and publish
+        required: true
+        type: string
+
+concurrency:
+  group: rc-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  MAVEN_ARGS: '--batch-mode --no-transfer-progress'
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-gnu
+            runner: ubuntu-22.04
+          - platform: linux-aarch64-gnu
+            runner: ubuntu-22.04-arm
+          - platform: macos-aarch64
+            runner: macos-15
+          - platform: macos-x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
+
+      - name: Resolve and validate RC version
+        run: |
+          set -eu
+          TAG='${{ inputs.tag || github.ref_name }}'
+          case "$TAG" in
+            v*-rc.*) ;;
+            *) echo "Expected a tag like v1.0.0-rc.1, got $TAG" >&2; exit 1 ;;
+          esac
+          VERSION="${TAG#v}"
+          echo "RC_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "RC_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Set the Maven RC version
+        run: |
+          # shellcheck disable=SC2086
+          mvn $MAVEN_ARGS org.codehaus.mojo:versions-maven-plugin:2.17.0:set \
+            -DnewVersion="$RC_VERSION" -DgenerateBackupPoms=false
+
+      - name: Compile and run unit tests
+        run: |
+          # shellcheck disable=SC2086
+          mvn $MAVEN_ARGS -pl chdb-jdbc -am test
+
+      - name: Fetch the engine and build the native shim
+        run: |
+          case '${{ matrix.platform }}' in
+            linux-*) scripts/build-native-in-container.sh '${{ matrix.platform }}' ;;
+            *)       scripts/build-native.sh '${{ matrix.platform }}' ;;
+          esac
+
+      - name: Package the JDBC and native artifacts
+        run: |
+          set -eu
+          # shellcheck disable=SC2086
+          mvn $MAVEN_ARGS -pl chdb-jdbc,chdb-native-${{ matrix.platform }} package -DskipTests
+          mkdir -p "maven/${{ matrix.platform }}"
+          cp "chdb-jdbc/target/chdb-jdbc-${RC_VERSION}.jar" "maven/${{ matrix.platform }}/"
+          cp "chdb-native-${{ matrix.platform }}/target/chdb-native-${{ matrix.platform }}-${RC_VERSION}.jar" "maven/${{ matrix.platform }}/"
+          cp pom.xml "maven/${{ matrix.platform }}/chdb-java-parent.pom"
+          cp chdb-jdbc/pom.xml "maven/${{ matrix.platform }}/chdb-jdbc.pom"
+          cp "chdb-native-${{ matrix.platform }}/pom.xml" "maven/${{ matrix.platform }}/chdb-native-${{ matrix.platform }}.pom"
+          cp chdb-bom/pom.xml "maven/${{ matrix.platform }}/chdb-bom.pom"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maven-${{ matrix.platform }}
+          path: maven/${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish RC to GitHub Packages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      - name: Resolve RC version
+        run: |
+          TAG='${{ inputs.tag || github.ref_name }}'
+          case "$TAG" in
+            v*-rc.*) ;;
+            *) echo "Expected a tag like v1.0.0-rc.1, got $TAG" >&2; exit 1 ;;
+          esac
+          echo "RC_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: maven-*
+          path: maven
+
+      - name: Publish Maven artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          set -eu
+          REPOSITORY_URL="https://maven.pkg.github.com/${GITHUB_REPOSITORY_OWNER,,}/chdb-java"
+          PARENT_POM=$(find maven -name chdb-java-parent.pom -print -quit)
+          JDBC_POM=$(find maven -name chdb-jdbc.pom -print -quit)
+          BOM_POM=$(find maven -name chdb-bom.pom -print -quit)
+
+          mvn $MAVEN_ARGS org.apache.maven.plugins:maven-deploy-plugin:3.1.3:deploy-file \
+            -Dfile="$PARENT_POM" -DgroupId=com.clickhouse.chdb -DartifactId=chdb-java-parent \
+            -Dversion="$RC_VERSION" -Dpackaging=pom -DgeneratePom=false \
+            -DrepositoryId=github -Durl="$REPOSITORY_URL"
+
+          mvn $MAVEN_ARGS org.apache.maven.plugins:maven-deploy-plugin:3.1.3:deploy-file \
+            -Dfile="$(find maven -name "chdb-jdbc-${RC_VERSION}.jar" -print -quit)" \
+            -DpomFile="$JDBC_POM" -DgeneratePom=false \
+            -DrepositoryId=github -Durl="$REPOSITORY_URL"
+
+          for platform in macos-aarch64 macos-x86_64 linux-x86_64-gnu linux-aarch64-gnu; do
+            NATIVE_POM=$(find maven -name "chdb-native-${platform}.pom" -print -quit)
+            NATIVE_JAR=$(find maven -name "chdb-native-${platform}-${RC_VERSION}.jar" -print -quit)
+            mvn $MAVEN_ARGS org.apache.maven.plugins:maven-deploy-plugin:3.1.3:deploy-file \
+              -Dfile="$NATIVE_JAR" -DpomFile="$NATIVE_POM" -DgeneratePom=false \
+              -DrepositoryId=github -Durl="$REPOSITORY_URL"
+          done
+
+          mvn $MAVEN_ARGS org.apache.maven.plugins:maven-deploy-plugin:3.1.3:deploy-file \
+            -Dfile="$BOM_POM" -DpomFile="$BOM_POM" -Dpackaging=pom \
+            -DgroupId=com.clickhouse.chdb -DartifactId=chdb-bom -Dversion="$RC_VERSION" \
+            -DgeneratePom=false \
+            -DrepositoryId=github -Durl="$REPOSITORY_URL"

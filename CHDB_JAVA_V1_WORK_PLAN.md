@@ -165,12 +165,12 @@ What "multiple ClassLoaders" means in V1: several child ClassLoaders can share o
 ### 4.1 V1 artifacts
 
 ```text
-org.chdb:chdb-jdbc:<version>
-org.chdb:chdb-native-linux-x86_64-gnu:<version>
-org.chdb:chdb-native-linux-aarch64-gnu:<version>
-org.chdb:chdb-native-macos-x86_64:<version>
-org.chdb:chdb-native-macos-aarch64:<version>
-org.chdb:chdb-bom:<version>
+com.clickhouse.chdb:chdb-jdbc:<version>
+com.clickhouse.chdb:chdb-native-linux-x86_64-gnu:<version>
+com.clickhouse.chdb:chdb-native-linux-aarch64-gnu:<version>
+com.clickhouse.chdb:chdb-native-macos-x86_64:<version>
+com.clickhouse.chdb:chdb-native-macos-aarch64:<version>
+com.clickhouse.chdb:chdb-bom:<version>
 ```
 
 - `chdb-jdbc`: the pure Java API, the JDBC implementation and the native loader. It does not contain the chDB engine.
@@ -219,16 +219,17 @@ a break in the Java API could ship as a trailing `.2`.
 | Fix in the driver, loader or JNI shim | `1.0.1` |
 | New engine baseline, no Java API change | `1.1.0` |
 | Breaking change to the Java API | `2.0.0` |
-| Preview of `1.0.0` | `1.0.0-preview.1` |
+| First Maven RC / first test version | `1.0.0-rc.1` |
 
 Release rules:
 
 - A published artifact is immutable. Never overwrite `1.0.0`; any fix ships as `1.0.1`.
 - `chdb-jdbc`, the four platform packages and `chdb-bom` always carry the same version.
 - An engine change is a `MINOR` bump when it changes what the driver can do and a `PATCH` when it does not. It is never invisible: the manifest and the release notes name the engine.
-- A binding built on an engine RC is a preview and cannot be V1 GA.
+- A binding built on an engine RC is an RC and cannot be V1 GA.
 - `-SNAPSHOT` is for development and never reaches Maven Central.
-- **`-preview.<n>` sorts *above* the release it previews.** Maven's `ComparableVersion` orders unknown qualifiers after the final release, so `1.0.0-preview.1` compares newer than `1.0.0` — measured, not assumed. It costs nothing here because previews are installed by hand into a local repository and never published beside a GA, and consumers name exact versions. If a preview ever has to live in a shared repository, use `-rc.<n>`, which Maven does order below the release.
+- **`-rc.<n>` is the shared-repository pre-release qualifier.** The first test version is
+  `1.0.0-rc.1`, followed by `1.0.0-rc.2` and then the stable `1.0.0` release.
 
 To remove string-parsing ambiguity, every artifact manifest records these separately:
 
