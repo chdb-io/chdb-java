@@ -6,7 +6,9 @@ streaming, forward-only result sets over ClickHouse SQL.
 
 > **Status: pre-release.** V1 is under construction against the work plan in
 > [`CHDB_JAVA_V1_WORK_PLAN.md`](CHDB_JAVA_V1_WORK_PLAN.md). Nothing is published to Maven
-> Central yet, and the public API is not frozen. See [What works today](#what-works-today).
+> Central yet, and the public API is not frozen. Until the namespace exists, releases are
+> published as [preview bundles](#a-preview-from-a-github-release) you install into your local
+> Maven repository. See [What works today](#what-works-today).
 
 ```java
 try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
@@ -62,6 +64,34 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 </dependency>
 ```
 
+**These coordinates do not resolve yet.** `org.chdb` is not on Maven Central — the namespace
+needs a DNS record and a licence decision first, tracked in
+[docs/release-readiness.md](docs/release-readiness.md). Until then, install a preview.
+
+### A preview from a GitHub Release
+
+A preview is the same four artifacts a Central release would carry — the driver, one native
+package, the parent POM and the BOM — published as one zip per platform and installed into
+your local Maven repository:
+
+```bash
+curl -fsSL -o /tmp/install-chdb-java-preview.sh \
+  https://raw.githubusercontent.com/chdb-io/chdb-java/main/scripts/install-preview.sh
+chmod +x /tmp/install-chdb-java-preview.sh
+/tmp/install-chdb-java-preview.sh v26.7.3.1-preview.1
+```
+
+It downloads the bundle for the platform it runs on, checks it against the release's
+`SHA256SUMS`, installs it with `mvn install-file`, and prints the coordinates. Nothing is
+fetched at runtime afterwards: the engine is inside the native package. Pass
+`--maven-repo /path/to/repository` to install somewhere other than `~/.m2/repository`, and
+`--repo OWNER/REPO` to install from a fork's releases.
+
+Then declare the dependency at the preview's version — the same XML as above with
+`26.7.3.1-preview.1`. [Releases](https://github.com/chdb-io/chdb-java/releases) lists the
+preview tags; each one is a commit on `main`, built and tested on all four platforms by
+[`preview-release.yml`](.github/workflows/preview-release.yml).
+
 Building for several platforms — a CI matrix, or a distribution your users install on either
 architecture — declare the driver plus each native package you need:
 
@@ -108,6 +138,10 @@ included when there is one. A new engine always means a new version, and moving 
 another, or from an RC to a stable release, counts as a new engine and resets the binding
 revision to `1`: that is why the move off `26.7.2-rc.2.1` is `26.7.3.1` and not `26.7.2-rc.2.2`.
 This is not SemVer; see [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
+
+A preview of a release carries that release's version with a `-preview.<n>` qualifier, so
+`26.7.3.1-preview.1` is the first preview of `26.7.3.1` and sorts below it in Maven's ordering.
+Previews are the same coordinates from a different place, not a different version scheme.
 
 ## Connecting
 
