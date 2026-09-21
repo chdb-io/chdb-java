@@ -4,10 +4,9 @@ A JDBC driver for [chDB](https://github.com/chdb-io/chdb-core), the embedded bui
 ClickHouse. It runs the engine in your JVM's process — no server, no network — and gives you
 streaming, forward-only result sets over ClickHouse SQL.
 
-> **Status: pre-release.** V1 is under construction against the work plan in
-> [`CHDB_JAVA_V1_WORK_PLAN.md`](CHDB_JAVA_V1_WORK_PLAN.md). Nothing is on Maven Central yet
-> and the public API is not frozen; releases ship as
-> [preview bundles](#a-preview-from-a-github-release). See
+> **Status: release candidate.** The first Maven release candidate is `v1.0.0-rc.1`, built with
+> chDB Core `26.7.3`. RC artifacts are published to GitHub Packages until Maven Central is ready;
+> the public API is not frozen. See
 > [What works today](#what-works-today).
 
 ```java
@@ -58,35 +57,34 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 
 ```xml
 <dependency>
-  <groupId>org.chdb</groupId>
+  <groupId>com.clickhouse.chdb</groupId>
   <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
-  <version>1.0.0</version>
+  <version>1.0.0-rc.1</version>
 </dependency>
 ```
 
-**These coordinates do not resolve yet, and `org.chdb` is provisional** — nothing is on Maven
-Central, and the published group id may end up being `com.clickhouse`. See
-[docs/release-readiness.md](docs/release-readiness.md). Until then, install a preview.
+GitHub Packages requires a GitHub classic PAT with `read:packages` in `~/.m2/settings.xml`:
 
-### A preview from a GitHub Release
-
-Previews ship as one zip per platform, holding the same artifacts a Central release would:
-
-```bash
-curl -fsSL -o /tmp/install-chdb-java-preview.sh \
-  https://raw.githubusercontent.com/chdb-io/chdb-java/main/scripts/install-preview.sh
-chmod +x /tmp/install-chdb-java-preview.sh
-/tmp/install-chdb-java-preview.sh v1.0.0-preview.1
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>github</id>
+      <username>YOUR_GITHUB_USERNAME</username>
+      <password>YOUR_GITHUB_PAT</password>
+    </server>
+  </servers>
+</settings>
 ```
 
-It downloads the bundle for this platform, verifies it against the release's `SHA256SUMS`,
-installs it with `mvn install-file`, and prints the coordinates. Use `--maven-repo PATH` for a
-repository other than `~/.m2/repository`. Then declare the dependency as above with
-`1.0.0-preview.1`; because the bundle carries its own POMs, a later change of group id does
-not strand an installed preview.
+Add the repository to the consuming project:
 
-Each preview tag is a commit on `main`, built and tested on all four platforms by
-[`preview-release.yml`](.github/workflows/preview-release.yml).
+```xml
+<repository>
+  <id>github</id>
+  <url>https://maven.pkg.github.com/chdb-io/chdb-java</url>
+</repository>
+```
 
 Building for several platforms — a CI matrix, or a distribution your users install on either
 architecture — declare the driver plus each native package you need:
@@ -95,7 +93,7 @@ architecture — declare the driver plus each native package you need:
 <dependencyManagement>
   <dependencies>
     <dependency>
-      <groupId>org.chdb</groupId>
+      <groupId>com.clickhouse.chdb</groupId>
       <artifactId>chdb-bom</artifactId>
       <version>1.0.0</version>
       <type>pom</type>
@@ -106,15 +104,15 @@ architecture — declare the driver plus each native package you need:
 
 <dependencies>
   <dependency>
-    <groupId>org.chdb</groupId>
+      <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-jdbc</artifactId>
   </dependency>
   <dependency>
-    <groupId>org.chdb</groupId>
+    <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
   </dependency>
   <dependency>
-    <groupId>org.chdb</groupId>
+    <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-native-macos-aarch64</artifactId>
   </dependency>
 </dependencies>
@@ -134,9 +132,9 @@ change to the Java API. The engine version is not part of it — it is in each p
 named in the release notes (`26.7.3` today), and the driver refuses to load any other build.
 See [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
-A preview is that version with a `-preview.<n>` qualifier. Maven orders an unknown qualifier
-*after* the release, so `1.0.0-preview.1` compares newer than `1.0.0`: name the version you
-want rather than a range, and note that previews are never published beside a GA.
+The first test version is the RC `1.0.0-rc.1`; later candidates increment the final number, and
+the first stable Maven release is `1.0.0`. RCs use the permanent `com.clickhouse.chdb` groupId,
+so moving stable releases to Maven Central will not change dependency coordinates.
 
 ## Connecting
 

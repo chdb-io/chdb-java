@@ -4,7 +4,7 @@
 # platform, verifies it against the release's SHA256SUMS, and installs the jars with the POMs
 # the build produced. Needs curl, unzip and mvn.
 #
-#   install-preview.sh v1.0.0-preview.1 [--repo OWNER/REPO] [--maven-repo PATH]
+#   install-preview.sh vX.Y.Z-preview.N [--repo OWNER/REPO] [--maven-repo PATH]
 #
 set -euo pipefail
 
@@ -70,7 +70,7 @@ done
 [[ "$REPO" =~ ^[^/]+/[^/]+$ ]] || die "repository must look like OWNER/REPO: $REPO"
 case "$TAG" in
   v*-preview.*) ;;
-  *) die "release tag must look like v1.0.0-preview.1: $TAG" ;;
+  *) die "release tag must look like vX.Y.Z-preview.N: $TAG" ;;
 esac
 VERSION=${TAG#v}
 

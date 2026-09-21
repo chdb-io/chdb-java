@@ -6,6 +6,8 @@ stays the report.
 
 Legend: ✅ done and tested · 🟡 partly done · ⬜ not started · ➖ out of this milestone
 
+The first test version is the Maven RC `1.0.0-rc.1`, published through GitHub Packages.
+
 Verified in CI against **engine 26.7.0** on all four platforms — Linux x86_64 and aarch64,
 macOS arm64 and x86_64 — each running the full suite on **Java 11, 17, 21 and 25**, plus
 sanitizer runs on one Linux and one macOS toolchain. Sixteen platform-and-JDK combinations, all
@@ -18,7 +20,7 @@ current engine until CI says otherwise.
 
 26.7.3 is a **stable** chdb-core release, which clears the [work plan §4.3
 ](../CHDB_JAVA_V1_WORK_PLAN.md) bar that 26.7.2-rc.2 could not: a binding built on an engine
-pre-release is a preview and cannot be the V1 GA, so the RC baseline was itself a release
+pre-release is not suitable for V1 GA, so the RC baseline was itself a release
 blocker. It also carries chdb-core #224, the fix for the signal-handler window reported as
 chdb-core #221 — `scripts/run-signal-window-test.sh measure` reports zero on it, against 688,
 613 and 724 on 26.7.2-rc.2.

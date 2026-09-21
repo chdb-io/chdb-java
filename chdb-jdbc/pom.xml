@@ -5,9 +5,9 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>org.chdb</groupId>
+    <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-java-parent</artifactId>
-    <version>1.0.0-preview.1</version>
+    <version>1.0.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>chdb-jdbc</artifactId>
