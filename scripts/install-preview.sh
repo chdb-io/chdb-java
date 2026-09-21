@@ -13,7 +13,7 @@
 # a user installs is the artifact CI packaged, not an approximation of it.
 #
 # Usage:
-#   install-preview.sh v26.7.3.1-preview.1 [--repo OWNER/REPO] [--maven-repo PATH]
+#   install-preview.sh v1.0.0-preview.1 [--repo OWNER/REPO] [--maven-repo PATH]
 #
 # Needs curl, unzip and mvn. Writes nothing outside the local Maven repository and one
 # temporary directory.
@@ -80,7 +80,7 @@ done
 [[ "$REPO" =~ ^[^/]+/[^/]+$ ]] || die "repository must look like OWNER/REPO: $REPO"
 case "$TAG" in
   v*-preview.*) ;;
-  *) die "release tag must look like v26.7.3.1-preview.1: $TAG" ;;
+  *) die "release tag must look like v1.0.0-preview.1: $TAG" ;;
 esac
 VERSION=${TAG#v}
 

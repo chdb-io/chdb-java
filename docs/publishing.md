@@ -43,7 +43,7 @@ scripts/build-native.sh macos-x86_64                      # on an Intel Mac
 JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-x86_64-gnu
 JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-aarch64-gnu
 
-mvn versions:set -DnewVersion=26.7.0.1     # a release, not the -SNAPSHOT in the POM
+mvn versions:set -DnewVersion=1.0.0        # a release, not the -SNAPSHOT in the POM
 mvn -Prelease deploy
 ```
 
@@ -107,7 +107,7 @@ workflow's own header and summarised here:
   What the workflow does instead is record what it shipped: every staged library's SHA-256 goes
   into the job summary and into `manifest.properties` inside the JAR.
 
-The version matters too: `deploy` on the `26.7.0.1-SNAPSHOT` currently in the POM publishes a
+The version matters too: `deploy` on the `-SNAPSHOT` currently in the POM publishes a
 snapshot, which goes to a different place and is never validated or promoted. A Central release
 bundle needs a non-`SNAPSHOT` version.
 
@@ -407,11 +407,11 @@ what a repository file may be.
 Cutting one is the same shape as cutting a release, because it *is* one:
 
 ```bash
-mvn versions:set -DnewVersion=26.7.3.1-preview.1 -DgenerateBackupPoms=false
-git commit -am "Set the version for the 26.7.3.1-preview.1 release"
+mvn versions:set -DnewVersion=1.0.0-preview.1 -DgenerateBackupPoms=false
+git commit -am "Set the version for the 1.0.0-preview.1 release"
 # merge to main, let build.yml go green on the merge commit
-git tag -a v26.7.3.1-preview.1 -m "chdb-java 26.7.3.1-preview.1"
-git push origin v26.7.3.1-preview.1
+git tag -a v1.0.0-preview.1 -m "chdb-java 1.0.0-preview.1"
+git push origin v1.0.0-preview.1
 ```
 
 `preview-release.yml` refuses the tag unless the POMs at that commit carry exactly that
@@ -419,7 +419,8 @@ version, the tag points at that commit, the commit is an ancestor of `main`, and
 concluded successfully for it. Those four checks are not theatre: the first preview,
 `v1.0.0-preview.1`, was tagged on a side branch 67 commits behind `main` and published
 binaries missing thirteen merged fixes, under a README whose install command pointed at a
-script that only existed on that branch. It was deleted rather than superseded. Afterwards,
+script that only existed on that branch. Nothing had downloaded it, so it was deleted and the
+number reused rather than left standing as the repository's newest release. Afterwards,
 the ordinary "back to development" commit returns the POMs to a `-SNAPSHOT`.
 
 A preview tag is excluded from `release.yml`'s trigger, so it can never start the Central

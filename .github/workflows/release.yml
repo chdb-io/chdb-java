@@ -64,7 +64,7 @@ on:
     # succeeded for this exact commit rather than assuming a tag implies a tested tree.
     tags:
       - "v*"
-      # Never a preview. `v26.7.3.1-preview.1` matches `v*`, and without this exclusion a
+      # Never a preview. `v1.0.0-preview.1` matches `v*`, and without this exclusion a
       # preview tag would start the Central path as well: preflight would accept it -- the
       # POMs carry that exact version and the tag names the commit -- and the run would go
       # on to stage, sign and offer a preview as a release bundle in the portal, where a

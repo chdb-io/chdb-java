@@ -60,13 +60,16 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 <dependency>
   <groupId>org.chdb</groupId>
   <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
-  <version>26.7.3.1</version>
+  <version>1.0.0</version>
 </dependency>
 ```
 
-**These coordinates do not resolve yet.** `org.chdb` is not on Maven Central — the namespace
-needs a DNS record and a licence decision first, tracked in
-[docs/release-readiness.md](docs/release-readiness.md). Until then, install a preview.
+**These coordinates do not resolve yet, and `org.chdb` is provisional.** Nothing is on Maven
+Central: the namespace needs a DNS record and a licence decision first, tracked in
+[docs/release-readiness.md](docs/release-readiness.md), and the published group id may end up
+being `com.clickhouse` instead. A preview does not depend on that being settled — the bundle
+carries the POMs it was built with and the installer reads the group id out of them — so a
+change of namespace changes what you declare, not whether an installed preview keeps working.
 
 ### A preview from a GitHub Release
 
@@ -78,7 +81,7 @@ your local Maven repository:
 curl -fsSL -o /tmp/install-chdb-java-preview.sh \
   https://raw.githubusercontent.com/chdb-io/chdb-java/main/scripts/install-preview.sh
 chmod +x /tmp/install-chdb-java-preview.sh
-/tmp/install-chdb-java-preview.sh v26.7.3.1-preview.1
+/tmp/install-chdb-java-preview.sh v1.0.0-preview.1
 ```
 
 It downloads the bundle for the platform it runs on, checks it against the release's
@@ -88,7 +91,7 @@ fetched at runtime afterwards: the engine is inside the native package. Pass
 `--repo OWNER/REPO` to install from a fork's releases.
 
 Then declare the dependency at the preview's version — the same XML as above with
-`26.7.3.1-preview.1`. [Releases](https://github.com/chdb-io/chdb-java/releases) lists the
+`1.0.0-preview.1`. [Releases](https://github.com/chdb-io/chdb-java/releases) lists the
 preview tags; each one is a commit on `main`, built and tested on all four platforms by
 [`preview-release.yml`](.github/workflows/preview-release.yml).
 
@@ -101,7 +104,7 @@ architecture — declare the driver plus each native package you need:
     <dependency>
       <groupId>org.chdb</groupId>
       <artifactId>chdb-bom</artifactId>
-      <version>26.7.3.1</version>
+      <version>1.0.0</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
@@ -132,16 +135,15 @@ unpacked. There is no all-platforms package, on purpose: it would be the sum of 
 
 ### Versioning
 
-`<engine version>.<binding revision>`, so `26.7.3.1` is the first Java release built
-against engine 26.7.3 — the engine version is carried through verbatim, `rc` qualifier
-included when there is one. A new engine always means a new version, and moving from one RC to
-another, or from an RC to a stable release, counts as a new engine and resets the binding
-revision to `1`: that is why the move off `26.7.2-rc.2.1` is `26.7.3.1` and not `26.7.2-rc.2.2`.
-This is not SemVer; see [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
+The binding is versioned on its own, in SemVer: `1.0.0` is the first release, a major bump
+means a breaking change to the Java API, and the engine version is not part of it. Which
+engine a package embeds is recorded in its `manifest.properties`, pinned by SHA-256 in
+[`scripts/engine.properties`](scripts/engine.properties), and named in the release notes —
+`26.7.3` today. The driver refuses to load any other engine build, so that pairing is checked
+rather than implied by a version string. See [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
-A preview of a release carries that release's version with a `-preview.<n>` qualifier, so
-`26.7.3.1-preview.1` is the first preview of `26.7.3.1` and sorts below it in Maven's ordering.
-Previews are the same coordinates from a different place, not a different version scheme.
+A preview is that version with a `-preview.<n>` qualifier: `1.0.0-preview.1` sorts below
+`1.0.0` in Maven's ordering. Same coordinates, same scheme, published somewhere else.
 
 ## Connecting
 

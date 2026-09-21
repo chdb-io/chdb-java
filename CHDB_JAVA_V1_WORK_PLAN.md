@@ -201,36 +201,47 @@ META-INF/sbom/
 
 ### 4.3 Versioning rules
 
-The scheme is "full engine version plus binding revision":
+The Java binding carries its own SemVer version, independent of the engine it embeds:
 
 ```text
-<engine-version>.<binding-revision>
+MAJOR.MINOR.PATCH
 ```
 
-- `engine-version` keeps the chDB Core release version verbatim, `rc` qualifier included.
-- `binding-revision` is the trailing positive integer covering Java, JNI, loader and platform packaging revisions. It restarts at `1` for every new engine version.
-- This is an engine-aligned scheme. Do not read it as Java SemVer.
+The first release is `1.0.0`. What the number describes is the Java API — a `MAJOR` bump is a
+breaking change to it, `MINOR` adds, `PATCH` fixes — which is the question a consumer asks a
+version, and the only one it can answer.
+
+The engine version is not encoded in it. It is recorded where a machine can read it and a
+person can look it up: `engine.version` in each native package's `manifest.properties`, the
+pinned baseline plus SHA-256 in `scripts/engine.properties`, and the release notes. The
+driver still refuses to load an engine that is not the one it was built against, so the
+pairing is enforced by the ABI check rather than by the artifact's name.
+
+This replaces an engine-aligned scheme, `<engine-version>.<binding-revision>` — `26.7.3.1`
+for the first binding on engine 26.7.3. It read the wrong way round in both directions: the
+move from `26.7.2-rc.2.1` to `26.7.3.1` looked like a major change and was none of the
+binding's doing, while an actual break in the Java API could ship as a trailing `.2` that
+nothing about the number marked as breaking.
 
 Examples:
 
 | Case | Maven version | Meaning |
 |---|---|---|
-| First binding against stable engine 26.7.0 | `26.7.0.1` | engine=`26.7.0`, binding revision=`1` |
-| Java/JNI/loader fix only, same stable engine | `26.7.0.2` | engine unchanged, binding revision incremented |
-| First binding against engine 26.7.2-rc.2 | `26.7.2-rc.2.1` | engine=`26.7.2-rc.2`, binding revision=`1` |
-| Re-release on the same rc.2 after an addon change | `26.7.2-rc.2.2` | engine unchanged, binding revision incremented |
-| Engine moves to rc.3 | `26.7.2-rc.3.1` | new engine, binding revision back to `1` |
-| Engine reaches stable 26.7.2 | `26.7.2.1` | first binding release on that stable engine |
+| First release | `1.0.0` | the API this document specifies |
+| Fix in the driver, loader or JNI shim | `1.0.1` | no API change |
+| New engine baseline, no Java API change | `1.1.0` | engine recorded in the manifest, not here |
+| Breaking change to the Java API | `2.0.0` | the only thing a major bump means |
+| Preview of `1.0.0` | `1.0.0-preview.1` | sorts below `1.0.0`; see [docs/publishing.md](docs/publishing.md) section 8 |
+| Release candidate for `1.0.0` | `1.0.0-rc.1` | sorts below `1.0.0` and above nothing else |
 
 Release rules:
 
-- A release artifact in a Maven repository is immutable. Never overwrite `26.7.2-rc.2.1`. Any addon, JNI, Java, POM, loader, checksum or single-platform fix ships as `.2`.
+- A release artifact in a Maven repository is immutable. Never overwrite `1.0.0`. Any addon, JNI, Java, POM, loader, checksum or single-platform fix ships as `1.0.1`.
 - Within one binding release, `chdb-jdbc`, the four platform packages and `chdb-bom` carry exactly the same version. They ship together even when some platform content did not change, so the BOM and the platform packages never end up on mixed versions.
-- Moving the engine from one RC to another, or from an RC to a stable release, counts as a new engine version, and the binding revision restarts at `1`.
-- A Java artifact built on an engine RC is itself a preview and cannot be the engine dependency of V1 GA. V1 GA has to bind a stable chDB Core release.
-- Development builds may use `26.7.2-rc.2.2-SNAPSHOT`, but `SNAPSHOT` never enters a Maven Central release.
-- If the Java binding on a stable engine needs its own release candidates, use `26.7.0.1-rc.1`, `26.7.0.1-rc.2`, with `26.7.0.1` as the final GA. A candidate and the GA never reuse the same immutable artifact.
-- Any engine change produces a new Maven version and a full platform test run.
+- Any engine change still produces a new binding release and a full four-platform test run. It is a `MINOR` bump when it changes what the driver can do and a `PATCH` when it does not; what it is never is invisible, because `manifest.properties` and the release notes name the engine.
+- A Java artifact built on an engine RC is itself a preview: it ships as `-preview.<n>` and cannot be V1 GA. V1 GA has to bind a stable chDB Core release.
+- Development builds use `-SNAPSHOT`, which never enters a Maven Central release.
+- A pre-release qualifier is `-preview.<n>` or `-rc.<n>`, both of which Maven orders below the release they qualify. A candidate and the GA never reuse the same immutable artifact.
 
 To remove string-parsing ambiguity, every artifact manifest records these separately:
 
@@ -524,7 +535,7 @@ Exit condition: a Java user who knows nothing about the implementation can insta
 - [ ] Freeze the public Java API and the JNI ABI.
 - [ ] Write the release notes and the known limitations.
 - [ ] Publish an RC and hold a soak and external validation window of at least one week.
-- [ ] Once every V1 release gate passes, publish the first release aligned to a stable engine, for example `26.7.0.1`.
+- [ ] Once every V1 release gate passes, publish the first release, `1.0.0`, built on a stable engine.
 
 ## 6. Milestones
 
