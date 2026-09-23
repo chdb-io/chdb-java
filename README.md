@@ -9,17 +9,32 @@ streaming, forward-only result sets over ClickHouse SQL.
 > public API is not frozen. See
 > [What works today](#what-works-today).
 
+## Quick start
+
 ```java
-try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
+String logs = "{\"path\":\"/\",\"status\":200}{\"path\":\"/admin\",\"status\":403}{\"path\":\"/\",\"status\":200}";
+
+try (Connection connection = DriverManager.getConnection("jdbc:chdb:");
         PreparedStatement statement = connection.prepareStatement(
-                "SELECT count() FROM url(?, 'JSONEachRow') WHERE status = 200")) {
-    statement.setString(1, "https://example.com/logs.jsonl");
-    try (ResultSet rs = statement.executeQuery()) {
-        rs.next();
-        System.out.println(rs.getLong(1));
+                "SELECT path, count() FROM format(JSONEachRow, ?) WHERE status = 200 GROUP BY path")) {
+    statement.setString(1, logs);
+    try (ResultSet results = statement.executeQuery()) {
+        while (results.next()) {
+            System.out.println(results.getString(1) + " " + results.getLong(2));   // / 2
+        }
     }
 }
 ```
+
+One dependency ([Installing](#installing)) and that runs: JSON in, an aggregate out, with no
+schema declared, no load step and no server — and no `Class.forName`, because the driver
+registers itself and the first `getConnection` maps the engine into this JVM.
+
+Swap `format(JSONEachRow, ?)` for `file(?, 'JSONEachRow')` or `url(?, 'JSONEachRow')` and the
+rest of the query is unchanged. That is the whole of it.
+
+[`QuickStart.java`](chdb-examples/src/main/java/org/chdb/examples/QuickStart.java) carries on
+from here: the type matrix, `ResultSetMetaData`, and streaming a result larger than the heap.
 
 ## Support matrix
 
