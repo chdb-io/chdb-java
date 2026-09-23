@@ -136,7 +136,7 @@ rollback() {
   local status=$1
   local rollback_failed=false
 
-  trap - ERR INT TERM
+  trap - ERR HUP INT TERM
   set +e
 
   if (( uploaded_count > 0 )); then
@@ -159,6 +159,7 @@ rollback() {
 }
 
 trap 'rollback $?' ERR
+trap 'rollback 129' HUP
 trap 'rollback 130' INT
 trap 'rollback 143' TERM
 
@@ -179,6 +180,6 @@ for index in "${!FILES[@]}"; do
   uploaded_count=$((uploaded_count + 1))
 done
 
-trap - ERR INT TERM
+trap - ERR HUP INT TERM
 
 printf 'Published %d files. Verify the RC from https://maven.chdb.io with a fresh Maven cache.\n' "$file_count"
