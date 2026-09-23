@@ -1,8 +1,7 @@
 name: Maven RC release
 
-# RCs are published to GitHub Packages while Maven Central Publisher Pro is being arranged.
-# The permanent Maven coordinates are used from the first RC, so the later Central migration
-# changes only the repository URL, not users' dependencies.
+# RCs are staged as a standard Maven repository for upload to the public Vercel Blob store
+# behind maven.chdb.io. Stable releases will move to Maven Central without changing coordinates.
 on:
   push:
     tags:
@@ -88,12 +87,18 @@ jobs:
           # shellcheck disable=SC2086
           mvn $MAVEN_ARGS -pl chdb-jdbc,chdb-native-${{ matrix.platform }} package -DskipTests
           mkdir -p "maven/${{ matrix.platform }}"
-          cp "chdb-jdbc/target/chdb-jdbc-${RC_VERSION}.jar" "maven/${{ matrix.platform }}/"
           cp "chdb-native-${{ matrix.platform }}/target/chdb-native-${{ matrix.platform }}-${RC_VERSION}.jar" "maven/${{ matrix.platform }}/"
-          cp pom.xml "maven/${{ matrix.platform }}/chdb-java-parent.pom"
-          cp chdb-jdbc/pom.xml "maven/${{ matrix.platform }}/chdb-jdbc.pom"
           cp "chdb-native-${{ matrix.platform }}/pom.xml" "maven/${{ matrix.platform }}/chdb-native-${{ matrix.platform }}.pom"
-          cp chdb-bom/pom.xml "maven/${{ matrix.platform }}/chdb-bom.pom"
+
+          # Build the pure-Java artifacts once. JAR ZIP timestamps differ across matrix jobs,
+          # so accepting four interchangeable copies would make the published bytes depend on
+          # artifact download order.
+          if [ '${{ matrix.platform }}' = linux-x86_64-gnu ]; then
+            cp "chdb-jdbc/target/chdb-jdbc-${RC_VERSION}.jar" "maven/${{ matrix.platform }}/"
+            cp pom.xml "maven/${{ matrix.platform }}/chdb-java-parent.pom"
+            cp chdb-jdbc/pom.xml "maven/${{ matrix.platform }}/chdb-jdbc.pom"
+            cp chdb-bom/pom.xml "maven/${{ matrix.platform }}/chdb-bom.pom"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -102,13 +107,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  publish:
-    name: publish RC to GitHub Packages
+  stage:
+    name: stage public Maven repository
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,9 +120,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '11'
-          server-id: github
-          server-username: GITHUB_ACTOR
-          server-password: GITHUB_TOKEN
 
       - name: Resolve RC version
         run: |
@@ -136,37 +135,70 @@ jobs:
           pattern: maven-*
           path: maven
 
-      - name: Publish Maven artifacts
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_ACTOR: ${{ github.actor }}
+      - name: Build the Maven repository directory
         run: |
           set -eu
-          REPOSITORY_URL="https://maven.pkg.github.com/${GITHUB_REPOSITORY_OWNER,,}/chdb-java"
+          REPOSITORY_URL="file://${GITHUB_WORKSPACE}/repository"
           PARENT_POM=$(find maven -name chdb-java-parent.pom -print -quit)
           JDBC_POM=$(find maven -name chdb-jdbc.pom -print -quit)
           BOM_POM=$(find maven -name chdb-bom.pom -print -quit)
 
+          # shellcheck disable=SC2086
           mvn $MAVEN_ARGS org.apache.maven.plugins:maven-deploy-plugin:3.1.3:deploy-file \
             -Dfile="$PARENT_POM" -DgroupId=com.clickhouse.chdb -DartifactId=chdb-java-parent \
             -Dversion="$RC_VERSION" -Dpackaging=pom -DgeneratePom=false \
-            -DrepositoryId=github -Durl="$REPOSITORY_URL"
+            -DrepositoryId=chdb-rc -Durl="$REPOSITORY_URL"
 
+          # shellcheck disable=SC2086
           mvn $MAVEN_ARGS org.apache.maven.plugins:maven-deploy-plugin:3.1.3:deploy-file \
             -Dfile="$(find maven -name "chdb-jdbc-${RC_VERSION}.jar" -print -quit)" \
             -DpomFile="$JDBC_POM" -DgeneratePom=false \
-            -DrepositoryId=github -Durl="$REPOSITORY_URL"
+            -DrepositoryId=chdb-rc -Durl="$REPOSITORY_URL"
 
           for platform in macos-aarch64 macos-x86_64 linux-x86_64-gnu linux-aarch64-gnu; do
             NATIVE_POM=$(find maven -name "chdb-native-${platform}.pom" -print -quit)
             NATIVE_JAR=$(find maven -name "chdb-native-${platform}-${RC_VERSION}.jar" -print -quit)
+            # shellcheck disable=SC2086
             mvn $MAVEN_ARGS org.apache.maven.plugins:maven-deploy-plugin:3.1.3:deploy-file \
               -Dfile="$NATIVE_JAR" -DpomFile="$NATIVE_POM" -DgeneratePom=false \
-              -DrepositoryId=github -Durl="$REPOSITORY_URL"
+              -DrepositoryId=chdb-rc -Durl="$REPOSITORY_URL"
           done
 
+          # shellcheck disable=SC2086
           mvn $MAVEN_ARGS org.apache.maven.plugins:maven-deploy-plugin:3.1.3:deploy-file \
             -Dfile="$BOM_POM" -DpomFile="$BOM_POM" -Dpackaging=pom \
             -DgroupId=com.clickhouse.chdb -DartifactId=chdb-bom -Dversion="$RC_VERSION" \
             -DgeneratePom=false \
-            -DrepositoryId=github -Durl="$REPOSITORY_URL"
+            -DrepositoryId=chdb-rc -Durl="$REPOSITORY_URL"
+
+          # Version discovery is intentionally not supported by this temporary RC repository.
+          # Mutable artifact-level metadata would collide with the next immutable RC upload.
+          find repository -type f -name 'maven-metadata*' -delete
+
+          find repository -type f \( -name '*.jar' -o -name '*.pom' \) -print0 |
+            while IFS= read -r -d '' file; do
+              md5sum "$file" | awk '{print $1}' > "$file.md5"
+              sha1sum "$file" | awk '{print $1}' > "$file.sha1"
+              sha256sum "$file" | awk '{print $1}' > "$file.sha256"
+              sha512sum "$file" | awk '{print $1}' > "$file.sha512"
+            done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maven-repository
+          path: repository
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Record the publication handoff
+        run: |
+          {
+            echo '### RC repository staged'
+            echo
+            # shellcheck disable=SC2016
+            echo 'Download the `maven-repository` artifact and publish it with:'
+            echo
+            echo '```console'
+            echo 'scripts/publish-rc-repository.sh /path/to/maven-repository'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

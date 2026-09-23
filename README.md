@@ -5,8 +5,8 @@ ClickHouse. It runs the engine in your JVM's process — no server, no network �
 streaming, forward-only result sets over ClickHouse SQL.
 
 > **Status: release candidate.** The first Maven release candidate is `v1.0.0-rc.1`, built with
-> chDB Core `26.7.3`. RC artifacts are published to GitHub Packages until Maven Central is ready;
-> the public API is not frozen. See
+> chDB Core `26.7.3`. RC artifacts are available from the public chDB Maven repository; the
+> public API is not frozen. See
 > [What works today](#what-works-today).
 
 ```java
@@ -42,13 +42,7 @@ and is loaded from a real packaged JAR, in CI:
   floor rather than infer it from symbol versions.
 - **Engine:** chDB Core **26.7.3**, pinned. The C ABI is version-locked, so the driver
   refuses to run against a different engine build rather than risking a struct-layout mismatch.
-  That release is a stable chdb-core release, which is what [work plan
-  §4.3](CHDB_JAVA_V1_WORK_PLAN.md) requires of a V1 GA engine: the previous baseline,
-  `26.7.2-rc.2`, was a pre-release and made every binding built on it a preview.
-- **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android. See
-  [work plan §2.3](CHDB_JAVA_V1_WORK_PLAN.md).
-
-[docs/v1-progress.md](docs/v1-progress.md) has the phase-by-phase status and what is left.
+- **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android.
 
 ## Installing
 
@@ -63,26 +57,12 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 </dependency>
 ```
 
-GitHub Packages requires a GitHub classic PAT with `read:packages` in `~/.m2/settings.xml`:
-
-```xml
-<settings>
-  <servers>
-    <server>
-      <id>github</id>
-      <username>YOUR_GITHUB_USERNAME</username>
-      <password>YOUR_GITHUB_PAT</password>
-    </server>
-  </servers>
-</settings>
-```
-
-Add the repository to the consuming project:
+Add the public RC repository to the consuming project. It does not require a username or token:
 
 ```xml
 <repository>
-  <id>github</id>
-  <url>https://maven.pkg.github.com/chdb-io/chdb-java</url>
+  <id>chdb-rc</id>
+  <url>https://maven.chdb.io</url>
 </repository>
 ```
 
@@ -95,7 +75,7 @@ architecture — declare the driver plus each native package you need:
     <dependency>
       <groupId>com.clickhouse.chdb</groupId>
       <artifactId>chdb-bom</artifactId>
-      <version>1.0.0</version>
+      <version>1.0.0-rc.1</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
@@ -130,11 +110,10 @@ SemVer, on the binding alone: `1.0.0` is the first release and a major bump mean
 change to the Java API. The engine version is not part of it — it is in each package's
 `manifest.properties`, pinned in [`scripts/engine.properties`](scripts/engine.properties) and
 named in the release notes (`26.7.3` today), and the driver refuses to load any other build.
-See [work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md).
 
 The first test version is the RC `1.0.0-rc.1`; later candidates increment the final number, and
 the first stable Maven release is `1.0.0`. RCs use the permanent `com.clickhouse.chdb` groupId,
-so moving stable releases to Maven Central will not change dependency coordinates.
+so publishing stable releases to Maven Central will not change dependency coordinates.
 
 ## Connecting
 
@@ -192,7 +171,7 @@ Use a second `Connection` — they can share the storage path — or close the f
 The engine runs in your process. There is no crash isolation: if it segfaults, your JVM dies
 with it, and no Java `catch` can intervene. That is the price of an in-process binding, and it
 is the reason not to embed chDB in a service where that is unacceptable. Subprocess isolation
-is a post-V1 idea, not something V1 offers.
+is not supported.
 
 The related trade is that the driver switches off chDB's own crash handlers, because they
 overwrite the ones HotSpot needs to function. You keep a working JVM and lose ClickHouse-format
@@ -227,9 +206,8 @@ engine. In Tomcat, Spark or Flink this decides where the driver goes. See
 | ✅ | Bounded memory on results far larger than the heap |
 | ✅ | Host JVM signal handlers preserved — see [signal handlers](docs/signal-handlers.md) |
 | ✅ | Native loading from the platform JAR, or a directory you point at |
-| 🚧 | Framework smoke tests — HikariCP, MyBatis and jOOQ pass, and nothing on the full `DatabaseMetaData` surface throws; Spring `JdbcTemplate` is next, and ShardingSphere cannot parse a `jdbc:chdb:` URL at all — see [under a framework](docs/unsupported.md#under-a-framework) |
+| 🚧 | Framework smoke tests — HikariCP, MyBatis and jOOQ pass, and nothing on the full `DatabaseMetaData` surface throws; Spring `JdbcTemplate` is not yet verified, and ShardingSphere cannot parse a `jdbc:chdb:` URL at all — see [under a framework](docs/unsupported.md#under-a-framework) |
 | 🚧 | Soak tests; full-process ASan, which needs an upstream sanitizer build of chdb-core |
-| 🚧 | Maven Central publishing — nothing is released yet |
 | ❌ | Transactions, batch updates, scrollable/updatable result sets, `CallableStatement` |
 | ❌ | Stored procedures, generated keys, `Blob`/`Clob`/`Array`/`SQLXML` |
 | ❌ | `Array`, `Map`, `Tuple`, `Nested`, `Variant`, `JSON`, `Dynamic` columns |
@@ -265,7 +243,7 @@ detection.
 | Storage path | many connections on one path; a second path refused with a usable diagnosis; rebinding after the last close; a failed connect leaving nothing pinned |
 | Loader | five failure paths: no platform package, a bad override, a missing shim, a corrupted cache and a tampered checksum |
 | Packaging | each platform JAR is built, then the engine is loaded back out of it and a query run, on every platform |
-| Version floors | the full suite again on AlmaLinux 8 — glibc 2.28, RHEL 8's base — against the artefacts the release job would publish; and the build fails if a platform's measured floor rises above its ceiling |
+| Version floors | the full suite again on AlmaLinux 8 — glibc 2.28, RHEL 8's base — against the packaged artifacts; and the build fails if a platform's measured floor rises above its ceiling |
 
 **Sanitizers**, on both a Linux and a macOS toolchain: UBSan over the whole integration suite in
 a real JVM against the real engine, and ASan plus UBSan over a 107-check harness for the shim's
@@ -287,7 +265,6 @@ but not exercised on an old macOS, because no such runner exists.
 | [Memory](docs/memory.md) | Why `-Xmx` does not bound chDB, and what does |
 | [ClassLoaders](docs/classloaders.md) | Tomcat, Spark, Flink: where to put the driver |
 | [Upstream findings](docs/upstream-findings.md) | Engine behaviours this binding works around, with reproductions |
-| [V1 progress](docs/v1-progress.md) | Phase-by-phase status against the work plan, and what to do next |
 
 ## Building from source
 
@@ -339,7 +316,6 @@ scripts/engine.properties       the pinned engine version and its checksums
 scripts/fetch-libchdb.sh        downloads and verifies the pinned engine
 scripts/build-native.sh         builds the shim and stages a platform package
 scripts/verify-consumer.sh      resolves the driver from a repository, outside this checkout
-scripts/check-release-tag.sh    refuses a release whose tag does not name the commit
 ```
 
 ## Reporting a problem
