@@ -34,4 +34,7 @@ scripts/publish-rc-repository.sh /tmp/chdb-maven-repository
 
 The environment file is ignored by Git. It supplies a short-lived Vercel OIDC credential; no
 personal or long-lived Blob token is stored in GitHub. RC paths are immutable, and the upload
-script refuses to overwrite an existing file.
+script refuses to overwrite an existing file. Before writing anything, it checks every destination
+path. If an upload fails or is interrupted, it removes the blobs written by that run so the complete
+RC can be retried safely. If rollback itself fails, remove the paths reported by the script before
+retrying; the next preflight will refuse to overwrite them.
