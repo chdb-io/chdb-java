@@ -40,8 +40,12 @@ and is loaded from a real packaged JAR, in CI:
   engine does. Each package records the figure it was built against in its
   `manifest.properties`, and CI runs the whole test suite on AlmaLinux 8 to demonstrate the
   floor rather than infer it from symbol versions.
-- **Engine:** chDB Core **26.7.3**, pinned. The C ABI is version-locked, so the driver
+- **Engine:** chDB Core **26.11.0-rc.1**, pinned. The C ABI is version-locked, so the driver
   refuses to run against a different engine build rather than risking a struct-layout mismatch.
+  That release is a chdb-core *pre-release*, pinned to validate the ClickHouse 26.11 baseline;
+  a binding on an engine RC is itself an RC and is not the V1 GA
+  ([work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md)), so the stable chdb-core release has to be
+  pinned before `1.0.0`.
 - **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android.
 
 ## Installing
@@ -109,7 +113,7 @@ unpacked. There is no all-platforms package, on purpose: it would be the sum of 
 SemVer, on the binding alone: `1.0.0` is the first release and a major bump means a breaking
 change to the Java API. The engine version is not part of it — it is in each package's
 `manifest.properties`, pinned in [`scripts/engine.properties`](scripts/engine.properties) and
-named in the release notes (`26.7.3` today), and the driver refuses to load any other build.
+named in the release notes (`26.11.0-rc.1` today), and the driver refuses to load any other build.
 
 The first test version is the RC `1.0.0-rc.1`; later candidates increment the final number, and
 the first stable Maven release is `1.0.0`. RCs use the permanent `com.clickhouse.chdb` groupId,

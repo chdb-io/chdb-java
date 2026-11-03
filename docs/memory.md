@@ -33,10 +33,11 @@ docker run --memory=4g \
 jdbc:chdb:/data?max_memory_usage=2000000000
 ```
 
-That URL form works on the pinned v26.7.3 baseline. First measured on v26.7.2-rc.2 with
+That URL form works on the pinned v26.11.0-rc.1 baseline. First measured on v26.7.2-rc.2 with
 `?max_threads=7&max_result_rows=13&max_block_size=4096`: `system.settings` reports 7, 13 and
 4096 with `changed = 1`, and the cap is enforced rather than merely reported — a 100-row
-`SELECT` under `max_result_rows=13` fails with ClickHouse error 396.
+`SELECT` under `max_result_rows=13` fails with ClickHouse error 396. Re-measured the same way,
+with `max_memory_usage=2000000000` added, on v26.11.0-rc.1 (Linux x86_64).
 
 **On v26.7.0 and v26.7.1-rc.1 it was silently inert**, if you are pointing the loader at one of
 those: settings in the connect argument vector never reached a session, so the same URL left
@@ -198,7 +199,7 @@ int result = org.chdb.internal.ChdbNative.shutdown();
 ```
 
 Not needed for a process that simply exits: the threads are reaped by exit, as they always
-were. The pinned 26.7.3 engine exports it, so 2 is what an older engine returns; see
+were. The pinned 26.11.0-rc.1 engine exports it, so 2 is what an older engine returns; see
 [upstream findings §6](upstream-findings.md). The driver's shutdown hook already calls it
 after closing the connections it knows about, so a host that leaves the hook installed does
 not need to.

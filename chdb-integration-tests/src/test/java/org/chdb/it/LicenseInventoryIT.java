@@ -139,6 +139,10 @@ class LicenseInventoryIT extends NativeTestBase {
      * <p>These are the whole of what a redistribution review has to reach a position on. LGPL
      * carries obligations under static linking that it does not under dynamic; MPL-2.0 is
      * weaker, file-level copyleft, but it is still copyleft and still has no alternative half.
+     *
+     * <p>numactl (LGPL) was in this set through engine v26.7.3 and left it with v26.11.0-rc.1,
+     * whose chdb-core tree no longer has {@code contrib/numactl} at all, so it is a component
+     * gone from the engine rather than one relicensed.
      */
     private static Map<String, Set<String>> knownCopyleftOnly() {
         Map<String, Set<String>> known = new TreeMap<>();
@@ -147,7 +151,7 @@ class LicenseInventoryIT extends NativeTestBase {
                 new TreeSet<>(
                         java.util.Arrays.asList(
                                 "lemmagen-c", "libgsasl", "libssh", "mariadb-connector-c",
-                                "numactl", "xz")));
+                                "xz")));
         known.put(
                 "MPL-2.0",
                 new TreeSet<>(
