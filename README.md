@@ -105,8 +105,9 @@ architecture — declare the driver plus each native package you need:
 The BOM keeps the driver and every native package on one version, which they must be.
 
 **A native package is large**, because it contains the whole engine: 112 MB for macOS arm64,
-128 MB for macOS x86_64, 130 MB for Linux aarch64, 167 MB for Linux x86_64, and around 350 MB
-unpacked. There is no all-platforms package, on purpose: it would be the sum of those four.
+144 MB for macOS x86_64, 158 MB for Linux aarch64 and 177 MB for Linux x86_64 on engine
+26.11.0-rc.1, and 365 to 570 MB unpacked. There is no all-platforms package, on purpose: it
+would be the sum of those four.
 
 ### Versioning
 
