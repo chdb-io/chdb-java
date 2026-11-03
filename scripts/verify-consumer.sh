@@ -323,11 +323,23 @@ done
 # mirror lands there too. So the configuration is not trusted to be right; the result is read
 # back.
 #
-# Maven writes _remote.repositories beside each downloaded file, recording the id of the
-# repository that served it. Anything other than chdb-verify means this run did not test what
-# it claims to: most likely the `central` block above stopped being disabled, or a
-# <mirrorOf>*</mirrorOf> in the caller's settings.xml intercepted the file repository. Both are
-# reasons to stop rather than to report a pass.
+# Maven writes _remote.repositories beside each downloaded file, recording the repository that
+# served it. Anything other than chdb-verify means this run did not test what it claims to:
+# most likely the `central` block above stopped being disabled, or a <mirrorOf>*</mirrorOf> in
+# the caller's settings.xml intercepted the file repository. Both are reasons to stop rather
+# than to report a pass.
+#
+# How the repository is recorded depends on the Maven version. Up to 3.9 it is the bare id,
+# `chdb-verify`. Maven 3.10 (resolver 2.0) records `<id>-<SHA-1 of the repository URL>`
+# instead -- measured, with 3.10.0 on the macOS runners: `chdb-verify-` followed by exactly
+# `printf '%s' "file://${REPO}" | sha1sum`. Both forms are accepted, and the second only with
+# the hash of this run's own repository URL, so it is no looser than the first: a mirror has
+# neither the id nor the URL.
+sha1_of_string() {
+  if command -v sha1sum >/dev/null 2>&1; then printf '%s' "$1" | sha1sum | cut -d' ' -f1
+  else printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1; fi
+}
+REPO_KEY_HURL="chdb-verify-$(sha1_of_string "file://${REPO}")"
 PROVENANCE_LINES=0
 while IFS= read -r record; do
   while IFS= read -r line; do
@@ -337,12 +349,14 @@ while IFS= read -r record; do
     PROVENANCE_LINES=$((PROVENANCE_LINES + 1))
     case "$line" in
       *">chdb-verify="*) ;;
+      *">${REPO_KEY_HURL}="*) ;;
       *)
         die "a com.clickhouse.chdb artifact was served by a repository other than the throwaway one:
   ${record}
   ${line}
-Only 'chdb-verify' proves the artifact under test is the one this run deployed. If a mirror in
-your settings.xml claims '*', run this with -s pointing at a settings file that does not."
+Only 'chdb-verify' (or, on Maven 3.10+, '${REPO_KEY_HURL}') proves the artifact under test is the
+one this run deployed. If a mirror in your settings.xml claims '*', run this with -s pointing at
+a settings file that does not."
         ;;
     esac
   done < "$record"
