@@ -33,11 +33,12 @@ docker run --memory=4g \
 jdbc:chdb:/data?max_memory_usage=2000000000
 ```
 
-That URL form works on the pinned v26.11.0-rc.1 baseline. First measured on v26.7.2-rc.2 with
+That URL form works on the pinned v26.11.0-rc.2 baseline. First measured on v26.7.2-rc.2 with
 `?max_threads=7&max_result_rows=13&max_block_size=4096`: `system.settings` reports 7, 13 and
 4096 with `changed = 1`, and the cap is enforced rather than merely reported — a 100-row
 `SELECT` under `max_result_rows=13` fails with ClickHouse error 396. Re-measured the same way,
-with `max_memory_usage=2000000000` added, on v26.11.0-rc.1 (Linux x86_64).
+with `max_memory_usage=2000000000` added, on v26.11.0-rc.1 and again on v26.11.0-rc.2 (Linux
+x86_64).
 
 **On v26.7.0 and v26.7.1-rc.1 it was silently inert**, if you are pointing the loader at one of
 those: settings in the connect argument vector never reached a session, so the same URL left

@@ -1,6 +1,6 @@
 // chDB C API entry points the shim resolves at runtime rather than linking.
 //
-// The baseline is chdb-core v26.11.0-rc.1 (work plan section 2.1). Both of these arrived in
+// The baseline is chdb-core v26.11.0-rc.2 (work plan section 2.1). Both of these arrived in
 // v26.7.2-rc.2 -- neither is in v26.7.0 or v26.7.1-rc.1, whose export lists and headers have
 // neither name -- and both are exported by the current baseline, checked in its release
 // library rather than in an export list:
@@ -44,7 +44,7 @@ struct QueryAnalysisV1
     uint32_t query_class;
 };
 
-// chdb_query_class values, as of v26.11.0-rc.1. Kept in sync with ChdbNative.classifyQuery's
+// chdb_query_class values, as of v26.11.0-rc.2. Kept in sync with ChdbNative.classifyQuery's
 // documented return contract.
 enum QueryClass : uint32_t
 {

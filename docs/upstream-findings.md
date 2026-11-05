@@ -5,7 +5,7 @@ arm64 while implementing work-plan phases 0–8 against what was then the pinned
 **v26.7.0**. They are recorded here because every one of them is a decision the driver's code
 depends on, and because several belong upstream rather than in a Java driver.
 
-The baseline has since moved three times. First to **v26.7.2-rc.2** (issue #8, for
+The baseline has since moved four times. First to **v26.7.2-rc.2** (issue #8, for
 `chdb_shutdown()`), and four of these entries changed with it rather than being carried over:
 
 - **§2 was wrong about who was at fault** and is rewritten. The released header was always
@@ -36,6 +36,10 @@ gained a row:
 - **§2's table gained a fourth column**: the in-tree constant at the tag says `26.11.0-dev`.
 - **§9 gained a note** on `chdb_shutdown()` after `MergeTree` use, which this engine now
   reports on stderr where v26.7.3 refused silently.
+
+Then to **v26.11.0-rc.2**, the same baseline plus chdb-core #312:
+
+- **§2's table gained a fifth column**, and the in-tree constant still says `26.11.0-dev`.
 
 The rest still hold on the new engine, and the tests named against each are what demonstrates
 that — they run in `mvn verify` against whichever engine is pinned.
@@ -209,13 +213,13 @@ inverted.
 
 `chdb.h` exists in two places and they do not agree:
 
-| | v26.7.0 | v26.7.2-rc.2 | v26.7.3 | v26.11.0-rc.1 |
-|---|---|---|---|---|
-| `programs/local/chdb.h` at the git tag | `26.5.1-rc.3` | `26.7.2` | `26.7.2` | `26.11.0-dev` |
-| `chdb.h` inside the release tarball | `26.7.0` | `26.7.2-rc.2` | `26.7.3` | `26.11.0-rc.1` |
-| `chdb_version()` from that tarball's library | `26.7.0` | `26.7.2-rc.2` | `26.7.3` | `26.11.0-rc.1` |
+| | v26.7.0 | v26.7.2-rc.2 | v26.7.3 | v26.11.0-rc.1 | v26.11.0-rc.2 |
+|---|---|---|---|---|---|
+| `programs/local/chdb.h` at the git tag | `26.5.1-rc.3` | `26.7.2` | `26.7.2` | `26.11.0-dev` | `26.11.0-dev` |
+| `chdb.h` inside the release tarball | `26.7.0` | `26.7.2-rc.2` | `26.7.3` | `26.11.0-rc.1` | `26.11.0-rc.2` |
+| `chdb_version()` from that tarball's library | `26.7.0` | `26.7.2-rc.2` | `26.7.3` | `26.11.0-rc.1` | `26.11.0-rc.2` |
 
-Four releases, four disagreements, and the v26.7.3 column is the cleanest demonstration yet:
+Five releases, five disagreements, and the v26.7.3 column is the cleanest demonstration yet:
 the in-tree constant did not move at all between v26.7.2-rc.2 and v26.7.3, so a header vendored
 from the git tag would have declared `26.7.2` for an engine whose `chdb_version()` returns
 `26.7.3` — a mismatch the loader refuses. Vendoring from the tarball is therefore not a
@@ -227,7 +231,7 @@ tag v26.7.0, stale constant included, rather than to the header inside the relea
 
 **Consequence for this binding:** `chdb-jni/include/chdb.h` is now taken from the release
 tarball, which is the artifact this binding is built beside and ships against, and
-`shim.built.against.engine.header` reads `26.11.0-rc.1` accordingly. The rule is recorded in
+`shim.built.against.engine.header` reads `26.11.0-rc.2` accordingly. The rule is recorded in
 `chdb-jni/CMakeLists.txt` where the vendored header is included: copy it from the tarball, not
 from the source tree, and do not edit it — its value is being byte-identical to what upstream
 shipped, which is what makes the next comparison able to detect drift. This finding was made
@@ -359,8 +363,9 @@ recognize. Validating values without validating names catches the rarer mistake.
 
 **Severity: expected; still handled as optional symbols.**
 
-Neither is in v26.7.0 or v26.7.1-rc.1. Both are in v26.7.2-rc.2, in v26.7.3, and in
-v26.11.0-rc.1, which is now the baseline — exported by all four of its platform libraries.
+Neither is in v26.7.0 or v26.7.1-rc.1. Both are in v26.7.2-rc.2, in v26.7.3, in v26.11.0-rc.1
+and in v26.11.0-rc.2, which is now the baseline — exported by all four of its platform
+libraries.
 Checked in the release library rather than in the source's export list, because the two are not
 the same claim:
 
