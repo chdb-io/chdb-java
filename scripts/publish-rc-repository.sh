@@ -75,14 +75,14 @@ set +a
 : "${BLOB_STORE_ID:?BLOB_STORE_ID is missing from $ENV_FILE}"
 : "${VERCEL_OIDC_TOKEN:?VERCEL_OIDC_TOKEN is missing from $ENV_FILE}"
 
-if command -v vercel >/dev/null 2>&1; then
-  VERCEL=(vercel)
-else
-  VERCEL=(npx --yes vercel@latest)
-fi
+# The blob flags below are those of this Vercel CLI release, so it is pinned rather than
+# taken from PATH or @latest. Vercel CLI 65 treats --add-random-suffix and --force as
+# switches: a value after one, as in "--add-random-suffix false", switches it on, and the
+# 1.0.0-rc.2 upload got a random suffix on every path that way.
+VERCEL=(npx --yes vercel@65.11.0)
 
 BLOB_AUTH_ARGS=(
-  --store-id "$BLOB_STORE_ID"
+  --store "$BLOB_STORE_ID"
   --oidc-token "$VERCEL_OIDC_TOKEN"
 )
 
@@ -90,12 +90,13 @@ blob_exists() {
   local target=$1
   local output
 
+  # The CLI prints the listing on stderr.
   if ! output=$("${VERCEL[@]}" blob list \
     --prefix "$target" \
     --limit 1000 \
     --mode expanded \
     --no-color \
-    "${BLOB_AUTH_ARGS[@]}"); then
+    "${BLOB_AUTH_ARGS[@]}" 2>&1); then
     printf 'Failed to check whether %s already exists\n' "$target" >&2
     return 2
   fi
@@ -143,9 +144,9 @@ rollback() {
     printf 'Upload did not complete; removing %d blob(s) written by this run\n' \
       "$uploaded_count" >&2
 
-    for relative in "${UPLOADED_PATHS[@]}"; do
-      if ! "${VERCEL[@]}" blob del "$relative" "${BLOB_AUTH_ARGS[@]}"; then
-        printf 'Rollback failed for %s; remove it before retrying\n' "$relative" >&2
+    for uploaded in "${UPLOADED_PATHS[@]}"; do
+      if ! "${VERCEL[@]}" blob del "$uploaded" --yes "${BLOB_AUTH_ARGS[@]}"; then
+        printf 'Rollback failed for %s; remove it before retrying\n' "$uploaded" >&2
         rollback_failed=true
       fi
     done
@@ -168,16 +169,29 @@ printf 'Uploading %d immutable files to store %s\n' "$file_count" "$BLOB_STORE_I
 for index in "${!FILES[@]}"; do
   file=${FILES[$index]}
   relative=${RELATIVE_PATHS[$index]}
-  "${VERCEL[@]}" blob put "$file" \
+  # No --add-random-suffix and no --force: the blob keeps exactly this pathname, and an
+  # existing one is refused rather than replaced.
+  output=$("${VERCEL[@]}" blob put "$file" \
     --pathname "$relative" \
     --access public \
-    --add-random-suffix false \
-    --allow-overwrite false \
     --cache-control-max-age 31536000 \
-    --multipart true \
-    "${BLOB_AUTH_ARGS[@]}"
-  UPLOADED_PATHS+=("$relative")
+    --multipart \
+    "${BLOB_AUTH_ARGS[@]}" 2>&1)
+  printf '%s\n' "$output"
+  url=$(grep -oE 'https://[^[:space:]]+' <<<"$output" | tail -n 1 || true)
+  [[ -n "$url" ]] || {
+    printf 'The upload of %s reported no URL\n' "$relative" >&2
+    false
+  }
+  # Recorded before the check below, so that rollback removes a blob stored under the
+  # wrong name too.
+  UPLOADED_PATHS+=("$url")
   uploaded_count=$((uploaded_count + 1))
+  # Maven asks for the exact path; a blob stored under any other name is not published.
+  [[ "$url" == */"$relative" ]] || {
+    printf 'Uploaded %s as %s, which is not its Maven path\n' "$relative" "$url" >&2
+    false
+  }
 done
 
 trap - ERR HUP INT TERM
