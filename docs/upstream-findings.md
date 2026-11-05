@@ -5,7 +5,7 @@ arm64 while implementing work-plan phases 0–8 against what was then the pinned
 **v26.7.0**. They are recorded here because every one of them is a decision the driver's code
 depends on, and because several belong upstream rather than in a Java driver.
 
-The baseline has since moved twice. First to **v26.7.2-rc.2** (issue #8, for
+The baseline has since moved four times. First to **v26.7.2-rc.2** (issue #8, for
 `chdb_shutdown()`), and four of these entries changed with it rather than being carried over:
 
 - **§2 was wrong about who was at fault** and is rewritten. The released header was always
@@ -28,6 +28,20 @@ stable too — which closed the oldest entry here:
   chdb-core #221 and tracked here as issue #14. The shim's guard now reports nothing to
   repair, and `measure` reports zero. §2's table also gained a third column, because the
   release re-demonstrated the vendoring rule it records.
+
+Then to **v26.11.0-rc.1**, a chdb-core pre-release on the ClickHouse 26.11 baseline, pinned to
+validate it ahead of the stable v26.11.1. Nothing here changed status with it, but two entries
+gained a row:
+
+- **§2's table gained a fourth column**: the in-tree constant at the tag says `26.11.0-dev`.
+- **§9 gained a note** on `chdb_shutdown()` after `MergeTree` use, which this engine now
+  reports on stderr where v26.7.3 refused silently.
+
+Then to **v26.11.0-rc.2**, the same baseline plus chdb-core #312:
+
+- **§2's table gained a fifth column**, and the in-tree constant still says `26.11.0-dev`.
+- **§9's `MergeTree` note is fixed upstream**: `chdb_shutdown()` returns 0 after `MergeTree`
+  use once every connection is closed, and it now stops jemalloc's background threads too.
 
 The rest still hold on the new engine, and the tests named against each are what demonstrates
 that — they run in `mvn verify` against whichever engine is pinned.
@@ -201,13 +215,13 @@ inverted.
 
 `chdb.h` exists in two places and they do not agree:
 
-| | v26.7.0 | v26.7.2-rc.2 | v26.7.3 |
-|---|---|---|---|
-| `programs/local/chdb.h` at the git tag | `26.5.1-rc.3` | `26.7.2` | `26.7.2` |
-| `chdb.h` inside the release tarball | `26.7.0` | `26.7.2-rc.2` | `26.7.3` |
-| `chdb_version()` from that tarball's library | `26.7.0` | `26.7.2-rc.2` | `26.7.3` |
+| | v26.7.0 | v26.7.2-rc.2 | v26.7.3 | v26.11.0-rc.1 | v26.11.0-rc.2 |
+|---|---|---|---|---|---|
+| `programs/local/chdb.h` at the git tag | `26.5.1-rc.3` | `26.7.2` | `26.7.2` | `26.11.0-dev` | `26.11.0-dev` |
+| `chdb.h` inside the release tarball | `26.7.0` | `26.7.2-rc.2` | `26.7.3` | `26.11.0-rc.1` | `26.11.0-rc.2` |
+| `chdb_version()` from that tarball's library | `26.7.0` | `26.7.2-rc.2` | `26.7.3` | `26.11.0-rc.1` | `26.11.0-rc.2` |
 
-Three releases, three disagreements, and the v26.7.3 column is the cleanest demonstration yet:
+Five releases, five disagreements, and the v26.7.3 column is the cleanest demonstration yet:
 the in-tree constant did not move at all between v26.7.2-rc.2 and v26.7.3, so a header vendored
 from the git tag would have declared `26.7.2` for an engine whose `chdb_version()` returns
 `26.7.3` — a mismatch the loader refuses. Vendoring from the tarball is therefore not a
@@ -219,7 +233,7 @@ tag v26.7.0, stale constant included, rather than to the header inside the relea
 
 **Consequence for this binding:** `chdb-jni/include/chdb.h` is now taken from the release
 tarball, which is the artifact this binding is built beside and ships against, and
-`shim.built.against.engine.header` reads `26.7.3` accordingly. The rule is recorded in
+`shim.built.against.engine.header` reads `26.11.0-rc.2` accordingly. The rule is recorded in
 `chdb-jni/CMakeLists.txt` where the vendored header is included: copy it from the tarball, not
 from the source tree, and do not edit it — its value is being byte-identical to what upstream
 shipped, which is what makes the next comparison able to detect drift. This finding was made
@@ -351,8 +365,9 @@ recognize. Validating values without validating names catches the rarer mistake.
 
 **Severity: expected; still handled as optional symbols.**
 
-Neither is in v26.7.0 or v26.7.1-rc.1. Both are in v26.7.2-rc.2, and in v26.7.3, which is now
-the baseline.
+Neither is in v26.7.0 or v26.7.1-rc.1. Both are in v26.7.2-rc.2, in v26.7.3, in v26.11.0-rc.1
+and in v26.11.0-rc.2, which is now the baseline — exported by all four of its platform
+libraries.
 Checked in the release library rather than in the source's export list, because the two are not
 the same claim:
 
@@ -516,7 +531,8 @@ are now pinned to the same table, in `ArrowFieldTypeTest.unsupportedFormats` and
 
 ## 9. `chdb_shutdown()` cannot make an unclean exit clean
 
-**Severity: the exit-time abort stays a driver problem. Not worked around; needs either an
+**Severity: the exit-time abort with a stream open was the driver's own, and is fixed in the
+shim. Exiting with a query still running is not reachable from the driver; needs either an
 upstream change or an accepted limitation.**
 
 Issue #8 moved the baseline to v26.7.2-rc.2 to get `chdb_shutdown()`, on the expectation that
@@ -539,6 +555,44 @@ it has already done the hard part. Measured on macOS arm64, a JVM that leaks a s
 
 The third row is what the driver's hook now does: drain the connection registry, then call it.
 The second row is why the registry could not be deleted.
+
+**The 134 in the first two rows was the shim's doing, at least on Linux x86_64**, where the
+same exit is a SIGSEGV rather than the libc++ assertion. gdb puts it in `chdb_close_conn()`,
+called from the shim's own `HandleRegistry` destructor inside `exit()`. The registry was a
+function-local static, constructed at the first connect, so its destructor ran after the
+statics the engine constructs during the first query were already destroyed — and it closed
+every handle still registered, the leaked stream and its connection included. The same
+sequence in plain C reproduces it: register an exit handler that destroys the stream and closes
+the connection, then start a streaming query and fetch one chunk, and the process dies with
+SIGSEGV on every run (v26.11.0-rc.1 and rc.2); register the handler after the query, or leave
+the handles open, and it exits 0. The registry is never destroyed now, so with the hook off the
+leaked handles are left to the engine's exit teardown: 20 of 20 runs exit 0 on v26.11.0-rc.2,
+against 20 of 20 crashes before, and `ProcessLifecycleIT.hookCanBeDisabled` asserts the clean
+exit on every platform CI runs. The hook is kept, because closing the connections is still what
+lets `chdb_shutdown()` join the engine's threads.
+
+Through v26.11.0-rc.1 the third row held only while no `MergeTree` table had been used.
+Measured on Linux x86_64 through the C API alone — connect, create a `MergeTree` table, insert,
+close the connection, call `chdb_shutdown()` — it returned 1 (`CHDBError`) on both v26.7.3 and
+v26.11.0-rc.1, with every connection closed. v26.7.3 refused silently; v26.11.0-rc.1 said why
+on stderr:
+
+```
+chDB global pool shutdown refused: active jobs now=5; live local pool workers=[MergeTreeBackgroundExecutorThreadsx5]
+chDB shutdown failed: global thread pool did not become idle
+```
+
+So a JVM that used a `MergeTree` table printed those two lines when the driver's hook ran. The
+exit code did not change — the hook ignores the result, as it always has — and the same
+`Memory` or `numbers()` workload returned 0 on both engines.
+
+**Fixed in v26.11.0-rc.2** by chdb-core #312, which destroys the `MergeTree` background
+executors on shutdown: the same sequence returns 0 and prints nothing, and
+`ProcessLifecycleIT.chdbShutdownSucceedsAfterMergeTree` asserts it. The same release stops
+jemalloc's background threads in `chdb_shutdown()`, so the ordering the call is kept for below
+now covers every engine thread. Measured on Linux x86_64 by listing the JVM's threads after a
+successful call: v26.11.0-rc.1 left four unnamed engine threads running, v26.11.0-rc.2 leaves
+none; after `MergeTree` use rc.1 refused and left all of them.
 
 What the call buys, measured, is nothing an exit code can see: every shape tried came out
 identical with and without it, six runs each. It is kept because the ordering it guarantees —

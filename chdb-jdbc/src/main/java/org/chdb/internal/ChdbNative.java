@@ -57,7 +57,7 @@ public final class ChdbNative {
     /** ABI version the loaded shim was built with. */
     public static native int jniAbiVersion();
 
-    /** {@code chdb_version()} of the loaded libchdb, e.g. {@code "26.7.3"}. */
+    /** {@code chdb_version()} of the loaded libchdb, e.g. {@code "26.11.0-rc.2"}. */
     public static native String engineVersion();
 
     /** Build provenance of the shim: git commit, compiler, engine headers it compiled against. */
@@ -142,10 +142,10 @@ public final class ChdbNative {
      * {@code chdb_classify_query_n}. Decides whether a statement has a result set to stream
      * without executing it, using the engine's own parser.
      *
-     * <p>Optional symbol: it landed in chdb-core v26.7.2-rc.2, so the pinned v26.7.3 baseline has it,
-     * so it is resolved by {@code dlsym} rather than linked. It is present on the baseline;
-     * the null path is what an older engine gets, and means the caller must fall back to
-     * {@code StatementShape}'s own analysis.
+     * <p>Optional symbol: it landed in chdb-core v26.7.2-rc.2, so the pinned v26.11.0-rc.2
+     * baseline has it, so it is resolved by {@code dlsym} rather than linked. It is present on
+     * the baseline; the null path is what an older engine gets, and means the caller must fall
+     * back to {@code StatementShape}'s own analysis.
      *
      * @return {@code {queryClass, statementCount, flags}} where {@code queryClass} follows
      *     {@code chdb_query_class} (0 READ_ONLY, 1 MUTATING, 2 MUTATING_GLOBAL, 3 CONTROL,
@@ -204,9 +204,9 @@ public final class ChdbNative {
      * every result destroyed first, and the engine cannot be used again in this process.
      *
      * <p>Optional symbol, like {@link #classifyQuery(long, byte[])}: it landed in chdb-core
-     * v26.7.2-rc.2, so the pinned v26.7.3 baseline has it, and it is resolved by {@code dlsym} rather
-     * than linked. Not having it is not a failure -- the threads it would join are reaped by
-     * process exit either way.
+     * v26.7.2-rc.2, so the pinned v26.11.0-rc.2 baseline has it, and it is resolved by {@code
+     * dlsym} rather than linked. Not having it is not a failure -- the threads it would join are
+     * reaped by process exit either way.
      *
      * <p>1 is the ordinary answer while any connection is still open: the engine declines to
      * tear itself down under a live connection rather than leaving it dangling. Callers that

@@ -13,7 +13,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * an entry point that refuses it -- which is what issue #12 was -- so all three are covered in
  * both directions.
  *
- * <p>The pinned v26.7.3 baseline does export chdb_classify_query_n, so the scan is no
+ * <p>The pinned v26.11.0-rc.2 baseline does export chdb_classify_query_n, so the scan is no
  * longer the only thing deciding. It is still what decides whether a result set is streamed or
  * materialized, because the classifier does not distinguish those, as well as
  * deciding both halves whenever the classifier is absent or refuses the text -- hence the cases

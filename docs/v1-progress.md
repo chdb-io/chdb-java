@@ -13,17 +13,29 @@ macOS arm64 and x86_64 — each running the full suite on **Java 11, 17, 21 and 
 sanitizer runs on one Linux and one macOS toolchain. Sixteen platform-and-JDK combinations, all
 green.
 
-The baseline has since moved twice, to **engine 26.7.2-rc.2** (issue #8) and then to **engine
-26.7.3**. Neither run has happened yet: both moves were verified on macOS arm64 only, so the
-sixteen-way result above describes 26.7.0 and the three other platforms are unverified on the
-current engine until CI says otherwise.
+The baseline has since moved four times, to **engine 26.7.2-rc.2** (issue #8), then to
+**engine 26.7.3**, to **engine 26.11.0-rc.1**, and now to **engine 26.11.0-rc.2**. The first two
+moves were verified on macOS arm64 only; the two 26.11 moves were verified locally on Linux
+x86_64 only. So the sixteen-way result above describes 26.7.0, and the other platforms are
+unverified on the current engine until CI says otherwise.
 
-26.7.3 is a **stable** chdb-core release, which clears the [work plan §4.3
+26.7.3 is a **stable** chdb-core release, which cleared the [work plan §4.3
 ](../CHDB_JAVA_V1_WORK_PLAN.md) bar that 26.7.2-rc.2 could not: a binding built on an engine
 pre-release is not suitable for V1 GA, so the RC baseline was itself a release
 blocker. It also carries chdb-core #224, the fix for the signal-handler window reported as
 chdb-core #221 — `scripts/run-signal-window-test.sh measure` reports zero on it, against 688,
 613 and 724 on 26.7.2-rc.2.
+
+26.11.0-rc.1 is a chdb-core **pre-release** again, pinned to validate the ClickHouse 26.11
+baseline ahead of the stable v26.11.1, so the same §4.3 rule applies to it: only `-rc.<n>`
+versions can be cut while it is the baseline, and the stable release has to be pinned before
+`1.0.0`. The signal-handler fix holds on it — `measure` reports zero and `stress` survives 6 of
+6 on Linux x86_64.
+
+26.11.0-rc.2 is the same baseline plus chdb-core #312, a pre-release too, so nothing about
+§4.3 changes: the next cut from it is `1.0.0-rc.2`, `1.0.0-rc.1` stays on 26.7.3, and v26.11.1
+has to be pinned before `1.0.0`. The signal-handler fix holds on it too: `measure` reports
+zero and `stress` survives 6 of 6 on Linux x86_64.
 
 ---
 
@@ -36,7 +48,7 @@ chdb-core #221 — `scripts/run-signal-window-test.sh measure` reports zero on i
 | ✅ | Four glibc/macOS platforms | `Platform`, with musl detected and refused |
 | ✅ | Direct JNI is the mainline, ADBC the experiment | no Arrow Java dependency anywhere |
 | ✅ | Engine release, dynamic-library checksum and symbol set pinned | `scripts/engine.properties`, SHA-256 per platform from the GitHub release digests |
-| ✅ | Consistency check across `chdb_version()`, tag and header version | all three agree on v26.7.3. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). The v26.7.3 bump re-confirmed that rule the hard way: `programs/local/chdb.h` at the git tag still says `26.7.2`, while the header in the release tarball says `26.7.3`. Still enforced against `engine.properties` rather than the header |
+| ✅ | Consistency check across `chdb_version()`, tag and header version | all three agree on v26.11.0-rc.2. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). The v26.7.3 bump re-confirmed that rule the hard way: `programs/local/chdb.h` at the git tag still says `26.7.2`, while the header in the release tarball says `26.7.3`; at the v26.11.0-rc.1 tag it says `26.11.0-dev`. Still enforced against `engine.properties` rather than the header |
 | ✅ | C API split into required and optional symbols | 18 required, linker- and load-checked; `chdb_classify_query_n` and `chdb_shutdown` optional via `dlsym`, and present on the current baseline |
 | ⬜ | C ABI version and compatibility promise confirmed with Core | needs upstream agreement |
 | ✅ | Signal-handler requirement raised upstream | reproduced, measured and written up in [findings §1](upstream-findings.md), filed as chdb-core #221, and fixed by chdb-core #224 in engine v26.7.3 — the shim's guard now reports no handler to repair, and `run-signal-window-test.sh measure` reports zero |

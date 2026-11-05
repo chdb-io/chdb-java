@@ -13,9 +13,8 @@ import org.chdb.internal.ChdbNative;
 /**
  * Closes connections the application forgot, at JVM shutdown.
  *
- * <h2>What this prevents</h2>
- * A JVM that exits with a streaming result set still open aborts inside the engine rather than
- * exiting:
+ * <h2>What this prevented</h2>
+ * A JVM that exited with a streaming result set still open used to abort rather than exit:
  *
  * <pre>
  * libc++ Hardening assertion !empty() failed: front() called on an empty vector
@@ -27,6 +26,14 @@ import org.chdb.internal.ChdbNative;
  * that closes the stream on the way. Only an open <em>stream</em> at exit does it. The process
  * dies with SIGABRT and a stack that names ClickHouse internals, which tells the application
  * nothing about the result set it leaked.
+ *
+ * <p>The abort was the JNI shim's, as traced on Linux x86_64, where it is a SIGSEGV in
+ * {@code chdb_close_conn()}: the shim's handle registry was a function-local static whose
+ * destructor closed the leaked stream and connection from inside {@code exit()}, after statics
+ * the engine constructed during the query were already gone. The registry is never destroyed
+ * now, so with this hook turned off the leaked handles are left to the engine's own exit
+ * teardown and the JVM exits cleanly. The hook still closes them on the way out, because that
+ * is what lets {@link #stopEngine()} join the engine's threads.
  *
  * <p>Closing connections in a shutdown hook covers it: {@code ChdbConnection.close()} closes
  * its statements, which close their result sets, which is the state the engine tolerates. Once

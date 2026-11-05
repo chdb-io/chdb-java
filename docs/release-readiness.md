@@ -340,8 +340,9 @@ statically links the ClickHouse tree.
 contrib submodules by scanning their licence files and found seven LGPL and eight GPL. That
 method has since been replaced by querying the binary we actually ship —
 `SELECT DISTINCT library_name, license_type FROM system.licenses`, which ClickHouse generates
-at build time — and the answer is 968 components, of which twelve carry a copyleft licence
-with no permissive alternative, in two families rather than one. A filename scan calls every
+at build time — and the answer is 1082 components on v26.11.0-rc.1 and v26.11.0-rc.2 (968 through v26.7.3), of
+which eleven carry a copyleft licence with no permissive alternative, in two families rather
+than one. A filename scan calls every
 dual-licensed component GPL and describes a source checkout rather than an artifact, so the
 older numbers should not be reasoned from; the result is committed at
 `licenses/engine-third-party-<version>.tsv`, shipped in the package, and guarded by
@@ -379,7 +380,7 @@ the inventory as a gap and estimated half a day for it; it is done, and
 | Generating and publishing a GPG key | any maintainer | no |
 | `org.chdb` namespace claim | whoever runs `chdb.org` DNS | automatic once the TXT record is up |
 | Shipping the engine's licence inventory | already done | no |
-| **Whether redistributing `libchdb.so` under Apache-2.0 discharges the obligations of the twelve copyleft components** | **chdb-io / ClickHouse legal** | **yes, and it is the only real gate in this track** |
+| **Whether redistributing `libchdb.so` under Apache-2.0 discharges the obligations of the eleven copyleft components** | **chdb-io / ClickHouse legal** | **yes, and it is the only real gate in this track** |
 | Whether chDB counts as "commercial nature" for Central | whoever owns the Sonatype relationship | yes |
 
 ---

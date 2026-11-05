@@ -80,8 +80,14 @@ class HandleRegistry
 public:
     static HandleRegistry & instance()
     {
-        static HandleRegistry registry;
-        return registry;
+        // Never destroyed, on purpose. As a function-local static its destructor would run
+        // inside exit() and close every handle still registered -- chdb_close_conn() on a
+        // connection the application leaked -- from static destruction, after the statics the
+        // engine constructed later (during the first query) are already gone. A JVM exiting
+        // with a ResultSet open and -Dchdb.shutdownHook=false died that way, SIGSEGV inside
+        // chdb_close_conn(). Left open, the handles go to the engine's own exit teardown.
+        static HandleRegistry * const registry = new HandleRegistry();
+        return *registry;
     }
 
     int64_t insert(const std::shared_ptr<HandleBase> & handle)

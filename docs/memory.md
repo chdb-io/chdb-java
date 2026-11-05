@@ -33,10 +33,12 @@ docker run --memory=4g \
 jdbc:chdb:/data?max_memory_usage=2000000000
 ```
 
-That URL form works on the pinned v26.7.3 baseline. First measured on v26.7.2-rc.2 with
+That URL form works on the pinned v26.11.0-rc.2 baseline. First measured on v26.7.2-rc.2 with
 `?max_threads=7&max_result_rows=13&max_block_size=4096`: `system.settings` reports 7, 13 and
 4096 with `changed = 1`, and the cap is enforced rather than merely reported — a 100-row
-`SELECT` under `max_result_rows=13` fails with ClickHouse error 396.
+`SELECT` under `max_result_rows=13` fails with ClickHouse error 396. Re-measured the same way,
+with `max_memory_usage=2000000000` added, on v26.11.0-rc.1 and again on v26.11.0-rc.2 (Linux
+x86_64).
 
 **On v26.7.0 and v26.7.1-rc.1 it was silently inert**, if you are pointing the loader at one of
 those: settings in the connect argument vector never reached a session, so the same URL left
@@ -190,6 +192,10 @@ Assert this at the end of a test suite. Every non-zero count is a `ResultSet`, `
 
 `chdb_shutdown()` joins every engine thread, for a host that runs its own teardown — global
 destructors, a finalizing runtime, a sanitizer exit handler — that would otherwise race them.
+On the pinned v26.11.0-rc.2 that means all of them, jemalloc's background threads included,
+and it succeeds after `MergeTree` use as well. Through v26.11.0-rc.1 it returned 1 once a
+`MergeTree` table had been used, and left jemalloc's threads running; see
+[upstream findings §9](upstream-findings.md).
 
 ```java
 // Every Connection closed and every ResultSet closed first.
@@ -197,8 +203,10 @@ int result = org.chdb.internal.ChdbNative.shutdown();
 // 0 = stopped, 1 = something is still open, 2 = this engine has no chdb_shutdown
 ```
 
-Not needed for a process that simply exits: the threads are reaped by exit, as they always
-were. The pinned 26.7.3 engine exports it, so 2 is what an older engine returns; see
+A process that simply exits does not need to call it while the driver's shutdown hook is
+installed, which is the default. A host that turns the hook off should close its connections
+and call it before exiting, rather than leave the engine to tear itself down from its own exit
+handlers with connections open. The pinned 26.11.0-rc.2 engine exports it, so 2 is what an older engine returns; see
 [upstream findings §6](upstream-findings.md). The driver's shutdown hook already calls it
 after closing the connections it knows about, so a host that leaves the hook installed does
 not need to.

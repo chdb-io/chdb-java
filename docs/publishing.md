@@ -252,7 +252,8 @@ Apache-2.0, `LICENSE` in the repository, declared in the POM. Nothing to do.
 ### The redistributed engine
 
 Each platform package ships a ~326 MB `libchdb.so` verbatim from a chdb-core release. It
-statically links ClickHouse and **968 third-party components**.
+statically links ClickHouse and **1082 third-party components** (as of v26.11.0-rc.2, the same
+as v26.11.0-rc.1; 968 through v26.7.3).
 
 That number, and the licence of each one, comes from the engine itself:
 
@@ -277,13 +278,21 @@ The file is generated on whichever platform the person doing the bump has, but i
 on all four: `LicenseInventoryIT` runs in every platform job and queries that job's own engine,
 so a component set that differs between platforms fails CI rather than shipping.
 
-Done twice so far, and both times the inventory came out **byte-identical** to its predecessor
-— same 968 entries, same licence strings, same SHA-256 for v26.7.0, v26.7.2-rc.2 and v26.7.3
-alike — so the redistribution position has not moved, and the count above still describes the
-engine we ship. The twelve copyleft components below are still exactly twelve. That is the
-expected shape of a patch-level bump, not something to rely on: the whole point of keying the
-file by version is that the next one may differ, which is why the file is regenerated and
+The first two times, the inventory came out **byte-identical** to its predecessor — same 968
+entries, same licence strings, same SHA-256 for v26.7.0, v26.7.2-rc.2 and v26.7.3 alike. That
+is the expected shape of a patch-level bump, not something to rely on: the whole point of keying
+the file by version is that the next one may differ, which is why the file is regenerated and
 compared rather than copied forward.
+
+The third, for v26.11.0-rc.1 — a move to the ClickHouse 26.11 baseline — did differ: 1082
+entries, 138 added and 24 removed. Every added entry is under a permissive licence (MIT,
+Apache-2.0, BSD, ISC, 0BSD, or a disjunction offering one of those), so nothing joined the
+copyleft set. One left it: `numactl` (LGPL), because chdb-core no longer has `contrib/numactl`
+at all. The copyleft set below is therefore eleven, down from twelve.
+
+The fourth, for v26.11.0-rc.2 — chdb-core #312 on the same ClickHouse baseline — came out
+byte-identical to v26.11.0-rc.1's again: the same 1082 entries and the same SHA-256, regenerated
+from the new engine rather than copied.
 
 ### The one open question
 
@@ -291,10 +300,10 @@ Reading the inventory rather than guessing at it: most components are permissive
 that a filename scan calls GPL are dual licensed with the permissive half in force — `zstd` is
 BSD-3, `rocksdb` is Apache-2.0, `liburing` is MIT, `ittapi` is `GPL-2.0-only OR BSD-3-Clause`.
 
-Twelve carry a copyleft licence with no permissive alternative, in two families:
+Eleven carry a copyleft licence with no permissive alternative, in two families:
 
 ```
-lemmagen-c   libgsasl   libssh   mariadb-connector-c   numactl   xz          (LGPL)
+lemmagen-c   libgsasl   libssh   mariadb-connector-c   xz                    (LGPL)
 cbindgen   defer-drop   fortanix-sgx-abi   shuffling-allocator   timer   webpki-roots
                                                                             (MPL-2.0)
 ```
@@ -306,8 +315,8 @@ relinking requirement, so the obligation is to offer the source of any modified 
 
 Several of the MPL components are plainly build-time Rust tooling — `cbindgen` generates
 headers, `fortanix-sgx-abi` is for SGX enclaves — and are unlikely to be in a chDB build at
-all. But *unlikely* is not *established*, which is the same problem as with the LGPL six:
-whether any of the twelve is actually in the binary cannot be settled from the binary. It is
+all. But *unlikely* is not *established*, which is the same problem as with the LGPL five:
+whether any of the eleven is actually in the binary cannot be settled from the binary. It is
 stripped to 582 dynamic symbols and links statically. `nm` finds no `ssh_`, `mysql_`, `numa_`,
 `lzma_` or `gsasl_` symbols, which proves nothing either way. That question belongs to the
 engine build configuration.
@@ -317,14 +326,15 @@ and npm by chdb-io. Whatever notice and offer-of-source obligations attach, atta
 So the task is to **inherit and verify**, not to derive an answer here:
 
 1. Ask chdb-core maintainers for the notice bundle their PyPI and npm releases ship, and the
-   position taken on the six LGPL components. If there is one, mirror it.
+   position taken on the five LGPL components. If there is one, mirror it.
 2. If there is not, that is a finding about all three distributions, and should be raised as
    such rather than solved inside this repository.
 
-`LicenseInventoryIT.copyleftComponentsAreTheKnownSet` pins the set to exactly those twelve, so a
-thirteenth appearing in a future engine fails CI rather than shipping unnoticed. It matches a
-copyleft *family* pattern — AGPL, GPL, LGPL, MPL, EPL, CDDL, CPL, OSL, SSPL, EUPL, CeCILL, QPL —
-and then subtracts an explicit allowlist of dual-licensed strings, so a new component under a
+`LicenseInventoryIT.copyleftComponentsAreTheKnownSet` pins the set to exactly those eleven, so a
+twelfth appearing in a future engine fails CI rather than shipping unnoticed — as does one
+leaving, which is how `numactl`'s removal surfaced. It matches a copyleft *family* pattern —
+AGPL, GPL, LGPL, MPL, EPL, CDDL, CPL, OSL, SSPL, EUPL, CeCILL, QPL — and then subtracts an
+explicit allowlist of dual-licensed strings, so a new component under a
 licence nobody here anticipated is caught rather than ignored. An earlier version asked only for
 `license_type IN ('LGPL', 'GPL')` and silently missed the six MPL-2.0 components that were
 already there.
@@ -379,7 +389,7 @@ Each step can invalidate the next, so:
 | `com.clickhouse.chdb` namespace permission | ClickHouse Central workspace admin | required before stable release |
 | Sonatype account and portal token | any maintainer | no |
 | A publishing-limit exception | Sonatype support | yes, if the numbers need it |
-| **Position on the twelve copyleft components** | **chdb-io / ClickHouse legal** | **yes — the only real gate** |
+| **Position on the eleven copyleft components** | **chdb-io / ClickHouse legal** | **yes — the only real gate** |
 | Whether chDB is "commercial" for Central | whoever owns the Sonatype relationship | yes |
 
 ---
