@@ -33,7 +33,7 @@ versions can be cut while it is the baseline, and the stable release has to be p
 6 on Linux x86_64.
 
 26.11.0-rc.2 is the same baseline plus chdb-core #312, a pre-release too, so nothing about
-§4.3 changes: the next cut from it is `1.0.0-rc.2`, `1.0.0-rc.1` stays on 26.7.3, and v26.11.1
+§4.3 changes: `1.0.0-rc.2` is cut from it, `1.0.0-rc.1` stays on 26.7.3, and v26.11.1
 has to be pinned before `1.0.0`. The signal-handler fix holds on it too: `measure` reports
 zero and `stress` survives 6 of 6 on Linux x86_64.
 
