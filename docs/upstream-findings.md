@@ -40,6 +40,8 @@ gained a row:
 Then to **v26.11.0-rc.2**, the same baseline plus chdb-core #312:
 
 - **§2's table gained a fifth column**, and the in-tree constant still says `26.11.0-dev`.
+- **§9's `MergeTree` note is fixed upstream**: `chdb_shutdown()` returns 0 after `MergeTree`
+  use once every connection is closed, and it now stops jemalloc's background threads too.
 
 The rest still hold on the new engine, and the tests named against each are what demonstrates
 that — they run in `mvn verify` against whichever engine is pinned.
@@ -553,19 +555,28 @@ it has already done the hard part. Measured on macOS arm64, a JVM that leaks a s
 The third row is what the driver's hook now does: drain the connection registry, then call it.
 The second row is why the registry could not be deleted.
 
-The third row holds only while no `MergeTree` table has been used. Measured on Linux x86_64
-through the C API alone — connect, create a `MergeTree` table, insert, close the connection,
-call `chdb_shutdown()` — it returns 1 (`CHDBError`) on both v26.7.3 and v26.11.0-rc.1, with
-every connection closed. v26.7.3 refuses silently; v26.11.0-rc.1 says why on stderr:
+Through v26.11.0-rc.1 the third row held only while no `MergeTree` table had been used.
+Measured on Linux x86_64 through the C API alone — connect, create a `MergeTree` table, insert,
+close the connection, call `chdb_shutdown()` — it returned 1 (`CHDBError`) on both v26.7.3 and
+v26.11.0-rc.1, with every connection closed. v26.7.3 refused silently; v26.11.0-rc.1 said why
+on stderr:
 
 ```
 chDB global pool shutdown refused: active jobs now=5; live local pool workers=[MergeTreeBackgroundExecutorThreadsx5]
 chDB shutdown failed: global thread pool did not become idle
 ```
 
-So a JVM that used a `MergeTree` table prints those two lines when the driver's hook runs. The
-exit code does not change — the hook ignores the result, as it always has — and the same
-`Memory` or `numbers()` workload returns 0 on both engines.
+So a JVM that used a `MergeTree` table printed those two lines when the driver's hook ran. The
+exit code did not change — the hook ignores the result, as it always has — and the same
+`Memory` or `numbers()` workload returned 0 on both engines.
+
+**Fixed in v26.11.0-rc.2** by chdb-core #312, which destroys the `MergeTree` background
+executors on shutdown: the same sequence returns 0 and prints nothing, and
+`ProcessLifecycleIT.chdbShutdownSucceedsAfterMergeTree` asserts it. The same release stops
+jemalloc's background threads in `chdb_shutdown()`, so the ordering the call is kept for below
+now covers every engine thread. Measured on Linux x86_64 by listing the JVM's threads after a
+successful call: v26.11.0-rc.1 left four unnamed engine threads running, v26.11.0-rc.2 leaves
+none; after `MergeTree` use rc.1 refused and left all of them.
 
 What the call buys, measured, is nothing an exit code can see: every shape tried came out
 identical with and without it, six runs each. It is kept because the ordering it guarantees —

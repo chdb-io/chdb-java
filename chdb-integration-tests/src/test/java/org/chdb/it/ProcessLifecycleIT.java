@@ -452,6 +452,49 @@ class ProcessLifecycleIT extends NativeTestBase {
                 ? "reconnecting is refused" : "reconnecting is allowed"));
     }
 
+    /**
+     * The same after a {@code MergeTree} table has been used, on the storage path given as the
+     * argument: every connection closed, then {@code chdb_shutdown()}.
+     */
+    public static final class ShutsTheEngineDownAfterMergeTree {
+        public static void main(String[] args) throws Exception {
+            try (Connection connection = DriverManager.getConnection("jdbc:chdb:" + args[0]);
+                    Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE t (x UInt32) ENGINE = MergeTree ORDER BY x");
+                statement.executeUpdate("INSERT INTO t SELECT number FROM numbers(1000)");
+                try (ResultSet rs = statement.executeQuery("SELECT count() FROM t")) {
+                    rs.next();
+                    System.out.println("rows=" + rs.getLong(1));
+                }
+            }
+            System.out.println("shutdown=" + ChdbNative.shutdown());
+        }
+    }
+
+    @Test
+    @DisplayName("chdb_shutdown() also succeeds after a MergeTree table was used")
+    @Timeout(value = 3, unit = TimeUnit.MINUTES)
+    void chdbShutdownSucceedsAfterMergeTree() throws Exception {
+        // Through engine v26.11.0-rc.1 this returned 1 with every connection closed: the
+        // MergeTree background executors outlived the last connection, their idle workers kept
+        // the global thread pool busy, and rc.1 said so on stderr ("chDB global pool shutdown
+        // refused ... MergeTreeBackgroundExecutorThreads"). chdb-core #312, in v26.11.0-rc.2,
+        // destroys them on shutdown. Findings section 9 has the measurement.
+        Path dir = Files.createTempDirectory("chdb shutdown mergetree");
+        ForkResult result =
+                fork(ShutsTheEngineDownAfterMergeTree.class.getName(), List.of(), dir.toString());
+        assertEquals(0, result.exitCode, result.output);
+        assertTrue(result.output.contains("rows=1000"), result.output);
+        assertTrue(
+                result.output.contains("shutdown=0"),
+                "chdb_shutdown() should stop the engine once every connection is closed, whether"
+                        + " or not a MergeTree table was used:\n"
+                        + result.output);
+        assertFalse(
+                result.output.contains("shutdown refused"),
+                "the engine should not report a refused shutdown:\n" + result.output);
+    }
+
     /** A JVM that closes everything before exiting, which must also be clean. */
     public static final class ExitsCleanly {
         public static void main(String[] args) throws Exception {

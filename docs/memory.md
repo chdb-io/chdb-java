@@ -192,6 +192,10 @@ Assert this at the end of a test suite. Every non-zero count is a `ResultSet`, `
 
 `chdb_shutdown()` joins every engine thread, for a host that runs its own teardown — global
 destructors, a finalizing runtime, a sanitizer exit handler — that would otherwise race them.
+On the pinned v26.11.0-rc.2 that means all of them, jemalloc's background threads included,
+and it succeeds after `MergeTree` use as well. Through v26.11.0-rc.1 it returned 1 once a
+`MergeTree` table had been used, and left jemalloc's threads running; see
+[upstream findings §9](upstream-findings.md).
 
 ```java
 // Every Connection closed and every ResultSet closed first.
@@ -200,7 +204,7 @@ int result = org.chdb.internal.ChdbNative.shutdown();
 ```
 
 Not needed for a process that simply exits: the threads are reaped by exit, as they always
-were. The pinned 26.11.0-rc.1 engine exports it, so 2 is what an older engine returns; see
+were. The pinned 26.11.0-rc.2 engine exports it, so 2 is what an older engine returns; see
 [upstream findings §6](upstream-findings.md). The driver's shutdown hook already calls it
 after closing the connections it knows about, so a host that leaves the hook installed does
 not need to.
