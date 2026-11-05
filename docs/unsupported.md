@@ -273,11 +273,13 @@ never ambiguous. The calendar is accepted and ignored. `getObject(column, Instan
 the instant when that is what is wanted.
 
 **Stop your query threads before the JVM exits.** The driver installs a shutdown hook that
-closes connections the application forgot, which covers a leaked result set: without it, a JVM
-exiting with a streaming `ResultSet` open aborts inside the engine (SIGABRT, exit 134) rather
-than exiting. Having closed them it calls `chdb_shutdown()`, which joins the engine's threads
-so the host's own native teardown does not race them. Disable both with
-`-Dchdb.shutdownHook=false` if the host manages its own teardown.
+closes connections the application forgot, including a leaked result set, and having closed
+them calls `chdb_shutdown()`, which joins the engine's threads so the host's own native
+teardown does not race them. Disable both with `-Dchdb.shutdownHook=false` if the host manages
+its own teardown. A JVM exiting with a streaming `ResultSet` open used to abort without the hook
+(SIGABRT, exit 134); that was the JNI shim closing the leaked handles from a static destructor
+inside `exit()`, and it no longer does, so with the hook off they are left to the engine's own
+exit teardown.
 
 One consequence worth knowing: `chdb_connect()` fails once the hook has run, because
 `chdb_shutdown()` closes the engine for the rest of the process. The JVM runs shutdown hooks

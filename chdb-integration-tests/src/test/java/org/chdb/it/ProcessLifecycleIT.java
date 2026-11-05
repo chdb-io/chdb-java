@@ -136,19 +136,21 @@ class ProcessLifecycleIT extends NativeTestBase {
     /**
      * A JVM that exits with a streaming result set still open.
      *
-     * <p>Without the shutdown hook this aborts inside the engine rather than exiting:
+     * <p>Without the shutdown hook this used to abort rather than exit -- on macOS arm64 as
      *
      * <pre>
      * libc++ Hardening assertion !empty() failed: front() called on an empty vector
      * </pre>
      *
-     * with SIGABRT (exit 134) and a stack naming ClickHouse internals. Narrow but easy to hit:
-     * exiting with a Connection open is fine, and closing the Connection while a stream is open
-     * is fine, because that closes the stream. Only an open stream at exit does it.
+     * with SIGABRT (exit 134) and a stack naming ClickHouse internals, on Linux x86_64 as a
+     * SIGSEGV. Narrow but easy to hit: exiting with a Connection open was fine, and closing the
+     * Connection while a stream is open is fine, because that closes the stream. Only an open
+     * stream at exit did it.
      *
-     * <p>Still true on engine 26.7.2-rc.2, the release that added {@code
-     * chdb_shutdown()}: that call declines to do anything while a connection is open, so it
-     * does not replace the hook's drain. See {@link #chdbShutdownStopsTheEngine()}.
+     * <p>Still true on engine 26.7.2-rc.2, the release that added {@code chdb_shutdown()}:
+     * that call declines to do anything while a connection is open, so it does not replace the
+     * hook's drain. See {@link #chdbShutdownStopsTheEngine()}. What finally removed the abort
+     * was a fix in the shim, not the engine; see {@link #hookCanBeDisabled()}.
      */
     public static final class ExitsWithOpenStream {
         public static void main(String[] args) throws Exception {
@@ -177,30 +179,30 @@ class ProcessLifecycleIT extends NativeTestBase {
     }
 
     @Test
-    @DisplayName("the same JVM with the hook disabled reaches the engine's own teardown path")
+    @DisplayName("the same JVM with the hook disabled reaches the engine's own teardown path, and"
+            + " exits cleanly")
     @Timeout(value = 3, unit = TimeUnit.MINUTES)
     void hookCanBeDisabled() throws Exception {
-        // Still asserting only that the switch is honoured, not that the engine aborts.
-        //
-        // chdb_shutdown() arriving in the 26.7.2-rc.2 baseline was the event this test was
-        // written to survive, and surviving it is exactly what happened: the abort is
-        // unchanged, because chdb_shutdown() refuses to act while a connection is open and
-        // this JVM's connection is open. So there is still no correct exit code to pin here,
-        // and pinning 134 would turn a real upstream fix into a CI failure. What matters is
-        // that a host managing its own teardown can turn the hook off.
-        //
-        // Issue #22 did not change that either. It removed the hook's other hazard -- see
-        // exitWithQueriesInFlightIsPrompt -- but this shape's abort is the engine's own
-        // behaviour on an exit with a stream open, which no driver change reaches. The switch
-        // is therefore still the escape hatch and still only assertable as a switch.
+        // This used to assert only that the switch is honoured, on the grounds that the abort
+        // with the hook off was the engine's own behaviour on an exit with a stream open, which
+        // no driver change could reach -- so pinning 134 would have turned an upstream fix into
+        // a CI failure. The abort was the shim's, as traced on Linux x86_64 with gdb: SIGSEGV
+        // in chdb_close_conn() called from ~HandleRegistry, on every run -- 20 of 20 on engine
+        // v26.11.0-rc.2, and the same on rc.1. The handle registry was a function-local static,
+        // and its destructor closed the leaked stream and connection from inside exit(), after
+        // statics the engine had constructed during the query were already destroyed. The
+        // registry is never destroyed now, so the leaked handles are left to the engine's own
+        // exit teardown, and this JVM exits 0, 20 of 20.
         ForkResult result =
                 fork(ExitsWithOpenStream.class.getName(), List.of("-Dchdb.shutdownHook=false"));
         assertTrue(result.output.contains("leaked an open stream"), result.output);
-        if (result.exitCode != 0) {
-            System.out.println(
-                    "with the hook off, this engine exits " + result.exitCode
-                            + " -- which is what the hook exists to prevent");
-        }
+        assertEquals(
+                0,
+                result.exitCode,
+                "with the hook off the leaked stream is left to the engine's exit teardown, which"
+                        + " exits cleanly; a crash here means handles are being closed from a"
+                        + " static destructor inside exit() again.\n"
+                        + result.output);
     }
 
     /**

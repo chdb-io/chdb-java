@@ -531,7 +531,8 @@ are now pinned to the same table, in `ArrowFieldTypeTest.unsupportedFormats` and
 
 ## 9. `chdb_shutdown()` cannot make an unclean exit clean
 
-**Severity: the exit-time abort stays a driver problem. Not worked around; needs either an
+**Severity: the exit-time abort with a stream open was the driver's own, and is fixed in the
+shim. Exiting with a query still running is not reachable from the driver; needs either an
 upstream change or an accepted limitation.**
 
 Issue #8 moved the baseline to v26.7.2-rc.2 to get `chdb_shutdown()`, on the expectation that
@@ -554,6 +555,21 @@ it has already done the hard part. Measured on macOS arm64, a JVM that leaks a s
 
 The third row is what the driver's hook now does: drain the connection registry, then call it.
 The second row is why the registry could not be deleted.
+
+**The 134 in the first two rows was the shim's doing, at least on Linux x86_64**, where the
+same exit is a SIGSEGV rather than the libc++ assertion. gdb puts it in `chdb_close_conn()`,
+called from the shim's own `HandleRegistry` destructor inside `exit()`. The registry was a
+function-local static, constructed at the first connect, so its destructor ran after the
+statics the engine constructs during the first query were already destroyed — and it closed
+every handle still registered, the leaked stream and its connection included. The same
+sequence in plain C reproduces it: register an exit handler that destroys the stream and closes
+the connection, then start a streaming query and fetch one chunk, and the process dies with
+SIGSEGV on every run (v26.11.0-rc.1 and rc.2); register the handler after the query, or leave
+the handles open, and it exits 0. The registry is never destroyed now, so with the hook off the
+leaked handles are left to the engine's exit teardown: 20 of 20 runs exit 0 on v26.11.0-rc.2,
+against 20 of 20 crashes before, and `ProcessLifecycleIT.hookCanBeDisabled` asserts the clean
+exit on every platform CI runs. The hook is kept, because closing the connections is still what
+lets `chdb_shutdown()` join the engine's threads.
 
 Through v26.11.0-rc.1 the third row held only while no `MergeTree` table had been used.
 Measured on Linux x86_64 through the C API alone — connect, create a `MergeTree` table, insert,

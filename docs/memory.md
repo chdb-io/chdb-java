@@ -203,8 +203,10 @@ int result = org.chdb.internal.ChdbNative.shutdown();
 // 0 = stopped, 1 = something is still open, 2 = this engine has no chdb_shutdown
 ```
 
-Not needed for a process that simply exits: the threads are reaped by exit, as they always
-were. The pinned 26.11.0-rc.2 engine exports it, so 2 is what an older engine returns; see
+A process that simply exits does not need to call it while the driver's shutdown hook is
+installed, which is the default. A host that turns the hook off should close its connections
+and call it before exiting, rather than leave the engine to tear itself down from its own exit
+handlers with connections open. The pinned 26.11.0-rc.2 engine exports it, so 2 is what an older engine returns; see
 [upstream findings §6](upstream-findings.md). The driver's shutdown hook already calls it
 after closing the connections it knows about, so a host that leaves the hook installed does
 not need to.
