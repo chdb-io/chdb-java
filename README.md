@@ -4,8 +4,8 @@ A JDBC driver for [chDB](https://github.com/chdb-io/chdb-core), the embedded bui
 ClickHouse. It runs the engine in your JVM's process — no server, no network — and gives you
 streaming, forward-only result sets over ClickHouse SQL.
 
-> **Status: release candidate.** The first Maven release candidate is `v1.0.0-rc.1`, built with
-> chDB Core `26.7.3`. RC artifacts are available from the public chDB Maven repository; the
+> **Status: release candidate.** The current Maven release candidate is `v1.0.0-rc.2`, built with
+> chDB Core `26.11.0-rc.2`. RC artifacts are available from the public chDB Maven repository; the
 > public API is not frozen. See
 > [What works today](#what-works-today).
 
@@ -57,7 +57,7 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 <dependency>
   <groupId>com.clickhouse.chdb</groupId>
   <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
-  <version>1.0.0-rc.1</version>
+  <version>1.0.0-rc.2</version>
 </dependency>
 ```
 
@@ -79,7 +79,7 @@ architecture — declare the driver plus each native package you need:
     <dependency>
       <groupId>com.clickhouse.chdb</groupId>
       <artifactId>chdb-bom</artifactId>
-      <version>1.0.0-rc.1</version>
+      <version>1.0.0-rc.2</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
