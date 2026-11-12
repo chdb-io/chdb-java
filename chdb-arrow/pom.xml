@@ -29,7 +29,9 @@
     </dependency>
     <dependency>
       <groupId>org.apache.arrow</groupId>
-      <artifactId>arrow-memory-netty</artifactId>
+      <!-- Netty's Arrow 19 allocator fails during initialization on JDK 25+.
+           Use Arrow's Unsafe allocator for the same C Data API instead. -->
+      <artifactId>arrow-memory-unsafe</artifactId>
       <version>${arrow.java.version}</version>
     </dependency>
     <dependency>
