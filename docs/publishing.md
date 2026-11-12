@@ -252,8 +252,8 @@ Apache-2.0, `LICENSE` in the repository, declared in the POM. Nothing to do.
 ### The redistributed engine
 
 Each platform package ships a ~326 MB `libchdb.so` verbatim from a chdb-core release. It
-statically links ClickHouse and **1082 third-party components** (as of v26.11.0-rc.2, the same
-as v26.11.0-rc.1; 968 through v26.7.3).
+statically links ClickHouse and **1081 third-party components** on v26.11.0-rc.3
+(1082 on v26.11.0-rc.1/rc.2; 968 through v26.7.3).
 
 That number, and the licence of each one, comes from the engine itself:
 
@@ -293,6 +293,10 @@ at all. The copyleft set below is therefore eleven, down from twelve.
 The fourth, for v26.11.0-rc.2 — chdb-core #312 on the same ClickHouse baseline — came out
 byte-identical to v26.11.0-rc.1's again: the same 1082 entries and the same SHA-256, regenerated
 from the new engine rather than copied.
+
+The fifth, for v26.11.0-rc.3, has 1081 entries: `gdeflate` (Apache) is absent.
+No copyleft entry changed. Generated from the published macOS arm64 binary and checked
+against that binary by `LicenseInventoryIT`; the other three platform binaries are checked in CI.
 
 ### The one open question
 

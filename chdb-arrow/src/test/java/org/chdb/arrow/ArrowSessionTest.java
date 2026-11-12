@@ -32,7 +32,6 @@ import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.chdb.jdbc.ChdbConnection;
 import org.chdb.internal.ChdbNative;
@@ -40,16 +39,6 @@ import org.chdb.internal.ChdbNative;
 /** Run with a matching locally built libchdb + JNI shim via -Dchdb.library.path. */
 @EnabledIfSystemProperty(named = "chdb.arrow.it", matches = "true")
 class ArrowSessionTest {
-    private static void requiresFixedRegistration() {
-        // rc.2's chdb_arrow_scan omits the top-level get_schema release. Arrow Java's
-        // allocator then fails close even when values and native handles are correct.
-        // Keep these assertions enabled for every other core version; remove the gate
-        // after the first published core release with the registration fix is pinned.
-        Assumptions.assumeFalse("26.11.0-rc.2".equals(ChdbNative.engineVersion()),
-                "core 26.11.0-rc.2 leaks the registered Arrow schema; "
-                        + "rerun on the first published release containing the fix");
-    }
-
     @AfterEach
     void allNativeArrowQueriesAreReleased() {
         assertEquals(0L, ChdbNative.openHandleCount(ChdbNative.KIND_ARROW_STREAM));
@@ -124,7 +113,6 @@ class ArrowSessionTest {
 
     @Test
     void readerInputConsumesSeveralBatchesOnlyWhenQueried() throws Exception {
-        requiresFixedRegistration();
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory();
                 VectorSchemaRoot first = idBatch(allocator, 1, 2);
@@ -149,7 +137,6 @@ class ArrowSessionTest {
 
     @Test
     void inputCallbackFailureReleasesRegistrationAndConnectionSlot() throws Exception {
-        requiresFixedRegistration();
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory();
                 VectorSchemaRoot root = idBatch(allocator, 7)) {
@@ -185,7 +172,6 @@ class ArrowSessionTest {
 
     @Test
     void registeredReaderCanBeScannedWithoutIpc() throws Exception {
-        requiresFixedRegistration();
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory()) {
             BigIntVector values = new BigIntVector("id", allocator);
@@ -211,7 +197,6 @@ class ArrowSessionTest {
 
     @Test
     void batchAdapterLeavesCallerRootOpen() throws Exception {
-        requiresFixedRegistration();
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory()) {
             BigIntVector values = new BigIntVector("id", allocator);
@@ -234,7 +219,6 @@ class ArrowSessionTest {
 
     @Test
     void closeDuringScanWaitsForBorrowedReader() throws Exception {
-        requiresFixedRegistration();
         CountDownLatch reading = new CountDownLatch(1);
         CountDownLatch continueReading = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -293,7 +277,6 @@ class ArrowSessionTest {
 
     @Test
     void closeDuringLazyFetchWaitsBeforeUnregistering() throws Exception {
-        requiresFixedRegistration();
         CountDownLatch reading = new CountDownLatch(1);
         CountDownLatch continueReading = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -439,7 +422,6 @@ class ArrowSessionTest {
 
     @Test
     void closingSourceAlsoFinishesLazyQueryBeforeUnregister() throws Exception {
-        requiresFixedRegistration();
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory()) {
             BigIntVector values = new BigIntVector("id", allocator);
@@ -484,7 +466,6 @@ class ArrowSessionTest {
 
     @Test
     void insertBatchMapsNamedColumnsAndPreservesCallerRoot() throws Exception {
-        requiresFixedRegistration();
         try (RootAllocator allocator = new RootAllocator();
                 Connection ddl = DriverManager.getConnection("jdbc:chdb::memory:");
                 ArrowSession session = ArrowSession.openInMemory()) {
@@ -522,7 +503,6 @@ class ArrowSessionTest {
 
     @Test
     void failedInsertIntoMissingTableDoesNotConsumeCallerBatch() throws Exception {
-        requiresFixedRegistration();
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory();
                 VectorSchemaRoot root = idBatch(allocator, 61, 62)) {
@@ -538,7 +518,7 @@ class ArrowSessionTest {
     }
 
     @Test
-    @Disabled("core 26.11.0-dev ArrowStream inserts invalid String into Int64 as 0; "
+    @Disabled("core 26.11.0-rc.3 ArrowStream inserts invalid String into Int64 as 0; "
             + "ordinary INSERT SELECT rejects it with CANNOT_PARSE_TEXT")
     void invalidInsertValueReportsErrorAndKeepsSessionUsable() throws Exception {
         try (RootAllocator allocator = new RootAllocator();
@@ -657,7 +637,6 @@ class ArrowSessionTest {
 
     @Test
     void jdbcConnectionCloseCascadesToArrowQueryAndBorrowedSource() throws Exception {
-        requiresFixedRegistration();
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory()) {
             BigIntVector values = new BigIntVector("id", allocator);

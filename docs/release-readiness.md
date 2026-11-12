@@ -340,7 +340,8 @@ statically links the ClickHouse tree.
 contrib submodules by scanning their licence files and found seven LGPL and eight GPL. That
 method has since been replaced by querying the binary we actually ship —
 `SELECT DISTINCT library_name, license_type FROM system.licenses`, which ClickHouse generates
-at build time — and the answer is 1082 components on v26.11.0-rc.1 and v26.11.0-rc.2 (968 through v26.7.3), of
+at build time — and the answer is 1081 components on v26.11.0-rc.3, 1082 on
+v26.11.0-rc.1/rc.2 (968 through v26.7.3), of
 which eleven carry a copyleft licence with no permissive alternative, in two families rather
 than one. A filename scan calls every
 dual-licensed component GPL and describes a source checkout rather than an artifact, so the

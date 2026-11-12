@@ -30,34 +30,28 @@ timestamp semantics.
 retains ownership of the root and must not mutate or close it before unregistering.
 
 The test `ArrowSessionTest` is opt-in (`-Dchdb.arrow.it=true`) and requires a matching
-locally built `libchdb.so` and `libchdb_java_jni.dylib` in the directory given by
-`-Dchdb.library.path`. A published platform JAR with the older JNI ABI cannot run this
-work-in-progress API. Arrow Java 19.0.0 on classpath also requires
+engine and JNI shim in the directory given by `-Dchdb.library.path`. The previously
+published Java `1.0.0-rc.2` platform JAR has JNI ABI 2 and cannot run this work-in-progress
+ABI 3 module. Arrow Java 19.0.0 on classpath also requires
 `--add-opens=java.base/java.nio=ALL-UNNAMED` on supported JDKs.
 
-For a local-only build on macOS arm64, after the core build has completed, verify that
-`/Users/shawn/Downloads/code/chdb-core/libchdb.so` is the intended fixed version and run
-`scripts/build-native.sh macos-aarch64 --local-engine /Users/shawn/Downloads/code/chdb-core/libchdb.so`.
-The script stages the engine and new shim in `chdb-native-macos-aarch64/target/native/`.
-Its local-source manifest is **not publishable**. Then run the opt-in test with the
-staged library directory and JDK 11, for example:
+The current source pins chDB core `26.11.0-rc.3`. For a macOS arm64 release-asset
+smoke test, compile the Java side (`mvn -pl chdb-jdbc -am compile`), then run
+`scripts/build-native.sh macos-aarch64`. That script downloads the exact rc.3 asset,
+verifies its SHA-256 and stages the engine plus JNI shim in
+`chdb-native-macos-aarch64/target/native/`. Run the opt-in test with the staged pair:
 
 ```sh
 mvn -pl chdb-arrow -am test -Dchdb.arrow.it=true \
   -Dchdb.library.path="$PWD/chdb-native-macos-aarch64/target/native/META-INF/chdb/native/macos/aarch64" \
-  -Dchdb.skipEngineVersionCheck=true \
   -DargLine=--add-opens=java.base/java.nio=ALL-UNNAMED
 ```
 
-`chdb.skipEngineVersionCheck` is diagnostic-only: this local core reports
-`26.11.0-dev` whereas the Java release baseline is `26.11.0-rc.2`. Do not use
-that override or the `--local-engine` package for a release.
-
-On published core `26.11.0-rc.2`, the registration path omits the release of a
-schema returned by `get_schema`. A Java C Stream scan returned the expected value
-but left 148 bytes charged to its Arrow allocator. The test suite skips only the
-registration-dependent A1/A2/A5 cases on this exact core version; A3/A4 and
-unaffected cases still run and fail normally. This is a temporary PR validation
-boundary, not a claim that repeated input registrations are safe to ship. Once
-a fixed release with all four platform assets is pinned, remove that version gate
-and run the entire suite without `chdb.skipEngineVersionCheck`.
+The earlier core `26.11.0-rc.2` omitted a `get_schema` release during registration:
+a value-correct Java scan left 148 bytes in the Arrow allocator. The rc.3 release
+includes that fix, so **A1/A2/A5 tests are not skipped** on this baseline. One
+separate regression for an unparseable String inserted into Int64 remains disabled
+pending core investigation; it must not be reported as passing. CI exercises the
+same suite on all four native platforms and Java 11/17/21/25 without a version
+override. No production deployment should use a local `--local-engine` package or
+`chdb.skipEngineVersionCheck`.
