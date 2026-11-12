@@ -62,7 +62,9 @@ import org.chdb.arrow.RegisteredArrowSource;
 
 `queryArrow` fetches incrementally. Close it even if you stop before EOF; its
 current `VectorSchemaRoot` is reused on the next `loadNextBatch()`, so copy or
-transfer any data you need to retain. Use `queryArrowMaterialized` instead when
+transfer any data you need to retain. A concurrent `close()` (including closing
+a registered source used by the query) also invalidates that root; coordinate
+batch reads with closure. Use `queryArrowMaterialized` instead when
 the complete query should finish before a reader is returned.
 
 ```java

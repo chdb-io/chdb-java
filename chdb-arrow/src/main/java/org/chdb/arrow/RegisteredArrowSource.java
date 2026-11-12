@@ -41,9 +41,15 @@ public final class RegisteredArrowSource implements AutoCloseable {
     void releaseOwnedResources() throws IOException {
         closed = true;
         try {
-            stream.close();
+            // Core borrows the stream until unregister. ArrowArrayStream.close() only
+            // frees the struct; release() invokes the exported reader's C callback.
+            stream.release();
         } finally {
-            reader.close();
+            try {
+                stream.close();
+            } finally {
+                reader.close();
+            }
         }
     }
 

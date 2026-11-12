@@ -20,8 +20,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.BigIntVector;
+import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.VectorUnloader;
@@ -305,8 +307,12 @@ class ArrowSessionTest {
                 try (RegisteredArrowSource source = session.registerOwnedReader(reader, allocator)) {
                     ArrowQuery query = session.queryArrow("SELECT id FROM " + source.fromSql(), allocator);
                     Future<Long> fetch = executor.submit(() -> {
-                        assertTrue(query.loadNextBatch());
-                        return ((BigIntVector) query.getVectorSchemaRoot().getVector("id")).get(0);
+                        // source.close() closes this query as soon as the fetch finishes.
+                        // Keep the current batch read under the query's close/load lock.
+                        synchronized (query) {
+                            assertTrue(query.loadNextBatch());
+                            return ((BigIntVector) query.getVectorSchemaRoot().getVector("id")).get(0);
+                        }
                     });
                     assertTrue(reading.await(10, TimeUnit.SECONDS));
                     Future<?> close = executor.submit(() -> {
@@ -606,9 +612,12 @@ class ArrowSessionTest {
             }
             try (ArrowQuery dictionaries = session.queryArrow(
                     sql, allocator, new ArrowOptions(false, true, true))) {
-                assertTrue(dictionaries.getVectorSchemaRoot().getSchema().getFields().get(0)
-                        .getDictionary() != null);
+                long id = dictionaries.getVectorSchemaRoot().getSchema().getFields().get(0)
+                        .getDictionary().getId();
                 assertTrue(dictionaries.loadNextBatch());
+                FieldVector indices = dictionaries.getVectorSchemaRoot().getVector("lc");
+                int index = ((Number) indices.getObject(0)).intValue();
+                assertEquals("x", dictionaries.lookup(id).getVector().getObject(index).toString());
             }
         }
     }
@@ -623,11 +632,20 @@ class ArrowSessionTest {
                         allocator, new ArrowOptions(false, true, true))) {
             Schema initial = query.getVectorSchemaRoot().getSchema();
             assertTrue(initial.getFields().get(0).getDictionary() != null);
+            long id = initial.getFields().get(0).getDictionary().getId();
             int batches = 0;
             int rows = 0;
             while (query.loadNextBatch()) {
                 assertEquals(initial, query.getVectorSchemaRoot().getSchema());
-                rows += query.getVectorSchemaRoot().getRowCount();
+                VectorSchemaRoot root = query.getVectorSchemaRoot();
+                FieldVector indices = root.getVector("lc");
+                FieldVector values = query.lookup(id).getVector();
+                for (int position : new int[] {0, root.getRowCount() - 1}) {
+                    int index = ((Number) indices.getObject(position)).intValue();
+                    assertEquals((rows + position) % 2 == 0 ? "even" : "odd",
+                            values.getObject(index).toString());
+                }
+                rows += root.getRowCount();
                 batches++;
             }
             assertEquals(200000, rows);
@@ -656,6 +674,48 @@ class ArrowSessionTest {
                 assertThrows(IllegalStateException.class,
                         () -> session.queryArrow("SELECT 1", allocator));
             }
+        }
+    }
+
+    @Test
+    void sessionCloseDoesNotHoldItsMonitorWhileWaitingForJdbcCloseLock() throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try (ArrowSession session = ArrowSession.openInMemory()) {
+            Field connectionField = ArrowSession.class.getDeclaredField("connection");
+            connectionField.setAccessible(true);
+            ChdbConnection jdbc = (ChdbConnection) connectionField.get(session);
+            Field lockField = ChdbConnection.class.getDeclaredField("closeLock");
+            lockField.setAccessible(true);
+            Object closeLock = lockField.get(jdbc);
+            AtomicReference<Thread> closingThread = new AtomicReference<>();
+            Future<?> close;
+            synchronized (closeLock) {
+                close = executor.submit(() -> {
+                    closingThread.set(Thread.currentThread());
+                    session.close();
+                    return null;
+                });
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while ((closingThread.get() == null
+                        || closingThread.get().getState() != Thread.State.BLOCKED)
+                        && System.nanoTime() < deadline) {
+                    TimeUnit.MILLISECONDS.sleep(5);
+                }
+                assertTrue(closingThread.get() != null
+                        && closingThread.get().getState() == Thread.State.BLOCKED,
+                        "session close should be waiting for the JDBC close lock");
+                // A shutdown hook can acquire closeLock and call back into this monitor.
+                // This probe would time out if ArrowSession.close held it while waiting.
+                Future<?> monitor = executor.submit(() -> {
+                    synchronized (session) {
+                        return null;
+                    }
+                });
+                monitor.get(5, TimeUnit.SECONDS);
+            }
+            close.get(10, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
         }
     }
 }

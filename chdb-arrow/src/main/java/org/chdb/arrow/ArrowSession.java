@@ -119,9 +119,16 @@ public final class ArrowSession implements AutoCloseable {
             return source;
         } catch (SQLException | RuntimeException e) {
             try {
-                stream.close();
+                // A failed registration still owns the exported C callback.
+                stream.release();
             } catch (RuntimeException closeError) {
                 e.addSuppressed(closeError);
+            } finally {
+                try {
+                    stream.close();
+                } catch (RuntimeException closeError) {
+                    e.addSuppressed(closeError);
+                }
             }
             try {
                 reader.close();
@@ -289,16 +296,22 @@ public final class ArrowSession implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() throws SQLException, IOException {
-        if (connection != null) {
+    public void close() throws SQLException, IOException {
+        ChdbConnection current;
+        synchronized (this) {
+            if (connection == null) {
+                return;
+            }
             closeQueries();
             for (RegisteredArrowSource source : new ArrayList<>(sources)) {
                 source.close();
             }
-            ChdbConnection current = connection;
+            current = connection;
             connection = null;
             current.unregisterArrowCloseHook(connectionCloseHook);
-            current.close();
         }
+        // JDBC close holds closeLock and may call the synchronized close hook from a
+        // snapshot. Never wait for closeLock while holding this session's monitor.
+        current.close();
     }
 }

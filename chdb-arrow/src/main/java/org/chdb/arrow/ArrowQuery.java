@@ -2,14 +2,20 @@ package org.chdb.arrow;
 
 import java.io.IOException;
 import java.sql.SQLException;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import org.apache.arrow.c.ArrowArrayStream;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.VectorUnloader;
+import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.arrow.vector.util.TransferPair;
 import org.chdb.jdbc.ChdbConnection;
 
 /**
@@ -23,6 +29,7 @@ public final class ArrowQuery extends ArrowReader {
     private long handle;
     private ArrowReader current;
     private boolean exhausted;
+    private Map<Long, Dictionary> ownedDictionaries;
 
     ArrowQuery(ChdbConnection connection, BufferAllocator allocator, long handle) {
         super(allocator);
@@ -65,6 +72,16 @@ public final class ArrowQuery extends ArrowReader {
     }
 
     @Override
+    protected void initialize() throws IOException {
+        super.initialize();
+        // ArrowReader builds an unmodifiable dictionary map from its schema.
+        // Each native fetch imports a fresh dictionary, so this reader must own
+        // and replace the values while retaining stable dictionary IDs.
+        ownedDictionaries = new HashMap<>(dictionaries);
+        dictionaries = Collections.unmodifiableMap(ownedDictionaries);
+    }
+
+    @Override
     public synchronized boolean loadNextBatch() throws IOException {
         if (exhausted) {
             return false;
@@ -82,6 +99,27 @@ public final class ArrowQuery extends ArrowReader {
                 return false;
             }
             VectorSchemaRoot batch = current.getVectorSchemaRoot();
+            // VectorUnloader only transfers the record's index vectors. Move the
+            // accompanying dictionary values into this reader before closing the
+            // imported per-fetch reader; its dictionary vectors are otherwise lost.
+            for (Map.Entry<Long, Dictionary> entry : current.getDictionaryVectors().entrySet()) {
+                Dictionary previous = ownedDictionaries.get(entry.getKey());
+                if (previous == null) {
+                    throw new IOException("Unknown Arrow dictionary id " + entry.getKey());
+                }
+                Dictionary incoming = entry.getValue();
+                TransferPair pair = incoming.getVector().getTransferPair(allocator);
+                FieldVector movedVector = (FieldVector) pair.getTo();
+                try {
+                    pair.transfer();
+                } catch (RuntimeException e) {
+                    movedVector.close();
+                    throw e;
+                }
+                Dictionary moved = new Dictionary(movedVector, incoming.getEncoding());
+                ownedDictionaries.put(entry.getKey(), moved);
+                previous.getVector().close();
+            }
             try (ArrowRecordBatch record = new VectorUnloader(batch).getRecordBatch()) {
                 loadRecordBatch(record);
             }
