@@ -222,6 +222,23 @@ jobs:
               echo "::error::integration tests failed on Java $VERSION"
               failed="$failed $VERSION"
             fi
+
+            # The optional Arrow module uses Arrow Java's C Data JNI on the same staged
+            # native pair. rc.2 has a known registration-schema release leak, so only
+            # those specific registration/insert cases are assumed off in the test class;
+            # materialized/streamed output, type and negative cases remain hard failures.
+            # No local-engine or skipEngineVersionCheck override is allowed in PR CI.
+            if mvn $MAVEN_ARGS -pl chdb-arrow -am test \
+                 -Djvm="$HOME_DIR/bin/java" \
+                 -Dchdb.arrow.it=true \
+                 -Dchdb.library.path="$LIBS" \
+                 -DargLine=--add-opens=java.base/java.nio=ALL-UNNAMED \
+                 -DfailIfNoTests=true; then
+              echo "Arrow Java $VERSION passed (see report for rc.2-specific skips)"
+            else
+              echo "::error::Arrow integration tests failed on Java $VERSION"
+              failed="$failed $VERSION-arrow"
+            fi
             echo "::endgroup::"
           done
 
@@ -282,7 +299,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-symbols-${{ matrix.platform }}-java${{ matrix.java }}
+          name: debug-symbols-${{ matrix.platform }}
           path: target/debug-symbols/
           if-no-files-found: ignore
           retention-days: 14
@@ -291,9 +308,14 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports-${{ matrix.platform }}-java${{ matrix.java }}
+          name: test-reports-${{ matrix.platform }}
           path: |
             chdb-jdbc/target/surefire-reports/
+            chdb-arrow/target/surefire-reports/
+            chdb-arrow/target/hs_err_pid*.log
+            chdb-arrow/target/replay_pid*.log
+            chdb-arrow/*.dump
+            chdb-arrow/*.dumpstream
             chdb-integration-tests/target/failsafe-reports/
             chdb-integration-tests/target/hs_err_pid*.log
             chdb-integration-tests/target/replay_pid*.log

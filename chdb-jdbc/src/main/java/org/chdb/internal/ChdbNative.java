@@ -28,7 +28,7 @@ public final class ChdbNative {
      * Must equal {@code chdb_jni::kJniAbiVersion} in the shim and {@code
      * chdb.jni.abi.version} in the poms. Verified at load time before any other call.
      */
-    public static final int JNI_ABI_VERSION = 2;
+    public static final int JNI_ABI_VERSION = 3;
 
     /** Handle kinds, for {@link #openHandleCount(int)}. */
     public static final int KIND_CONNECTION = 1;
@@ -38,6 +38,7 @@ public final class ChdbNative {
      * make an old shim and a new driver agree on a number while disagreeing on its meaning.
      */
     public static final int KIND_ROW_BINARY = 4;
+    public static final int KIND_ARROW_STREAM = 5;
 
     static {
         // Loads libchdb and then the shim, in that order, and verifies the ABI.
@@ -122,6 +123,35 @@ public final class ChdbNative {
      */
     public static native long query(
             long connection, byte[] sql, byte[] format, byte[][] paramNames, byte[][] paramValues);
+
+    /**
+     * Materializes a query and transfers an Arrow C stream into the caller-allocated struct.
+     * The caller must release that stream, including when this method throws. The address is
+     * obtained from Arrow Java's ArrowArrayStream, never from a Java heap object.
+     */
+    public static native void queryArrowMaterialized(
+            long connection, byte[] sql, long streamAddress, int optionFlags);
+
+    /** Registers a borrowed Arrow C Stream under a process-unique internal name. */
+    public static native void registerArrowStream(long connection, byte[] name, long streamAddress);
+
+    /** Unregisters before the caller releases the borrowed Arrow C Stream. */
+    public static native void unregisterArrowStream(long connection, byte[] name);
+
+    /** Starts a lazy Arrow query and returns a registry ID, not a native pointer. */
+    public static native long arrowStreamOpen(long connection, byte[] sql, int optionFlags);
+
+    /** Fills a caller-allocated, initially empty C Stream with one fetched batch or EOF. */
+    public static native void arrowStreamFetch(long connection, long stream, long outAddress);
+
+    /** Cooperative cancellation; serialized against fetch on this connection. */
+    public static native void arrowStreamCancel(long connection, long stream);
+
+    /** Destroys the query handle after all fetched C streams have been released. */
+    public static native void arrowStreamClose(long stream);
+
+    /** Synchronous insert from a borrowed Arrow C Stream; no SQL text or settings are accepted. */
+    public static native long insertArrowStream(long connection, byte[] tableName, long streamAddress);
 
     /** Result payload bytes, or an empty array for a statement that produced none. */
     public static native byte[] resultBytes(long result);

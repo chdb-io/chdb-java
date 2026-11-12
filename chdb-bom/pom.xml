@@ -29,6 +29,11 @@
       </dependency>
       <dependency>
         <groupId>com.clickhouse.chdb</groupId>
+        <artifactId>chdb-arrow</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.clickhouse.chdb</groupId>
         <artifactId>chdb-native-macos-aarch64</artifactId>
         <version>${project.version}</version>
       </dependency>
