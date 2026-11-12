@@ -21,6 +21,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import org.apache.arrow.c.ArrowArrayStream;
+import org.apache.arrow.c.Data;
+import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.FieldVector;
@@ -220,6 +223,22 @@ class ArrowSessionTest {
     }
 
     @Test
+    void closingUnscannedImportedReaderDoesNotCloseItTwice() throws Exception {
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory();
+                VectorSchemaRoot root = idBatch(allocator, 71)) {
+            try (ArrowArrayStream exported = ArrowArrayStream.allocateNew(allocator)) {
+                Data.exportArrayStream(allocator, new OneBatchReader(allocator, root), exported);
+                ArrowReader imported = Data.importArrayStream(allocator, exported);
+                try (RegisteredArrowSource source = session.registerOwnedReader(imported, allocator)) {
+                    // Release without scanning. The exported callback closes imported.
+                }
+            }
+            assertEquals(71L, ((BigIntVector) root.getVector("id")).get(0));
+        }
+    }
+
+    @Test
     void closeDuringScanWaitsForBorrowedReader() throws Exception {
         CountDownLatch reading = new CountDownLatch(1);
         CountDownLatch continueReading = new CountDownLatch(1);
@@ -354,6 +373,29 @@ class ArrowSessionTest {
             assertTrue(names.isNull(0));
             assertEquals("你好", names.getObject(1).toString());
             assertFalse(reader.loadNextBatch());
+        }
+    }
+
+    @Test
+    void materializedImportFailureReleasesNativeStream() throws Exception {
+        // One C Stream struct fits, but the second one allocated by the importing
+        // reader does not. The first struct and its native callback must be released.
+        try (RootAllocator limited = new RootAllocator(64);
+                ArrowSession session = ArrowSession.openInMemory()) {
+            assertThrows(OutOfMemoryException.class,
+                    () -> session.queryArrowMaterialized("SELECT toInt64(1) AS id", limited));
+            assertEquals(0L, limited.getAllocatedMemory());
+        }
+    }
+
+    @Test
+    void incrementalImportFailureReleasesNativeStreamAndQueryHandle() throws Exception {
+        try (RootAllocator limited = new RootAllocator(64);
+                ArrowSession session = ArrowSession.openInMemory();
+                ArrowQuery query = session.queryArrow("SELECT toInt64(1) AS id", limited)) {
+            assertThrows(OutOfMemoryException.class, query::loadNextBatch);
+            assertEquals(0L, limited.getAllocatedMemory());
+            assertEquals(0L, ChdbNative.openHandleCount(ChdbNative.KIND_ARROW_STREAM));
         }
     }
 

@@ -103,12 +103,22 @@ public final class ArrowSession implements AutoCloseable {
             throw new IllegalStateException("Arrow session is closed");
         }
         requireNoActiveQuery();
-        ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator);
+        ArrowArrayStream stream;
+        try {
+            stream = ArrowArrayStream.allocateNew(allocator);
+        } catch (RuntimeException e) {
+            try {
+                reader.close();
+            } catch (IOException closeError) {
+                e.addSuppressed(closeError);
+            }
+            throw e;
+        }
         try {
             Data.exportArrayStream(allocator, reader, stream);
             // UUID uses only ASCII characters safe inside the SQL string literal below.
             String name = "chdb_java_" + UUID.randomUUID().toString().replace("-", "");
-            RegisteredArrowSource source = new RegisteredArrowSource(this, reader, stream, name);
+            RegisteredArrowSource source = new RegisteredArrowSource(this, stream, name);
             sources.add(source);
             try {
                 connection.registerArrowStreamNative(name, stream.memoryAddress());
@@ -130,11 +140,8 @@ public final class ArrowSession implements AutoCloseable {
                     e.addSuppressed(closeError);
                 }
             }
-            try {
-                reader.close();
-            } catch (IOException closeError) {
-                e.addSuppressed(closeError);
-            }
+            // On an export failure Arrow's exporter closes the reader; otherwise
+            // the release callback above does. Do not close it a second time.
             throw e;
         }
     }
@@ -177,10 +184,15 @@ public final class ArrowSession implements AutoCloseable {
         }
         requireNoActiveQuery();
         try (ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
-            connection.queryArrowMaterializedNative(sql, stream.memoryAddress(), options.nativeFlags());
-            // importArrayStream moves the release callback into the returned reader. Closing
-            // the now-empty struct is safe; on failure it releases any unconsumed callback.
-            return Data.importArrayStream(allocator, stream);
+            try {
+                connection.queryArrowMaterializedNative(sql, stream.memoryAddress(), options.nativeFlags());
+                // Keep this struct open for the finally block. A successful import
+                // moves the callback and marks it released; a failed import does not.
+                return Data.importArrayStream(allocator, stream, false);
+            } finally {
+                // If import fails before the move, the native result still belongs here.
+                stream.release();
+            }
         }
     }
 

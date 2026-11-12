@@ -46,11 +46,14 @@ public final class ArrowQuery extends ArrowReader {
         try (ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
             try {
                 connection.arrowStreamFetchNative(handle, stream.memoryAddress());
+                // Successful import moves the callback. On failure release the
+                // still-owned native batch before closing the struct buffer.
+                return Data.importArrayStream(allocator, stream, false);
             } catch (SQLException e) {
                 throw new IOException("Failed to fetch an Arrow batch", e);
+            } finally {
+                stream.release();
             }
-            // The imported reader owns the moved callback. The original struct is empty.
-            return Data.importArrayStream(allocator, stream);
         }
     }
 

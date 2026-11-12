@@ -3,7 +3,6 @@ package org.chdb.arrow;
 import java.io.IOException;
 import java.sql.SQLException;
 import org.apache.arrow.c.ArrowArrayStream;
-import org.apache.arrow.vector.ipc.ArrowReader;
 
 /**
  * A borrowed native registration of a one-shot Arrow reader. Close it before its allocator.
@@ -12,14 +11,12 @@ import org.apache.arrow.vector.ipc.ArrowReader;
  */
 public final class RegisteredArrowSource implements AutoCloseable {
     private final ArrowSession session;
-    private final ArrowReader reader;
     private final ArrowArrayStream stream;
     private final String name;
     private boolean closed;
 
-    RegisteredArrowSource(ArrowSession session, ArrowReader reader, ArrowArrayStream stream, String name) {
+    RegisteredArrowSource(ArrowSession session, ArrowArrayStream stream, String name) {
         this.session = session;
-        this.reader = reader;
         this.stream = stream;
         this.name = name;
     }
@@ -45,11 +42,8 @@ public final class RegisteredArrowSource implements AutoCloseable {
             // frees the struct; release() invokes the exported reader's C callback.
             stream.release();
         } finally {
-            try {
-                stream.close();
-            } finally {
-                reader.close();
-            }
+            // The exported stream's release callback already closes its reader.
+            stream.close();
         }
     }
 
