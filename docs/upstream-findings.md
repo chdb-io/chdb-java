@@ -233,7 +233,7 @@ tag v26.7.0, stale constant included, rather than to the header inside the relea
 
 **Consequence for this binding:** `chdb-jni/include/chdb.h` is now taken from the release
 tarball, which is the artifact this binding is built beside and ships against, and
-`shim.built.against.engine.header` reads `26.11.0-rc.2` accordingly. The rule is recorded in
+`shim.built.against.engine.header` reads `26.11.0-rc.3` in this development branch. The rule is recorded in
 `chdb-jni/CMakeLists.txt` where the vendored header is included: copy it from the tarball, not
 from the source tree, and do not edit it — its value is being byte-identical to what upstream
 shipped, which is what makes the next comparison able to detect drift. This finding was made
@@ -366,8 +366,8 @@ recognize. Validating values without validating names catches the rarer mistake.
 **Severity: expected; still handled as optional symbols.**
 
 Neither is in v26.7.0 or v26.7.1-rc.1. Both are in v26.7.2-rc.2, in v26.7.3, in v26.11.0-rc.1
-and in v26.11.0-rc.2, which is now the baseline — exported by all four of its platform
-libraries.
+and in v26.11.0-rc.2 — exported by all four of its platform libraries. The current
+rc.3 baseline must be checked by the new CI matrix.
 Checked in the release library rather than in the source's export list, because the two are not
 the same claim:
 

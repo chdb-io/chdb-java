@@ -41,8 +41,8 @@ import java.util.Set;
  * a Maven coordinate in the message, not something to download at runtime (section 2.3).
  *
  * <h2>Why the order matters</h2>
- * The shim records a dependency on {@code @rpath/libchdb.so} resolved through {@code
- * @loader_path}/{@code $ORIGIN}. Loading {@code libchdb} first by absolute path puts it in
+ * The shim records a dependency on {@code @rpath/libchdb.so} resolved through
+ * {@code @loader_path}/{@code $ORIGIN}. Loading {@code libchdb} first by absolute path puts it in
  * the process's global symbol namespace, so the shim's dependency is already satisfied when
  * it is opened -- and {@code chdb_classify_query_n}, resolved by {@code dlsym(RTLD_DEFAULT)},
  * is findable.

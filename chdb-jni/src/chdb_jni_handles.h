@@ -24,13 +24,14 @@ namespace chdb_jni
 
 // Bumped only on an incompatible change to the Java <-> shim contract. Must match
 // ChdbNative.JNI_ABI_VERSION on the Java side and chdb.jni.abi.version in the poms.
-constexpr int32_t kJniAbiVersion = 2;
+constexpr int32_t kJniAbiVersion = 3;
 
 enum HandleKind : int32_t
 {
     kKindConnection = 1,
     kKindResult = 2,
     kKindRowBinary = 4,
+    kKindArrowStream = 5,
 };
 
 // Lock order, for every mutex in the shim. Acquire left to right, never right to left.
@@ -144,6 +145,7 @@ private:
         counts_.emplace(kKindConnection, 0);
         counts_.emplace(kKindResult, 0);
         counts_.emplace(kKindRowBinary, 0);
+        counts_.emplace(kKindArrowStream, 0);
     }
 
     mutable std::mutex mutex_;

@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongFunction;
 import org.chdb.internal.ChdbNative;
 import org.chdb.internal.ChdbNativeException;
 import org.chdb.internal.NativeLibraryLoader;
@@ -83,6 +84,14 @@ public final class ChdbConnection implements Connection {
      */
     private final Set<ChdbStatement> openStatements =
             Collections.newSetFromMap(new ConcurrentHashMap<ChdbStatement, Boolean>());
+
+    /** Optional Arrow readers must be closed before their connection, like JDBC result sets. */
+    private final Set<AutoCloseable> openArrowQueries =
+            Collections.newSetFromMap(new ConcurrentHashMap<AutoCloseable, Boolean>());
+
+    /** An optional Arrow session can have borrowed sources that outlive a query. */
+    private final Set<AutoCloseable> arrowCloseHooks =
+            Collections.newSetFromMap(new ConcurrentHashMap<AutoCloseable, Boolean>());
 
     /**
      * Arbitrates between a thread starting a statement here and the shutdown hook closing this
@@ -179,6 +188,170 @@ public final class ChdbConnection implements Connection {
 
     StatementSlot statementSlot() {
         return statementSlot;
+    }
+
+    /**
+     * Low-level bridge for the optional chdb-arrow artifact. The address belongs to a
+     * caller-allocated Arrow C Stream struct; this method never owns that struct. Keeping the
+     * native call here shares the JDBC connection's execution gate and statement slot.
+     */
+    public void queryArrowMaterializedNative(String sql, long streamAddress, int optionFlags)
+            throws SQLException {
+        statementSlot.acquire(sql);
+        boolean entered = false;
+        try {
+            entered = executionStarted();
+            if (!entered || isClosed()) {
+                throw ChdbExceptions.closed("Connection");
+            }
+            ChdbNative.queryArrowMaterialized(handle, Utf8.encode(sql), streamAddress, optionFlags);
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Arrow query failed", e);
+        } finally {
+            if (entered) {
+                executionFinished();
+            }
+            statementSlot.release();
+        }
+    }
+
+    /** Internal bridge for a borrowed Arrow C Stream; the caller retains the stream. */
+    public void registerArrowStreamNative(String name, long streamAddress) throws SQLException {
+        arrowRegistrationNative(name, streamAddress, true);
+    }
+
+    /** Internal bridge; the caller may release its C Stream only after this returns. */
+    public void unregisterArrowStreamNative(String name) throws SQLException {
+        arrowRegistrationNative(name, 0, false);
+    }
+
+    /** Registers cleanup to run after queries but before the native connection is destroyed. */
+    public void registerArrowCloseHook(AutoCloseable hook) {
+        synchronized (closeLock) {
+            if (closed.get()) {
+                throw new IllegalStateException("Connection is closed");
+            }
+            arrowCloseHooks.add(hook);
+        }
+    }
+
+    public void unregisterArrowCloseHook(AutoCloseable hook) {
+        arrowCloseHooks.remove(hook);
+    }
+
+    /** Used only by a close hook after the execution gate has stopped new statements. */
+    public void unregisterArrowStreamOnClose(String name) {
+        ChdbNative.unregisterArrowStream(handle, Utf8.encode(name));
+    }
+
+    private void arrowRegistrationNative(String name, long address, boolean register) throws SQLException {
+        statementSlot.acquire(register ? "register Arrow source" : "unregister Arrow source");
+        boolean entered = false;
+        try {
+            entered = executionStarted();
+            if (!entered || isClosed()) {
+                throw ChdbExceptions.closed("Connection");
+            }
+            if (register) {
+                ChdbNative.registerArrowStream(handle, Utf8.encode(name), address);
+            } else {
+                ChdbNative.unregisterArrowStream(handle, Utf8.encode(name));
+            }
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Arrow registration failed", e);
+        } finally {
+            if (entered) {
+                executionFinished();
+            }
+            statementSlot.release();
+        }
+    }
+
+    /** Opens one streaming query and holds the statement slot until arrowStreamCloseNative. */
+    public <T extends AutoCloseable> T arrowStreamOpenNative(
+            String sql, int optionFlags, LongFunction<T> ownerFactory) throws SQLException {
+        statementSlot.acquire(sql);
+        boolean entered = false;
+        boolean handedOff = false;
+        long stream = 0;
+        try {
+            entered = executionStarted();
+            if (!entered || isClosed()) {
+                throw ChdbExceptions.closed("Connection");
+            }
+            stream = ChdbNative.arrowStreamOpen(handle, Utf8.encode(sql), optionFlags);
+            T owner = ownerFactory.apply(stream);
+            // Published before the execution gate is released, so close() cannot miss a
+            // stream in the interval between native open and Java owner construction.
+            openArrowQueries.add(owner);
+            handedOff = true;
+            return owner;
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Arrow stream open failed", e);
+        } finally {
+            if (entered) {
+                executionFinished();
+            }
+            if (!handedOff) {
+                try {
+                    if (stream != 0) {
+                        ChdbNative.arrowStreamClose(stream);
+                    }
+                } finally {
+                    statementSlot.release();
+                }
+            }
+        }
+    }
+
+    /** Fills one Arrow C Stream with a single batch; the caller releases it. */
+    public void arrowStreamFetchNative(long stream, long outAddress) throws SQLException {
+        try {
+            ChdbNative.arrowStreamFetch(handle, stream, outAddress);
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Arrow stream fetch failed", e);
+        }
+    }
+
+    /** Cooperative cancellation after any in-flight fetch; not simultaneous engine calls. */
+    public void arrowStreamCancelNative(long stream) throws SQLException {
+        try {
+            ChdbNative.arrowStreamCancel(handle, stream);
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Arrow stream cancel failed", e);
+        }
+    }
+
+    /** Frees the native result and the connection's statement slot, even on close failure. */
+    public void arrowStreamCloseNative(long stream, AutoCloseable owner) throws SQLException {
+        try {
+            ChdbNative.arrowStreamClose(stream);
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Arrow stream close failed", e);
+        } finally {
+            openArrowQueries.remove(owner);
+            statementSlot.release();
+        }
+    }
+
+    /** Synchronous native Arrow insert, using the same single-statement execution rules. */
+    public long insertArrowStreamNative(String tableName, long streamAddress) throws SQLException {
+        statementSlot.acquire("insert Arrow stream");
+        boolean entered = false;
+        try {
+            entered = executionStarted();
+            if (!entered || isClosed()) {
+                throw ChdbExceptions.closed("Connection");
+            }
+            return ChdbNative.insertArrowStream(handle, Utf8.encode(tableName), streamAddress);
+        } catch (ChdbNativeException e) {
+            throw ChdbExceptions.wrap("Arrow insert failed", e);
+        } finally {
+            if (entered) {
+                executionFinished();
+            }
+            statementSlot.release();
+        }
     }
 
     /**
@@ -414,6 +587,34 @@ public final class ChdbConnection implements Connection {
         // on its next fetch: not an ownership mix-up, which is what it says, but this. See
         // ExecutionGate.closeToNewEntrantsWaiting() for why waiting here costs nothing.
         executionGate.closeToNewEntrantsWaiting();
+
+        for (AutoCloseable query : openArrowQueries.toArray(new AutoCloseable[0])) {
+            try {
+                query.close();
+            } catch (Exception e) {
+                SQLException wrapped = new SQLException("Failed to close an Arrow query", e);
+                if (firstFailure == null) {
+                    firstFailure = wrapped;
+                } else {
+                    firstFailure.addSuppressed(wrapped);
+                }
+            }
+        }
+        openArrowQueries.clear();
+
+        for (AutoCloseable hook : arrowCloseHooks.toArray(new AutoCloseable[0])) {
+            try {
+                hook.close();
+            } catch (Exception e) {
+                SQLException wrapped = new SQLException("Failed to close an Arrow source", e);
+                if (firstFailure == null) {
+                    firstFailure = wrapped;
+                } else {
+                    firstFailure.addSuppressed(wrapped);
+                }
+            }
+        }
+        arrowCloseHooks.clear();
 
         // Statements first, so their streams and chunks are released before the connection
         // they were opened on. The shim keeps a strong reference from stream to connection,

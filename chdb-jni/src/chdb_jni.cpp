@@ -246,6 +246,17 @@ std::string resultError(chdb_result * result)
     return error == nullptr ? std::string() : std::string(error);
 }
 
+bool arrowOptions(JNIEnv * env, jint flags, chdb_arrow_options & out)
+{
+    if ((flags & ~7) != 0)
+    {
+        throwNative(env, "invalid Arrow output option flags");
+        return false;
+    }
+    out = chdb_arrow_options{(flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0};
+    return true;
+}
+
 }  // namespace
 
 // ====================================================================== identity
@@ -433,6 +444,411 @@ Java_org_chdb_internal_ChdbNative_closeConnection(JNIEnv * env, jclass, jlong id
 }
 
 // ====================================================================== non-streaming query
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_chdb_internal_ChdbNative_queryArrowMaterialized(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray sql_bytes, jlong stream_address,
+    jint option_flags)
+{
+    try
+    {
+        if (stream_address == 0)
+        {
+            throwNative(env, "Arrow stream address is null");
+            return;
+        }
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return;
+        std::string sql;
+        if (sql_bytes == nullptr || !toBytes(env, sql_bytes, sql))
+        {
+            if (!env->ExceptionCheck())
+                throwNative(env, "SQL must not be null");
+            return;
+        }
+        chdb_arrow_options options;
+        if (!arrowOptions(env, option_flags, options))
+            return;
+        chdb_result * raw = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            if (connection->conn == nullptr)
+            {
+                throwNative(env, "connection was closed before the Arrow query started");
+                return;
+            }
+            raw = chdb_query_arrow_n(
+                *connection->conn, sql.data(), sql.size(),
+                reinterpret_cast<chdb_arrow_stream>(static_cast<uintptr_t>(stream_address)), &options);
+        }
+        std::unique_ptr<chdb_result, decltype(&chdb_destroy_query_result)> result(
+            raw, &chdb_destroy_query_result);
+        const std::string error = resultError(result.get());
+        if (!error.empty())
+            throwNative(env, error);
+        // The ArrowArrayStream release callback belongs to Java after this point. The
+        // metrics result is a separate object and is destroyed by the unique_ptr above.
+    }
+    catch (const std::bad_alloc &)
+    {
+        throwOutOfMemory(env, "out of memory executing an Arrow query");
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("Arrow query failed: ") + e.what());
+    }
+    catch (...)
+    {
+        throwNative(env, "Arrow query failed with an unknown native exception");
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_chdb_internal_ChdbNative_registerArrowStream(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray name_bytes, jlong stream_address)
+{
+    try
+    {
+        if (stream_address == 0)
+        {
+            throwNative(env, "Arrow stream address is null");
+            return;
+        }
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return;
+        std::string name;
+        if (name_bytes == nullptr || !toBytes(env, name_bytes, name))
+            return;
+        if (name.empty() || name.find('\0') != std::string::npos)
+        {
+            throwNative(env, "Arrow registration name is empty or contains a NUL byte");
+            return;
+        }
+        std::lock_guard<std::mutex> lock(connection->mutex);
+        if (connection->conn == nullptr)
+        {
+            throwNative(env, "connection is closed");
+            return;
+        }
+        if (chdb_arrow_scan(*connection->conn, name.c_str(),
+                reinterpret_cast<chdb_arrow_stream>(static_cast<uintptr_t>(stream_address))) != CHDBSuccess)
+            throwNative(env, "chDB rejected the Arrow stream registration");
+    }
+    catch (const std::bad_alloc &)
+    {
+        throwOutOfMemory(env, "out of memory registering an Arrow stream");
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("Arrow registration failed: ") + e.what());
+    }
+    catch (...)
+    {
+        throwNative(env, "Arrow registration failed with an unknown native exception");
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_chdb_internal_ChdbNative_unregisterArrowStream(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray name_bytes)
+{
+    try
+    {
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return;
+        std::string name;
+        if (name_bytes == nullptr || !toBytes(env, name_bytes, name))
+            return;
+        if (name.empty() || name.find('\0') != std::string::npos)
+        {
+            throwNative(env, "Arrow registration name is empty or contains a NUL byte");
+            return;
+        }
+        std::lock_guard<std::mutex> lock(connection->mutex);
+        if (connection->conn == nullptr)
+        {
+            throwNative(env, "connection is closed");
+            return;
+        }
+        if (chdb_arrow_unregister_table(*connection->conn, name.c_str()) != CHDBSuccess)
+            throwNative(env, "chDB rejected the Arrow stream unregister request");
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("Arrow unregister failed: ") + e.what());
+    }
+    catch (...)
+    {
+        throwNative(env, "Arrow unregister failed with an unknown native exception");
+    }
+}
+
+namespace
+{
+struct ArrowStreamHandle : HandleBase
+{
+    ArrowStreamHandle() : HandleBase(kKindArrowStream) { }
+    ~ArrowStreamHandle() override { closeNow(); }
+    void closeNow()
+    {
+        if (result != nullptr)
+        {
+            chdb_destroy_query_result(result);
+            result = nullptr;
+        }
+    }
+    chdb_result * result = nullptr;
+    std::shared_ptr<ConnHandle> owner;
+};
+
+std::shared_ptr<ArrowStreamHandle> requireArrowStream(JNIEnv * env, jlong id)
+{
+    auto base = HandleRegistry::instance().get(id, kKindArrowStream);
+    if (!base)
+    {
+        throwNative(env, "Arrow query handle " + std::to_string(id) + " is not open");
+        return nullptr;
+    }
+    return std::static_pointer_cast<ArrowStreamHandle>(base);
+}
+} // namespace
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_chdb_internal_ChdbNative_arrowStreamOpen(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray sql_bytes, jint option_flags)
+{
+    try
+    {
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return 0;
+        std::string sql;
+        if (sql_bytes == nullptr || !toBytes(env, sql_bytes, sql))
+            return 0;
+        chdb_arrow_options options;
+        if (!arrowOptions(env, option_flags, options))
+            return 0;
+        chdb_result * raw = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            if (connection->conn == nullptr)
+            {
+                throwNative(env, "connection was closed before Arrow stream open");
+                return 0;
+            }
+            raw = chdb_stream_query_arrow_n(*connection->conn, sql.data(), sql.size(), &options);
+        }
+        std::unique_ptr<chdb_result, decltype(&chdb_destroy_query_result)> result(
+            raw, &chdb_destroy_query_result);
+        const std::string error = resultError(result.get());
+        if (!error.empty())
+        {
+            throwNative(env, error);
+            return 0;
+        }
+        auto handle = std::make_shared<ArrowStreamHandle>();
+        handle->owner = connection;
+        handle->result = result.release();
+        return static_cast<jlong>(HandleRegistry::instance().insert(handle));
+    }
+    catch (const std::bad_alloc &)
+    {
+        throwOutOfMemory(env, "out of memory starting an Arrow query");
+        return 0;
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("Arrow stream open failed: ") + e.what());
+        return 0;
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_chdb_internal_ChdbNative_arrowStreamFetch(
+    JNIEnv * env, jclass, jlong connection_id, jlong stream_id, jlong out_address)
+{
+    try
+    {
+        if (out_address == 0)
+        {
+            throwNative(env, "Arrow output stream address is null");
+            return;
+        }
+        auto stream = requireArrowStream(env, stream_id);
+        if (!stream)
+            return;
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return;
+        if (stream->owner != connection)
+        {
+            throwNative(env, "Arrow query belongs to another connection");
+            return;
+        }
+        std::lock_guard<std::mutex> stream_lock(stream->mutex);
+        std::lock_guard<std::mutex> conn_lock(connection->mutex);
+        if (stream->result == nullptr || connection->conn == nullptr)
+        {
+            throwNative(env, "Arrow query or connection is closed");
+            return;
+        }
+        const auto state = chdb_stream_fetch_arrow(
+            *connection->conn, stream->result,
+            reinterpret_cast<chdb_arrow_stream>(static_cast<uintptr_t>(out_address)));
+        if (state != CHDBSuccess)
+        {
+            const std::string error = resultError(stream->result);
+            throwNative(env, error.empty() ? "Arrow stream fetch failed" : error);
+        }
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("Arrow stream fetch failed: ") + e.what());
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_chdb_internal_ChdbNative_arrowStreamCancel(
+    JNIEnv * env, jclass, jlong connection_id, jlong stream_id)
+{
+    try
+    {
+        auto stream = requireArrowStream(env, stream_id);
+        if (!stream)
+            return;
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return;
+        if (stream->owner != connection)
+        {
+            throwNative(env, "Arrow query belongs to another connection");
+            return;
+        }
+        std::lock_guard<std::mutex> stream_lock(stream->mutex);
+        std::lock_guard<std::mutex> conn_lock(connection->mutex);
+        if (stream->result != nullptr && connection->conn != nullptr)
+            chdb_stream_cancel_query(*connection->conn, stream->result);
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("Arrow stream cancel failed: ") + e.what());
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_chdb_internal_ChdbNative_arrowStreamClose(JNIEnv * env, jclass, jlong stream_id)
+{
+    try
+    {
+        auto base = HandleRegistry::instance().remove(stream_id, kKindArrowStream);
+        if (!base)
+            return;
+        auto stream = std::static_pointer_cast<ArrowStreamHandle>(base);
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        stream->closeNow();
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("Arrow stream close failed: ") + e.what());
+    }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_chdb_internal_ChdbNative_insertArrowStream(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray table_bytes, jlong stream_address)
+{
+    try
+    {
+        if (stream_address == 0)
+        {
+            throwNative(env, "Arrow input stream address is null");
+            return 0;
+        }
+        auto connection = requireConnection(env, connection_id);
+        if (!connection)
+            return 0;
+        std::string table;
+        if (table_bytes == nullptr || !toBytes(env, table_bytes, table))
+            return 0;
+        // core appends dest_table to SQL. Accept only simple, optionally qualified ASCII
+        // identifiers and quote each segment here; no user SQL or SETTINGS cross this seam.
+        std::string quoted;
+        size_t start = 0;
+        unsigned segments = 0;
+        while (start < table.size())
+        {
+            if (++segments > 2)
+                break;
+            size_t end = table.find('.', start);
+            if (end == std::string::npos)
+                end = table.size();
+            if (end == start || !(table[start] == '_' ||
+                    (table[start] >= 'A' && table[start] <= 'Z') ||
+                    (table[start] >= 'a' && table[start] <= 'z')))
+                break;
+            bool valid = true;
+            for (size_t i = start + 1; i < end; ++i)
+            {
+                const char c = table[i];
+                if (!(c == '_' || (c >= 'A' && c <= 'Z') ||
+                    (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+                    valid = false;
+            }
+            if (!valid)
+                break;
+            if (!quoted.empty())
+                quoted += '.';
+            quoted += '`';
+            quoted.append(table, start, end - start);
+            quoted += '`';
+            if (end == table.size())
+            {
+                start = end;
+                break;
+            }
+            start = end + 1;
+        }
+        if (table.empty() || start != table.size() || table.back() == '.' || segments > 2)
+        {
+            throwNative(env, "Arrow destination must be a simple table or database.table identifier");
+            return 0;
+        }
+        chdb_result * raw = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            if (connection->conn == nullptr)
+            {
+                throwNative(env, "connection closed before Arrow insert");
+                return 0;
+            }
+            raw = chdb_insert_arrow_stream(
+                *connection->conn, quoted.c_str(),
+                reinterpret_cast<chdb_arrow_stream>(static_cast<uintptr_t>(stream_address)), nullptr);
+        }
+        std::unique_ptr<chdb_result, decltype(&chdb_destroy_query_result)> result(
+            raw, &chdb_destroy_query_result);
+        const std::string error = resultError(result.get());
+        if (!error.empty())
+        {
+            throwNative(env, error);
+            return 0;
+        }
+        return static_cast<jlong>(chdb_result_rows_written(result.get()));
+    }
+    catch (const std::bad_alloc &)
+    {
+        throwOutOfMemory(env, "out of memory inserting an Arrow stream");
+        return 0;
+    }
+    catch (const std::exception & e)
+    {
+        throwNative(env, std::string("Arrow insert failed: ") + e.what());
+        return 0;
+    }
+}
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_chdb_internal_ChdbNative_query(
@@ -622,7 +1038,7 @@ Java_org_chdb_internal_ChdbNative_classifyQuery(JNIEnv * env, jclass, jlong conn
 {
     try
     {
-        // Optional symbol: present from v26.7.2-rc.2, so on the pinned v26.11.0-rc.2 baseline,
+        // Optional symbol: present from v26.7.2-rc.2, so on the pinned v26.11.0-rc.3 baseline,
         // absent on anything older. Null tells the Java side to use its own statement-shape
         // heuristic rather than failing the query.
         const auto classify = optionalApi().classify_query_n;

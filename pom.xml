@@ -6,7 +6,7 @@
 
   <groupId>com.clickhouse.chdb</groupId>
   <artifactId>chdb-java-parent</artifactId>
-  <version>1.0.0-SNAPSHOT</version>
+  <version>1.0.0-rc.3-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>chDB Java Binding (parent)</name>
@@ -65,12 +65,13 @@
       mirrors them for the shell/CMake side. Changing engine.version requires a new
       Maven version (work plan section 4.3) and a full platform re-test.
     -->
-    <chdb.engine.version>26.11.0-rc.2</chdb.engine.version>
+    <chdb.engine.version>26.11.0-rc.3</chdb.engine.version>
     <chdb.binding.revision>1</chdb.binding.revision>
     <!-- Bumped only on an incompatible change to the Java <-> JNI shim contract. -->
-    <chdb.jni.abi.version>2</chdb.jni.abi.version>
+    <chdb.jni.abi.version>3</chdb.jni.abi.version>
     <!-- Bumped only on an incompatible change to the public Java API. -->
     <chdb.java.api.version>1</chdb.java.api.version>
+    <arrow.java.version>19.0.0</arrow.java.version>
 
     <junit.version>5.10.2</junit.version>
     <surefire.version>3.2.5</surefire.version>
@@ -80,6 +81,7 @@
   <modules>
     <module>chdb-bom</module>
     <module>chdb-jdbc</module>
+    <module>chdb-arrow</module>
     <module>chdb-native-macos-aarch64</module>
     <module>chdb-native-macos-x86_64</module>
     <module>chdb-native-linux-x86_64-gnu</module>

@@ -222,6 +222,21 @@ jobs:
               echo "::error::integration tests failed on Java $VERSION"
               failed="$failed $VERSION"
             fi
+
+            # The optional Arrow module uses Arrow Java's C Data JNI on the same staged
+            # release pair. All A1/A2 registration and A5 insert tests must run on rc.3;
+            # no local-engine or skipEngineVersionCheck override is allowed in PR CI.
+            if mvn $MAVEN_ARGS -pl chdb-arrow -am test \
+                 -Djvm="$HOME_DIR/bin/java" \
+                 -Dchdb.arrow.it=true \
+                 -Dchdb.library.path="$LIBS" \
+                 -DargLine=--add-opens=java.base/java.nio=ALL-UNNAMED \
+                 -DfailIfNoTests=true; then
+              echo "Arrow Java $VERSION passed (see report for the separate core conversion regression)"
+            else
+              echo "::error::Arrow integration tests failed on Java $VERSION"
+              failed="$failed $VERSION-arrow"
+            fi
             echo "::endgroup::"
           done
 
@@ -282,7 +297,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-symbols-${{ matrix.platform }}-java${{ matrix.java }}
+          name: debug-symbols-${{ matrix.platform }}
           path: target/debug-symbols/
           if-no-files-found: ignore
           retention-days: 14
@@ -291,9 +306,14 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports-${{ matrix.platform }}-java${{ matrix.java }}
+          name: test-reports-${{ matrix.platform }}
           path: |
             chdb-jdbc/target/surefire-reports/
+            chdb-arrow/target/surefire-reports/
+            chdb-arrow/target/hs_err_pid*.log
+            chdb-arrow/target/replay_pid*.log
+            chdb-arrow/*.dump
+            chdb-arrow/*.dumpstream
             chdb-integration-tests/target/failsafe-reports/
             chdb-integration-tests/target/hs_err_pid*.log
             chdb-integration-tests/target/replay_pid*.log
@@ -354,6 +374,7 @@ jobs:
             *)         ARCH=x86_64 ;;
           esac
           LIBS="$PWD/chdb-native-${{ matrix.platform }}/target/native/META-INF/chdb/native/linux/$ARCH"
+          ENGINE_VERSION=$(sed -n 's/^engine.version=//p' scripts/engine.properties | head -1)
 
           # The workspace and the local Maven repository are mounted at the paths they already
           # have, so the classpath file needs no rewriting.
@@ -370,7 +391,7 @@ jobs:
               ldd '"$LIBS"'/libchdb_java_jni.so
 
               echo
-              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version=26.11.0-rc.2                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
+              java -Xmx512m                 -Dchdb.library.path='"$LIBS"'                 -Dchdb.it.engine.version='"$ENGINE_VERSION"'                 -cp "'"$PWD"'/chdb-jdbc/target/classes:'"$PWD"'/chdb-integration-tests/target/test-classes:'"$(cat target/it-cp.txt)"'"                 org.junit.platform.console.ConsoleLauncher execute                 --select-package=org.chdb.it                 --include-classname=".*IT"                 --details=summary                 --disable-banner                 --fail-if-no-tests
             '
 
       - name: A query over the memory limit returns an exception, not an OOM kill

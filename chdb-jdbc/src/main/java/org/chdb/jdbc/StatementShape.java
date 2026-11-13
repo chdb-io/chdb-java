@@ -29,7 +29,7 @@ import java.util.Set;
  * <ol>
  *   <li>{@code chdb_classify_query_n}, which parses the SQL with the engine's own parser and
  *       settings and executes nothing. Available from engine v26.7.2-rc.2, so present on the
- *       pinned v26.11.0-rc.2 baseline and asked in practice. Authoritative about
+ *       pinned v26.11.0-rc.3 baseline and asked in practice. Authoritative about
  *       <em>whether</em> there is a result set, but silent on <em>which door</em> delivers it:
  *       {@code CHDB_QUERY_READ_ONLY} covers a {@code SELECT} and a {@code SHOW} alike, so it
  *       cannot tell the two entry points apart. See {@link #route(int[], String)}.

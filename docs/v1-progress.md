@@ -13,11 +13,10 @@ macOS arm64 and x86_64 — each running the full suite on **Java 11, 17, 21 and 
 sanitizer runs on one Linux and one macOS toolchain. Sixteen platform-and-JDK combinations, all
 green.
 
-The baseline has since moved four times, to **engine 26.7.2-rc.2** (issue #8), then to
-**engine 26.7.3**, to **engine 26.11.0-rc.1**, and now to **engine 26.11.0-rc.2**. The first two
-moves were verified on macOS arm64 only; the two 26.11 moves were verified locally on Linux
-x86_64 only. So the sixteen-way result above describes 26.7.0, and the other platforms are
-unverified on the current engine until CI says otherwise.
+The baseline subsequently moved to **engine 26.7.2-rc.2** (issue #8), **26.7.3**,
+**26.11.0-rc.1** and **26.11.0-rc.2**. This development branch now targets
+**26.11.0-rc.3** for Arrow registration fixes. The sixteen-way result above describes
+26.7.0; rc.3 still needs the four-platform CI matrix before making that claim.
 
 26.7.3 is a **stable** chdb-core release, which cleared the [work plan §4.3
 ](../CHDB_JAVA_V1_WORK_PLAN.md) bar that 26.7.2-rc.2 could not: a binding built on an engine
@@ -37,6 +36,10 @@ versions can be cut while it is the baseline, and the stable release has to be p
 has to be pinned before `1.0.0`. The signal-handler fix holds on it too: `measure` reports
 zero and `stress` survives 6 of 6 on Linux x86_64.
 
+26.11.0-rc.3 includes chdb-core #323's Arrow registration-schema and failed array-wrapper
+cleanup fixes. The optional `chdb-arrow` module is under development against this published
+core RC; local macOS arm64 tests do not substitute for its four-platform CI run.
+
 ---
 
 ## Phase 0 — Freeze V1 decisions and upstream dependencies
@@ -48,7 +51,7 @@ zero and `stress` survives 6 of 6 on Linux x86_64.
 | ✅ | Four glibc/macOS platforms | `Platform`, with musl detected and refused |
 | ✅ | Direct JNI is the mainline, ADBC the experiment | no Arrow Java dependency anywhere |
 | ✅ | Engine release, dynamic-library checksum and symbol set pinned | `scripts/engine.properties`, SHA-256 per platform from the GitHub release digests |
-| ✅ | Consistency check across `chdb_version()`, tag and header version | all three agree on v26.11.0-rc.2. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). The v26.7.3 bump re-confirmed that rule the hard way: `programs/local/chdb.h` at the git tag still says `26.7.2`, while the header in the release tarball says `26.7.3`; at the v26.11.0-rc.1 tag it says `26.11.0-dev`. Still enforced against `engine.properties` rather than the header |
+| 🟡 | Consistency check across `chdb_version()`, tag and header version | all three agreed on v26.11.0-rc.2. The rc.3 macOS arm64 release tarball header is now vendored and reports `26.11.0-rc.3`; runtime and the other platforms need CI confirmation. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). Still enforced against `engine.properties` rather than the header |
 | ✅ | C API split into required and optional symbols | 18 required, linker- and load-checked; `chdb_classify_query_n` and `chdb_shutdown` optional via `dlsym`, and present on the current baseline |
 | ⬜ | C ABI version and compatibility promise confirmed with Core | needs upstream agreement |
 | ✅ | Signal-handler requirement raised upstream | reproduced, measured and written up in [findings §1](upstream-findings.md), filed as chdb-core #221, and fixed by chdb-core #224 in engine v26.7.3 — the shim's guard now reports no handler to repair, and `run-signal-window-test.sh measure` reports zero |
