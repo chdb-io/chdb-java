@@ -6,6 +6,7 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -208,15 +209,33 @@ public final class ArrowSession implements AutoCloseable {
     /** Incremental output with explicit core Arrow type mapping choices. */
     public synchronized ArrowQuery queryArrow(
             String sql, BufferAllocator allocator, ArrowOptions options) throws SQLException {
+        return queryArrow(sql, java.util.Collections.emptyMap(), allocator, options);
+    }
+
+    /**
+     * Streams a query with server-side named bindings for SQL {@code {name:Type}} placeholders.
+     * Values are encoded like JDBC string parameters, not interpolated into SQL. Declare a
+     * nullable placeholder (e.g. {@code {name:Nullable(String)}}) for a null map value.
+     * The bindings are scoped to this query; the caller's map is read only during this call.
+     */
+    public synchronized ArrowQuery queryArrow(
+            String sql, Map<String, String> parameters, BufferAllocator allocator) throws SQLException {
+        return queryArrow(sql, parameters, allocator, ArrowOptions.DEFAULT);
+    }
+
+    /** Named bindings with explicit Arrow output type choices. */
+    public synchronized ArrowQuery queryArrow(String sql, Map<String, String> parameters,
+            BufferAllocator allocator, ArrowOptions options) throws SQLException {
         Objects.requireNonNull(sql, "sql");
+        Objects.requireNonNull(parameters, "parameters");
         Objects.requireNonNull(allocator, "allocator");
         Objects.requireNonNull(options, "options");
         if (connection == null) {
             throw new IllegalStateException("Arrow session is closed");
         }
         requireNoActiveQuery();
-        ArrowQuery query = connection.arrowStreamOpenNative(
-                sql, options.nativeFlags(), handle -> new ArrowQuery(connection, allocator, handle));
+        ArrowQuery query = connection.arrowStreamOpenNative(sql, parameters,
+                options.nativeFlags(), handle -> new ArrowQuery(connection, allocator, handle));
         queries.add(query);
         return query;
     }
@@ -225,8 +244,10 @@ public final class ArrowSession implements AutoCloseable {
      * Inserts a one-shot reader into an existing table without Arrow IPC. Only simple ASCII
      * table or database.table names are accepted; core receives no arbitrary settings text.
      * All source columns must be named uniquely, so core cannot silently fall back to
-     * positional insertion. The reader is owned and closed after schema validation, including
-     * on query failure. Like ordinary chDB inserts, this is not transactional.
+     * positional insertion. Once an open session has accepted the call (and has no active
+     * query), it owns and closes the reader even if validation or the insert fails. A closed
+     * session or active query leaves ownership with the caller. Like ordinary chDB inserts,
+     * this is not transactional.
      *
      * @return the core-reported rows written
      */
@@ -240,24 +261,25 @@ public final class ArrowSession implements AutoCloseable {
             throw new IllegalStateException("Arrow session is closed");
         }
         requireNoActiveQuery();
-        if (!tableName.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?")) {
-            throw new IllegalArgumentException("Expected a simple table or database.table name");
-        }
-        Set<String> columns = new HashSet<>();
-        for (org.apache.arrow.vector.types.pojo.Field field : reader.getVectorSchemaRoot()
-                .getSchema().getFields()) {
-            if (field.getName() == null || field.getName().isEmpty()
-                    || !columns.add(field.getName())) {
-                throw new IllegalArgumentException("Arrow insert requires distinct, named columns");
+        try (ArrowReader owned = reader) {
+            if (!tableName.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?")) {
+                throw new IllegalArgumentException("Expected a simple table or database.table name");
             }
-        }
-        if (columns.isEmpty()) {
-            throw new IllegalArgumentException("Arrow insert needs at least one column");
-        }
-        try (ArrowReader owned = reader;
-                ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
-            Data.exportArrayStream(allocator, owned, stream);
-            return connection.insertArrowStreamNative(tableName, stream.memoryAddress());
+            Set<String> columns = new HashSet<>();
+            for (org.apache.arrow.vector.types.pojo.Field field : owned.getVectorSchemaRoot()
+                    .getSchema().getFields()) {
+                if (field.getName() == null || field.getName().isEmpty()
+                        || !columns.add(field.getName())) {
+                    throw new IllegalArgumentException("Arrow insert requires distinct, named columns");
+                }
+            }
+            if (columns.isEmpty()) {
+                throw new IllegalArgumentException("Arrow insert needs at least one column");
+            }
+            try (ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
+                Data.exportArrayStream(allocator, owned, stream);
+                return connection.insertArrowStreamNative(tableName, stream.memoryAddress());
+            }
         }
     }
 

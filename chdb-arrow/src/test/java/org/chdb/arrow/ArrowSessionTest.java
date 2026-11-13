@@ -14,6 +14,8 @@ import java.sql.Statement;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -449,6 +451,42 @@ class ArrowSessionTest {
     }
 
     @Test
+    void streamedNamedParametersAreBoundAndScopedToOneQuery() throws Exception {
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory()) {
+            Map<String, String> values = new LinkedHashMap<>();
+            values.put("id", "42");
+            values.put("text", "a\\b\n\t\0' SQL");
+            values.put("optional", null);
+            try (ArrowQuery query = session.queryArrow(
+                    "SELECT {id:Int64} AS id, {text:String} AS text, "
+                            + "{optional:Nullable(String)} AS optional", values, allocator)) {
+                assertTrue(query.loadNextBatch());
+                VectorSchemaRoot root = query.getVectorSchemaRoot();
+                assertEquals(42L, ((BigIntVector) root.getVector("id")).get(0));
+                assertEquals(values.get("text"), root.getVector("text").getObject(0).toString());
+                assertTrue(root.getVector("optional").isNull(0));
+                assertFalse(query.loadNextBatch());
+            }
+            try (ArrowQuery next = session.queryArrow("SELECT toInt64(43) AS id", allocator)) {
+                assertTrue(next.loadNextBatch());
+                assertEquals(43L, ((BigIntVector) next.getVectorSchemaRoot().getVector("id")).get(0));
+            }
+            assertThrows(IllegalArgumentException.class, () -> session.queryArrow(
+                    "SELECT 1", java.util.Collections.singletonMap("bad name", "x"), allocator));
+            try (ArrowQuery failed = session.queryArrow("SELECT {id:Int64} AS id",
+                    java.util.Collections.singletonMap("id", "not-an-integer"), allocator)) {
+                assertThrows(IOException.class, failed::loadNextBatch);
+            }
+            try (ArrowQuery afterFailure = session.queryArrow("SELECT toInt64(44) AS id", allocator)) {
+                assertTrue(afterFailure.loadNextBatch());
+                assertEquals(44L, ((BigIntVector) afterFailure.getVectorSchemaRoot()
+                        .getVector("id")).get(0));
+            }
+        }
+    }
+
+    @Test
     void streamedEmptyResultRetainsSchemaAndPartialCloseFreesConnection() throws Exception {
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory()) {
@@ -566,6 +604,37 @@ class ArrowSessionTest {
     }
 
     @Test
+    void insertOwnedReaderClosesOnValidationFailureButPreservesCallerRoot() throws Exception {
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory();
+                VectorSchemaRoot root = idBatch(allocator, 42)) {
+            AtomicReference<Boolean> closed = new AtomicReference<>(false);
+            OneBatchReader reader = new OneBatchReader(allocator, root) {
+                @Override protected void closeReadSource() { closed.set(true); }
+            };
+            assertThrows(IllegalArgumentException.class,
+                    () -> session.insertOwnedReader("not a table", reader, allocator));
+            assertTrue(closed.get(), "the accepted reader must close on invalid table name");
+            assertEquals(42L, ((BigIntVector) root.getVector("id")).get(0));
+        }
+
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory()) {
+            BigIntVector first = new BigIntVector("id", allocator);
+            BigIntVector second = new BigIntVector("id", allocator);
+            try (VectorSchemaRoot duplicateRoot = VectorSchemaRoot.of(first, second)) {
+                AtomicReference<Boolean> closed = new AtomicReference<>(false);
+                OneBatchReader reader = new OneBatchReader(allocator, duplicateRoot) {
+                    @Override protected void closeReadSource() { closed.set(true); }
+                };
+                assertThrows(IllegalArgumentException.class,
+                        () -> session.insertOwnedReader("some_table", reader, allocator));
+                assertTrue(closed.get(), "the accepted reader must close on invalid schema");
+            }
+        }
+    }
+
+    @Test
     @Disabled("core 26.11.0-rc.3 ArrowStream inserts invalid String into Int64 as 0; "
             + "ordinary INSERT SELECT rejects it with CANNOT_PARSE_TEXT")
     void invalidInsertValueReportsErrorAndKeepsSessionUsable() throws Exception {
@@ -627,7 +696,7 @@ class ArrowSessionTest {
                 assertTrue(schema.getFields().get(2).getType() instanceof ArrowType.Decimal);
                 assertTrue(defaults.loadNextBatch());
             }
-            ArrowOptions binaryString = new ArrowOptions(false, false, false);
+            ArrowOptions binaryString = ArrowOptions.DEFAULT.withStringAsBinary();
             try (ArrowReader binary = session.queryArrowMaterialized(sql, allocator, binaryString)) {
                 assertTrue(binary.getVectorSchemaRoot().getSchema().getFields().get(0).getType()
                         instanceof ArrowType.Binary);
@@ -653,7 +722,7 @@ class ArrowSessionTest {
                 assertTrue(schema.getFields().get(2).getType() instanceof ArrowType.List);
             }
             try (ArrowQuery dictionaries = session.queryArrow(
-                    sql, allocator, new ArrowOptions(false, true, true))) {
+                    sql, allocator, ArrowOptions.DEFAULT.withLowCardinalityAsDictionary())) {
                 long id = dictionaries.getVectorSchemaRoot().getSchema().getFields().get(0)
                         .getDictionary().getId();
                 assertTrue(dictionaries.loadNextBatch());
@@ -671,7 +740,7 @@ class ArrowSessionTest {
                 ArrowQuery query = session.queryArrow(
                         "SELECT toLowCardinality(if(number % 2 = 0, 'even', 'odd')) AS lc "
                                 + "FROM numbers(200000)",
-                        allocator, new ArrowOptions(false, true, true))) {
+                        allocator, ArrowOptions.DEFAULT.withLowCardinalityAsDictionary())) {
             Schema initial = query.getVectorSchemaRoot().getSchema();
             assertTrue(initial.getFields().get(0).getDictionary() != null);
             long id = initial.getFields().get(0).getDictionary().getId();
@@ -702,7 +771,7 @@ class ArrowSessionTest {
                 ArrowArrayStream exported = ArrowArrayStream.allocateNew(allocator)) {
             ArrowQuery query = session.queryArrow(
                     "SELECT CAST('hello', 'LowCardinality(String)') AS lc",
-                    allocator, new ArrowOptions(false, true, true));
+                    allocator, ArrowOptions.DEFAULT.withLowCardinalityAsDictionary());
             // Export transfers reader ownership to the C Stream. getSchema is called
             // before the stream requests its first batch.
             Data.exportArrayStream(allocator, query, exported);
