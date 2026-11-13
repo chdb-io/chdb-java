@@ -225,8 +225,10 @@ public final class ArrowSession implements AutoCloseable {
      * Inserts a one-shot reader into an existing table without Arrow IPC. Only simple ASCII
      * table or database.table names are accepted; core receives no arbitrary settings text.
      * All source columns must be named uniquely, so core cannot silently fall back to
-     * positional insertion. The reader is owned and closed after schema validation, including
-     * on query failure. Like ordinary chDB inserts, this is not transactional.
+     * positional insertion. Once an open session has accepted the call (and has no active
+     * query), it owns and closes the reader even if validation or the insert fails. A closed
+     * session or active query leaves ownership with the caller. Like ordinary chDB inserts,
+     * this is not transactional.
      *
      * @return the core-reported rows written
      */
@@ -240,24 +242,25 @@ public final class ArrowSession implements AutoCloseable {
             throw new IllegalStateException("Arrow session is closed");
         }
         requireNoActiveQuery();
-        if (!tableName.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?")) {
-            throw new IllegalArgumentException("Expected a simple table or database.table name");
-        }
-        Set<String> columns = new HashSet<>();
-        for (org.apache.arrow.vector.types.pojo.Field field : reader.getVectorSchemaRoot()
-                .getSchema().getFields()) {
-            if (field.getName() == null || field.getName().isEmpty()
-                    || !columns.add(field.getName())) {
-                throw new IllegalArgumentException("Arrow insert requires distinct, named columns");
+        try (ArrowReader owned = reader) {
+            if (!tableName.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?")) {
+                throw new IllegalArgumentException("Expected a simple table or database.table name");
             }
-        }
-        if (columns.isEmpty()) {
-            throw new IllegalArgumentException("Arrow insert needs at least one column");
-        }
-        try (ArrowReader owned = reader;
-                ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
-            Data.exportArrayStream(allocator, owned, stream);
-            return connection.insertArrowStreamNative(tableName, stream.memoryAddress());
+            Set<String> columns = new HashSet<>();
+            for (org.apache.arrow.vector.types.pojo.Field field : owned.getVectorSchemaRoot()
+                    .getSchema().getFields()) {
+                if (field.getName() == null || field.getName().isEmpty()
+                        || !columns.add(field.getName())) {
+                    throw new IllegalArgumentException("Arrow insert requires distinct, named columns");
+                }
+            }
+            if (columns.isEmpty()) {
+                throw new IllegalArgumentException("Arrow insert needs at least one column");
+            }
+            try (ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
+                Data.exportArrayStream(allocator, owned, stream);
+                return connection.insertArrowStreamNative(tableName, stream.memoryAddress());
+            }
         }
     }
 

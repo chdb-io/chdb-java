@@ -168,8 +168,29 @@ exports String as UTF-8. Both query forms accept an explicit `ArrowOptions` for 
 String output, dictionary LowCardinality and lossy unsupported-type output. DateTime
 defaults to Arrow unsigned 32-bit seconds without timezone; use DateTime64 in SQL for
 timestamp semantics.
+Compose named choices from the immutable default, for example
+`ArrowOptions.DEFAULT.withLowCardinalityAsDictionary().withStringAsBinary()`.
+`withUnsupportedAsBinary()` is deliberately lossy; it does not preserve the
+original ClickHouse type. The three-boolean constructor remains available for
+existing callers, but the named choices are easier to review at call sites.
 `registerBatch(root, allocator)` adapts one current `VectorSchemaRoot` batch; the caller
 retains ownership of the root and must not mutate or close it before unregistering.
+`insertOwnedReader` closes an accepted reader even when table/schema validation
+or native insertion fails. If the session is closed or a query is active, it
+rejects the call before taking ownership. `insertBatch` never owns the root.
+
+### Current Java interface limits
+
+There is no export method on an existing JDBC `ResultSet` or `PreparedStatement`.
+An Arrow session opens a separate connection, so connection-local state and JDBC
+bindings do not carry over. The core has a server-side named-parameter entry
+point for *streaming* Arrow queries, but the Java/JNI path does not yet expose
+it; the materialized Arrow C entry point has no matching parameter variant.
+Do not interpolate untrusted values into SQL as a workaround. Incremental
+output also has no caller-selected batch size: `queryArrow` returns core batches
+at core's granularity. Adding a Java parameter that promises an exact batch
+size would require a core facility or explicit Java-side rechunking and its
+associated copy/allocation cost.
 
 ## Testing from source
 
