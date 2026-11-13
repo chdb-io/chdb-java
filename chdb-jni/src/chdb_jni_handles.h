@@ -24,7 +24,7 @@ namespace chdb_jni
 
 // Bumped only on an incompatible change to the Java <-> shim contract. Must match
 // ChdbNative.JNI_ABI_VERSION on the Java side and chdb.jni.abi.version in the poms.
-constexpr int32_t kJniAbiVersion = 3;
+constexpr int32_t kJniAbiVersion = 4;
 
 enum HandleKind : int32_t
 {

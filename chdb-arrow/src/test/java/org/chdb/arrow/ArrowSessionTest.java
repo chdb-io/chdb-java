@@ -14,6 +14,8 @@ import java.sql.Statement;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -445,6 +447,42 @@ class ArrowSessionTest {
             assertEquals(200000, rows);
             assertTrue(batches > 1, "expected more than one core fetch");
             assertFalse(query.loadNextBatch());
+        }
+    }
+
+    @Test
+    void streamedNamedParametersAreBoundAndScopedToOneQuery() throws Exception {
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory()) {
+            Map<String, String> values = new LinkedHashMap<>();
+            values.put("id", "42");
+            values.put("text", "a\\b\n\t\0' SQL");
+            values.put("optional", null);
+            try (ArrowQuery query = session.queryArrow(
+                    "SELECT {id:Int64} AS id, {text:String} AS text, "
+                            + "{optional:Nullable(String)} AS optional", values, allocator)) {
+                assertTrue(query.loadNextBatch());
+                VectorSchemaRoot root = query.getVectorSchemaRoot();
+                assertEquals(42L, ((BigIntVector) root.getVector("id")).get(0));
+                assertEquals(values.get("text"), root.getVector("text").getObject(0).toString());
+                assertTrue(root.getVector("optional").isNull(0));
+                assertFalse(query.loadNextBatch());
+            }
+            try (ArrowQuery next = session.queryArrow("SELECT toInt64(43) AS id", allocator)) {
+                assertTrue(next.loadNextBatch());
+                assertEquals(43L, ((BigIntVector) next.getVectorSchemaRoot().getVector("id")).get(0));
+            }
+            assertThrows(IllegalArgumentException.class, () -> session.queryArrow(
+                    "SELECT 1", java.util.Collections.singletonMap("bad name", "x"), allocator));
+            try (ArrowQuery failed = session.queryArrow("SELECT {id:Int64} AS id",
+                    java.util.Collections.singletonMap("id", "not-an-integer"), allocator)) {
+                assertThrows(IOException.class, failed::loadNextBatch);
+            }
+            try (ArrowQuery afterFailure = session.queryArrow("SELECT toInt64(44) AS id", allocator)) {
+                assertTrue(afterFailure.loadNextBatch());
+                assertEquals(44L, ((BigIntVector) afterFailure.getVectorSchemaRoot()
+                        .getVector("id")).get(0));
+            }
         }
     }
 

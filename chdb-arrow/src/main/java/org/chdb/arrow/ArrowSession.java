@@ -6,6 +6,7 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -208,15 +209,33 @@ public final class ArrowSession implements AutoCloseable {
     /** Incremental output with explicit core Arrow type mapping choices. */
     public synchronized ArrowQuery queryArrow(
             String sql, BufferAllocator allocator, ArrowOptions options) throws SQLException {
+        return queryArrow(sql, java.util.Collections.emptyMap(), allocator, options);
+    }
+
+    /**
+     * Streams a query with server-side named bindings for SQL {@code {name:Type}} placeholders.
+     * Values are encoded like JDBC string parameters, not interpolated into SQL. Declare a
+     * nullable placeholder (e.g. {@code {name:Nullable(String)}}) for a null map value.
+     * The bindings are scoped to this query; the caller's map is read only during this call.
+     */
+    public synchronized ArrowQuery queryArrow(
+            String sql, Map<String, String> parameters, BufferAllocator allocator) throws SQLException {
+        return queryArrow(sql, parameters, allocator, ArrowOptions.DEFAULT);
+    }
+
+    /** Named bindings with explicit Arrow output type choices. */
+    public synchronized ArrowQuery queryArrow(String sql, Map<String, String> parameters,
+            BufferAllocator allocator, ArrowOptions options) throws SQLException {
         Objects.requireNonNull(sql, "sql");
+        Objects.requireNonNull(parameters, "parameters");
         Objects.requireNonNull(allocator, "allocator");
         Objects.requireNonNull(options, "options");
         if (connection == null) {
             throw new IllegalStateException("Arrow session is closed");
         }
         requireNoActiveQuery();
-        ArrowQuery query = connection.arrowStreamOpenNative(
-                sql, options.nativeFlags(), handle -> new ArrowQuery(connection, allocator, handle));
+        ArrowQuery query = connection.arrowStreamOpenNative(sql, parameters,
+                options.nativeFlags(), handle -> new ArrowQuery(connection, allocator, handle));
         queries.add(query);
         return query;
     }
