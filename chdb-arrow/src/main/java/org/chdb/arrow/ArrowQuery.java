@@ -81,6 +81,18 @@ public final class ArrowQuery extends ArrowReader {
         // Each native fetch imports a fresh dictionary, so this reader must own
         // and replace the values while retaining stable dictionary IDs.
         ownedDictionaries = new HashMap<>(dictionaries);
+        // readSchema() receives an already-converted index schema from current.
+        // super.initialize() converts it again and creates index-typed dictionary
+        // placeholders. Replace them with independent empty vectors of the actual
+        // value types before anyone exports this reader's schema, even before load.
+        for (Map.Entry<Long, Dictionary> entry : current.getDictionaryVectors().entrySet()) {
+            FieldVector values = entry.getValue().getVector().getField().createVector(allocator);
+            Dictionary previous = ownedDictionaries.put(entry.getKey(),
+                    new Dictionary(values, entry.getValue().getEncoding()));
+            if (previous != null) {
+                previous.getVector().close();
+            }
+        }
         dictionaries = Collections.unmodifiableMap(ownedDictionaries);
     }
 

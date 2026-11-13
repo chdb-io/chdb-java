@@ -696,6 +696,30 @@ class ArrowSessionTest {
     }
 
     @Test
+    void exportingIncrementalDictionaryBeforeFirstBatchPreservesValueType() throws Exception {
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory();
+                ArrowArrayStream exported = ArrowArrayStream.allocateNew(allocator)) {
+            ArrowQuery query = session.queryArrow(
+                    "SELECT CAST('hello', 'LowCardinality(String)') AS lc",
+                    allocator, new ArrowOptions(false, true, true));
+            // Export transfers reader ownership to the C Stream. getSchema is called
+            // before the stream requests its first batch.
+            Data.exportArrayStream(allocator, query, exported);
+            try (ArrowReader imported = Data.importArrayStream(allocator, exported)) {
+                Schema schema = imported.getVectorSchemaRoot().getSchema();
+                long id = schema.getFields().get(0).getDictionary().getId();
+                assertTrue(imported.lookup(id).getVector().getField().getType()
+                        instanceof ArrowType.Utf8);
+                assertTrue(imported.loadNextBatch());
+                int index = ((Number) imported.getVectorSchemaRoot()
+                        .getVector("lc").getObject(0)).intValue();
+                assertEquals("hello", imported.lookup(id).getVector().getObject(index).toString());
+            }
+        }
+    }
+
+    @Test
     void jdbcConnectionCloseCascadesToArrowQueryAndBorrowedSource() throws Exception {
         try (RootAllocator allocator = new RootAllocator();
                 ArrowSession session = ArrowSession.openInMemory()) {
