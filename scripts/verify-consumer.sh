@@ -167,7 +167,7 @@ step "Deploying to a throwaway file:// repository"
 (
   cd "$ROOT"
   mvn "${MVN_FLAGS[@]}" deploy \
-    -pl ".,chdb-bom,chdb-jdbc,${MODULE}" \
+    -pl ".,chdb-bom,chdb-jdbc,chdb-arrow,${MODULE}" \
     -DskipTests \
     -Dmaven.install.skip=true \
     -DaltDeploymentRepository="chdb-verify::file://${REPO}"
@@ -179,12 +179,13 @@ for coord in \
   "com/clickhouse/chdb/chdb-java-parent/${VERSION}" \
   "com/clickhouse/chdb/chdb-bom/${VERSION}" \
   "com/clickhouse/chdb/chdb-jdbc/${VERSION}" \
+  "com/clickhouse/chdb/chdb-arrow/${VERSION}" \
   "com/clickhouse/chdb/${MODULE}/${VERSION}"; do
   [ -d "${REPO}/${coord}" ] || die "nothing published at ${coord}"
   # A JAR with no POM resolves for a direct dependency and then quietly brings in nothing.
   compgen -G "${REPO}/${coord}/*.pom" > /dev/null || die "no POM published at ${coord}"
 done
-ok "parent, BOM, driver and ${MODULE} are in the repository, each with a POM"
+ok "parent, BOM, driver, Arrow and ${MODULE} are in the repository, each with a POM"
 
 case "$VERSION" in
   *-SNAPSHOT)
@@ -286,6 +287,10 @@ cat > "${CONSUMER}/pom.xml" <<EOF
     <dependency>
       <groupId>com.clickhouse.chdb</groupId>
       <artifactId>${MODULE}</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.clickhouse.chdb</groupId>
+      <artifactId>chdb-arrow</artifactId>
     </dependency>
   </dependencies>
 </project>
@@ -394,6 +399,10 @@ $(printf '%s' "$CP" | tr ':' '\n' | sed 's/^/  /')"
 [ -s "$JDBC_ONLY" ] || die "the resolved chdb-jdbc jar is missing or empty: ${JDBC_ONLY}"
 ok "chdb-jdbc arrived transitively from ${MODULE}, from the local repository"
 printf '   as: %s\n' "$(basename "$JDBC_ONLY")"
+case "$CP" in
+  *"/com/clickhouse/chdb/chdb-arrow/"*.jar*) ;;
+  *) die "chdb-arrow is not on the consumer classpath from the file repository" ;;
+esac
 
 # ---------------------------------------------------------------- 3. run a query
 
@@ -446,6 +455,38 @@ printf '%s\n' "$OUT" | grep -q "engine=${ENGINE_VERSION}" \
 printf '%s\n' "$OUT" | grep -q 'rows=1000 sum=499500' \
   || die "the query returned the wrong answer"
 ok "query ran, engine reports the pinned ${ENGINE_VERSION}"
+
+cat > "${CONSUMER}/src/ArrowConsumer.java" <<'EOF'
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
+import org.chdb.arrow.ArrowQuery;
+import org.chdb.arrow.ArrowSession;
+
+public final class ArrowConsumer {
+    public static void main(String[] args) throws Exception {
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory();
+                ArrowQuery query = session.queryArrow("SELECT toInt64(42) AS id", allocator)) {
+            if (!query.loadNextBatch()) {
+                throw new IllegalStateException("No Arrow batch");
+            }
+            long id = ((BigIntVector) query.getVectorSchemaRoot().getVector("id")).get(0);
+            if (id != 42 || query.loadNextBatch()) {
+                throw new IllegalStateException("Wrong Arrow result: " + id);
+            }
+            System.out.println("arrow=" + id);
+        }
+    }
+}
+EOF
+"$JAVAC" -cp "$CP" -d "${CONSUMER}/classes" "${CONSUMER}/src/ArrowConsumer.java"
+step "Reading Arrow from the JAR in the local repository"
+ARROW_OUT="$("$JAVA" --add-opens=java.base/java.nio=ALL-UNNAMED \
+  -cp "${CP}:${CONSUMER}/classes" -Dchdb.cache.dir="$CACHE" ArrowConsumer 2>&1)" \
+  || die "the consumer could not read Arrow: ${ARROW_OUT}"
+printf '%s\n' "$ARROW_OUT" | grep -q 'arrow=42' \
+  || die "the Arrow consumer returned the wrong result: ${ARROW_OUT}"
+ok "Arrow reader returned 42 from the packaged JNI/engine pair"
 
 # The extraction half of question 5: the libraries a consumer actually loaded are the ones the
 # cache holds, and they are byte-identical to what build-native.sh staged. If the JAR round

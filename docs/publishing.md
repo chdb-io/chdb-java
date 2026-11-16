@@ -113,10 +113,11 @@ and the publishing plugin talks to Sonatype. What it adds:
 
 - `maven-gpg-plugin` at `verify`, with `--pinentry-mode loopback` so the passphrase can come
   from a CI secret rather than a terminal.
-- `central-publishing-maven-plugin` with `autoPublish=false`. A release here is ~510 MB across
-  six artifacts and cannot be unpublished; a human confirming the bundle in the portal is worth
+- `central-publishing-maven-plugin` with `autoPublish=false`. A release here spans seven
+  modules plus their parent POM and hundreds of megabytes; it cannot be unpublished. A human
+  confirming the bundle in the portal is worth
   the extra step, at least until several releases have gone out uneventfully.
-- Sources and javadoc jars. `chdb-jdbc` produces real ones. The four native packages produce
+- Sources and javadoc jars. `chdb-jdbc` and `chdb-arrow` produce real ones. The four native packages produce
   empty ones — Central requires both for every non-`pom` artifact, and a package whose whole
   content is two shared libraries has no Java to document. They are empty by construction
   rather than by accident: `maven-source-plugin` would emit nothing at all and the upload would
@@ -252,7 +253,7 @@ Apache-2.0, `LICENSE` in the repository, declared in the POM. Nothing to do.
 ### The redistributed engine
 
 Each platform package ships a ~326 MB `libchdb.so` verbatim from a chdb-core release. It
-statically links ClickHouse and **1081 third-party components** on v26.11.0-rc.3
+statically links ClickHouse and **1081 third-party components** on v26.11.1 and v26.11.0-rc.3
 (1082 on v26.11.0-rc.1/rc.2; 968 through v26.7.3).
 
 That number, and the licence of each one, comes from the engine itself:
@@ -297,6 +298,10 @@ from the new engine rather than copied.
 The fifth, for v26.11.0-rc.3, has 1081 entries: `gdeflate` (Apache) is absent.
 No copyleft entry changed. Generated from the published macOS arm64 binary and checked
 against that binary by `LicenseInventoryIT`; the other three platform binaries are checked in CI.
+
+The sixth, for stable v26.11.1, was regenerated from its macOS arm64 release binary and is
+byte-identical to rc.3: 1081 entries and the same inventory SHA-256. The remaining three
+platform binaries still need the Java release CI inventory check.
 
 ### The one open question
 
