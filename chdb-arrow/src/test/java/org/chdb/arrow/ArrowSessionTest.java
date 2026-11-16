@@ -38,7 +38,6 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.chdb.jdbc.ChdbConnection;
 import org.chdb.internal.ChdbNative;
@@ -635,28 +634,31 @@ class ArrowSessionTest {
     }
 
     @Test
-    @Disabled("core 26.11.0-rc.3 ArrowStream inserts invalid String into Int64 as 0; "
-            + "ordinary INSERT SELECT rejects it with CANNOT_PARSE_TEXT")
-    void invalidInsertValueReportsErrorAndKeepsSessionUsable() throws Exception {
+    void insertNullAsDefaultCanBeDisabledPerInsert() throws Exception {
         try (RootAllocator allocator = new RootAllocator();
                 Connection ddl = DriverManager.getConnection("jdbc:chdb::memory:");
                 ArrowSession session = ArrowSession.openInMemory()) {
             try (Statement statement = ddl.createStatement()) {
-                statement.execute("CREATE TABLE arrow_java_bad_insert_test (id Int64) "
+                statement.execute("CREATE TABLE arrow_java_null_default_test (id Int64) "
                         + "ENGINE=MergeTree ORDER BY id");
             }
             VarCharVector ids = new VarCharVector("id", allocator);
             ids.allocateNew();
-            ids.setSafe(0, "not-an-integer".getBytes(StandardCharsets.UTF_8));
+            ids.setNull(0);
             ids.setValueCount(1);
             try (VectorSchemaRoot root = VectorSchemaRoot.of(ids)) {
                 root.setRowCount(1);
-                assertThrows(SQLException.class,
-                        () -> session.insertBatch("arrow_java_bad_insert_test", root, allocator));
-                assertEquals("not-an-integer", ids.getObject(0).toString());
+                assertEquals(1L, session.insertBatch("arrow_java_null_default_test", root, allocator));
+                assertThrows(SQLException.class, () -> session.insertBatch(
+                        "arrow_java_null_default_test", root, allocator,
+                        ArrowInsertOptions.REJECT_NULL_AS_DEFAULT));
+                assertTrue(ids.isNull(0));
             }
-            try (ArrowReader next = session.queryArrowMaterialized("SELECT toInt64(71) AS id", allocator)) {
+            try (ArrowReader next = session.queryArrowMaterialized(
+                    "SELECT id FROM arrow_java_null_default_test", allocator)) {
                 assertTrue(next.loadNextBatch());
+                assertEquals(1, next.getVectorSchemaRoot().getRowCount());
+                assertEquals(0L, ((BigIntVector) next.getVectorSchemaRoot().getVector("id")).get(0));
             }
         }
     }

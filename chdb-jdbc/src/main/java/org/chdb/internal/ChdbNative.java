@@ -28,7 +28,7 @@ public final class ChdbNative {
      * Must equal {@code chdb_jni::kJniAbiVersion} in the shim and {@code
      * chdb.jni.abi.version} in the poms. Verified at load time before any other call.
      */
-    public static final int JNI_ABI_VERSION = 4;
+    public static final int JNI_ABI_VERSION = 5;
 
     /** Handle kinds, for {@link #openHandleCount(int)}. */
     public static final int KIND_CONNECTION = 1;
@@ -156,6 +156,10 @@ public final class ChdbNative {
 
     /** Synchronous insert from a borrowed Arrow C Stream; no SQL text or settings are accepted. */
     public static native long insertArrowStream(long connection, byte[] tableName, long streamAddress);
+
+    /** Synchronous insert with a validated native option flag; no caller SQL/settings text. */
+    public static native long insertArrowStreamWithOptions(
+            long connection, byte[] tableName, long streamAddress, int optionFlags);
 
     /** Result payload bytes, or an empty array for a statement that produced none. */
     public static native byte[] resultBytes(long result);

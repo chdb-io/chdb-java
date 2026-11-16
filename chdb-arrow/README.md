@@ -141,9 +141,14 @@ try (RootAllocator allocator = new RootAllocator();
 }
 ```
 
-The input fields must have distinct names. Avoid relying on implicit type
-coercion: a known core regression can silently insert `0` for an unparseable
-Arrow String sent to an `Int64` column. Validate types and values upstream.
+The input fields must have distinct names. The optional
+`ArrowInsertOptions.REJECT_NULL_AS_DEFAULT` passes `insert_null_as_default=0`
+for this insert. With that choice, a NULL source value targeting a non-nullable
+column fails instead of becoming the column default. Existing overloads retain
+the engine default. For example,
+`session.insertBatch("arrow_demo", root, allocator,
+ArrowInsertOptions.REJECT_NULL_AS_DEFAULT)`. Validate source and destination
+types before ingest.
 
 ## API and ownership notes
 
@@ -215,7 +220,7 @@ associated copy/allocation cost.
 The test `ArrowSessionTest` is opt-in (`-Dchdb.arrow.it=true`) and requires a matching
 engine and JNI shim in the directory given by `-Dchdb.library.path`. The previously
 published Java `1.0.0-rc.2` platform JAR has JNI ABI 2 and cannot run this work-in-progress
-ABI 4 module. Arrow Java 19.0.0 on classpath also requires
+ABI 5 module. Arrow Java 19.0.0 on classpath also requires
 `--add-opens=java.base/java.nio=ALL-UNNAMED` on supported JDKs.
 
 The current source pins chDB core `26.11.0-rc.3`. For a macOS arm64 release-asset
@@ -243,9 +248,7 @@ platform, and run its `scripts/build-native.sh <platform-id>` first.
 
 The earlier core `26.11.0-rc.2` omitted a `get_schema` release during registration:
 a value-correct Java scan left 148 bytes in the Arrow allocator. The rc.3 release
-includes that fix, so **A1/A2/A5 tests are not skipped** on this baseline. One
-separate regression for an unparseable String inserted into Int64 remains disabled
-pending core investigation; it must not be reported as passing. CI exercises the
+includes that fix, so **A1/A2/A5 tests are not skipped** on this baseline. CI exercises the
 same suite on all four native platforms and Java 11/17/21/25 without a version
 override. No production deployment should use a local `--local-engine` package or
 `chdb.skipEngineVersionCheck`.
