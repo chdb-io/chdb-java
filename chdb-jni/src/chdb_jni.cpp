@@ -793,12 +793,16 @@ Java_org_chdb_internal_ChdbNative_arrowStreamClose(JNIEnv * env, jclass, jlong s
     }
 }
 
-extern "C" JNIEXPORT jlong JNICALL
-Java_org_chdb_internal_ChdbNative_insertArrowStream(
-    JNIEnv * env, jclass, jlong connection_id, jbyteArray table_bytes, jlong stream_address)
+static jlong insertArrowStreamImpl(JNIEnv * env, jlong connection_id,
+    jbyteArray table_bytes, jlong stream_address, jint option_flags)
 {
     try
     {
+        if (option_flags != 0 && option_flags != 1)
+        {
+            throwNative(env, "Unknown Arrow insert options");
+            return 0;
+        }
         if (stream_address == 0)
         {
             throwNative(env, "Arrow input stream address is null");
@@ -811,7 +815,7 @@ Java_org_chdb_internal_ChdbNative_insertArrowStream(
         if (table_bytes == nullptr || !toBytes(env, table_bytes, table))
             return 0;
         // core appends dest_table to SQL. Accept only simple, optionally qualified ASCII
-        // identifiers and quote each segment here; no user SQL or SETTINGS cross this seam.
+        // identifiers and quote each segment here; no caller SQL or SETTINGS cross this seam.
         std::string quoted;
         size_t start = 0;
         unsigned segments = 0;
@@ -861,9 +865,11 @@ Java_org_chdb_internal_ChdbNative_insertArrowStream(
                 throwNative(env, "connection closed before Arrow insert");
                 return 0;
             }
+            chdb_arrow_insert_options options{"insert_null_as_default=0"};
             raw = chdb_insert_arrow_stream(
                 *connection->conn, quoted.c_str(),
-                reinterpret_cast<chdb_arrow_stream>(static_cast<uintptr_t>(stream_address)), nullptr);
+                reinterpret_cast<chdb_arrow_stream>(static_cast<uintptr_t>(stream_address)),
+                option_flags == 0 ? nullptr : &options);
         }
         std::unique_ptr<chdb_result, decltype(&chdb_destroy_query_result)> result(
             raw, &chdb_destroy_query_result);
@@ -885,6 +891,21 @@ Java_org_chdb_internal_ChdbNative_insertArrowStream(
         throwNative(env, std::string("Arrow insert failed: ") + e.what());
         return 0;
     }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_chdb_internal_ChdbNative_insertArrowStream(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray table_bytes, jlong stream_address)
+{
+    return insertArrowStreamImpl(env, connection_id, table_bytes, stream_address, 0);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_chdb_internal_ChdbNative_insertArrowStreamWithOptions(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray table_bytes,
+    jlong stream_address, jint option_flags)
+{
+    return insertArrowStreamImpl(env, connection_id, table_bytes, stream_address, option_flags);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
