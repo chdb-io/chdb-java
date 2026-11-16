@@ -28,7 +28,7 @@ public final class ChdbNative {
      * Must equal {@code chdb_jni::kJniAbiVersion} in the shim and {@code
      * chdb.jni.abi.version} in the poms. Verified at load time before any other call.
      */
-    public static final int JNI_ABI_VERSION = 3;
+    public static final int JNI_ABI_VERSION = 4;
 
     /** Handle kinds, for {@link #openHandleCount(int)}. */
     public static final int KIND_CONNECTION = 1;
@@ -140,6 +140,10 @@ public final class ChdbNative {
 
     /** Starts a lazy Arrow query and returns a registry ID, not a native pointer. */
     public static native long arrowStreamOpen(long connection, byte[] sql, int optionFlags);
+
+    /** Starts a lazy Arrow query with binary-safe, server-side named parameters. */
+    public static native long arrowStreamOpenWithParams(long connection, byte[] sql,
+            int optionFlags, byte[][] paramNames, byte[][] paramValues);
 
     /** Fills a caller-allocated, initially empty C Stream with one fetched batch or EOF. */
     public static native void arrowStreamFetch(long connection, long stream, long outAddress);

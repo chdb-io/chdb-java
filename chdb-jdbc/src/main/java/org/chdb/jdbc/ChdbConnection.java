@@ -20,6 +20,7 @@ import java.sql.Struct;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -270,6 +271,27 @@ public final class ChdbConnection implements Connection {
     /** Opens one streaming query and holds the statement slot until arrowStreamCloseNative. */
     public <T extends AutoCloseable> T arrowStreamOpenNative(
             String sql, int optionFlags, LongFunction<T> ownerFactory) throws SQLException {
+        return arrowStreamOpenNative(sql, Collections.emptyMap(), optionFlags, ownerFactory);
+    }
+
+    /** Bind typed {name:Type} placeholders using the same escaped-text encoding as JDBC. */
+    public <T extends AutoCloseable> T arrowStreamOpenNative(
+            String sql, Map<String, String> parameters, int optionFlags,
+            LongFunction<T> ownerFactory) throws SQLException {
+        Objects.requireNonNull(parameters, "parameters");
+        byte[][] names = new byte[parameters.size()][];
+        byte[][] values = new byte[parameters.size()][];
+        int index = 0;
+        for (Map.Entry<String, String> entry : parameters.entrySet()) {
+            String name = Objects.requireNonNull(entry.getKey(), "parameter name");
+            if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException("Expected a simple Arrow parameter name: " + name);
+            }
+            names[index] = Utf8.encode(name);
+            values[index] = Utf8.encode(entry.getValue() == null
+                    ? TextEscape.NULL_MARKER : TextEscape.escape(entry.getValue()));
+            index++;
+        }
         statementSlot.acquire(sql);
         boolean entered = false;
         boolean handedOff = false;
@@ -279,7 +301,10 @@ public final class ChdbConnection implements Connection {
             if (!entered || isClosed()) {
                 throw ChdbExceptions.closed("Connection");
             }
-            stream = ChdbNative.arrowStreamOpen(handle, Utf8.encode(sql), optionFlags);
+            stream = names.length == 0
+                    ? ChdbNative.arrowStreamOpen(handle, Utf8.encode(sql), optionFlags)
+                    : ChdbNative.arrowStreamOpenWithParams(
+                            handle, Utf8.encode(sql), optionFlags, names, values);
             T owner = ownerFactory.apply(stream);
             // Published before the execution gate is released, so close() cannot miss a
             // stream in the interval between native open and Java owner construction.

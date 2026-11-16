@@ -616,9 +616,9 @@ std::shared_ptr<ArrowStreamHandle> requireArrowStream(JNIEnv * env, jlong id)
 }
 } // namespace
 
-extern "C" JNIEXPORT jlong JNICALL
-Java_org_chdb_internal_ChdbNative_arrowStreamOpen(
-    JNIEnv * env, jclass, jlong connection_id, jbyteArray sql_bytes, jint option_flags)
+static jlong arrowStreamOpenImpl(JNIEnv * env, jlong connection_id,
+    jbyteArray sql_bytes, jint option_flags, jobjectArray param_name_bytes,
+    jobjectArray param_value_bytes)
 {
     try
     {
@@ -628,6 +628,16 @@ Java_org_chdb_internal_ChdbNative_arrowStreamOpen(
         std::string sql;
         if (sql_bytes == nullptr || !toBytes(env, sql_bytes, sql))
             return 0;
+        std::vector<std::string> names;
+        std::vector<std::string> values;
+        if (!toBytesVector(env, param_name_bytes, names)
+            || !toBytesVector(env, param_value_bytes, values))
+            return 0;
+        if (names.size() != values.size())
+        {
+            throwNative(env, "parameter name and value arrays have different lengths");
+            return 0;
+        }
         chdb_arrow_options options;
         if (!arrowOptions(env, option_flags, options))
             return 0;
@@ -639,7 +649,18 @@ Java_org_chdb_internal_ChdbNative_arrowStreamOpen(
                 throwNative(env, "connection was closed before Arrow stream open");
                 return 0;
             }
-            raw = chdb_stream_query_arrow_n(*connection->conn, sql.data(), sql.size(), &options);
+            if (names.empty())
+            {
+                raw = chdb_stream_query_arrow_n(*connection->conn, sql.data(), sql.size(), &options);
+            }
+            else
+            {
+                ParamArrays params = buildParams(names, values);
+                raw = chdb_stream_query_arrow_with_params_n(*connection->conn,
+                    sql.data(), sql.size(), &options, params.names.data(),
+                    params.name_lengths.data(), params.values.data(),
+                    params.value_lengths.data(), params.names.size());
+            }
         }
         std::unique_ptr<chdb_result, decltype(&chdb_destroy_query_result)> result(
             raw, &chdb_destroy_query_result);
@@ -664,6 +685,22 @@ Java_org_chdb_internal_ChdbNative_arrowStreamOpen(
         throwNative(env, std::string("Arrow stream open failed: ") + e.what());
         return 0;
     }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_chdb_internal_ChdbNative_arrowStreamOpen(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray sql_bytes, jint option_flags)
+{
+    return arrowStreamOpenImpl(env, connection_id, sql_bytes, option_flags, nullptr, nullptr);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_chdb_internal_ChdbNative_arrowStreamOpenWithParams(
+    JNIEnv * env, jclass, jlong connection_id, jbyteArray sql_bytes, jint option_flags,
+    jobjectArray param_name_bytes, jobjectArray param_value_bytes)
+{
+    return arrowStreamOpenImpl(env, connection_id, sql_bytes, option_flags,
+        param_name_bytes, param_value_bytes);
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -168,15 +168,54 @@ exports String as UTF-8. Both query forms accept an explicit `ArrowOptions` for 
 String output, dictionary LowCardinality and lossy unsupported-type output. DateTime
 defaults to Arrow unsigned 32-bit seconds without timezone; use DateTime64 in SQL for
 timestamp semantics.
+Compose named choices from the immutable default, for example
+`ArrowOptions.DEFAULT.withLowCardinalityAsDictionary().withStringAsBinary()`.
+`withUnsupportedAsBinary()` is deliberately lossy; it does not preserve the
+original ClickHouse type. The three-boolean constructor remains available for
+existing callers, but the named choices are easier to review at call sites.
 `registerBatch(root, allocator)` adapts one current `VectorSchemaRoot` batch; the caller
 retains ownership of the root and must not mutate or close it before unregistering.
+`insertOwnedReader` closes an accepted reader even when table/schema validation
+or native insertion fails. If the session is closed or a query is active, it
+rejects the call before taking ownership. `insertBatch` never owns the root.
+
+Streaming queries can bind core's typed named parameters without SQL interpolation:
+
+```java
+try (RootAllocator allocator = new RootAllocator();
+        ArrowSession session = ArrowSession.openInMemory();
+        ArrowQuery rows = session.queryArrow("SELECT {id:Int64} AS id",
+                java.util.Collections.singletonMap("id", "42"), allocator)) {
+    while (rows.loadNextBatch()) {
+        System.out.println(rows.getVectorSchemaRoot().getVector("id").getObject(0));
+    }
+}
+```
+
+The map's values are strings parsed according to each SQL placeholder's type,
+using the JDBC driver's escaped-text encoding. A null value requires a
+`Nullable(...)` placeholder. Names must be simple ASCII identifiers. Binding
+errors may surface on the first batch fetch; values do not remain on the session.
+
+### Current Java interface limits
+
+There is no export method on an existing JDBC `ResultSet` or `PreparedStatement`.
+An Arrow session opens a separate connection, so connection-local state and JDBC
+bindings do not carry over. The separate streaming named-parameter overload
+does not accept JDBC `?` placeholders or a `PreparedStatement`; the materialized
+Arrow C entry point has no matching parameter variant. Do not interpolate
+untrusted values into SQL as a workaround. Incremental
+output also has no caller-selected batch size: `queryArrow` returns core batches
+at core's granularity. Adding a Java parameter that promises an exact batch
+size would require a core facility or explicit Java-side rechunking and its
+associated copy/allocation cost.
 
 ## Testing from source
 
 The test `ArrowSessionTest` is opt-in (`-Dchdb.arrow.it=true`) and requires a matching
 engine and JNI shim in the directory given by `-Dchdb.library.path`. The previously
 published Java `1.0.0-rc.2` platform JAR has JNI ABI 2 and cannot run this work-in-progress
-ABI 3 module. Arrow Java 19.0.0 on classpath also requires
+ABI 4 module. Arrow Java 19.0.0 on classpath also requires
 `--add-opens=java.base/java.nio=ALL-UNNAMED` on supported JDKs.
 
 The current source pins chDB core `26.11.0-rc.3`. For a macOS arm64 release-asset
