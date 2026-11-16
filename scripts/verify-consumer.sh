@@ -230,34 +230,13 @@ cat > "${CONSUMER}/pom.xml" <<EOF
       <releases><enabled>true</enabled></releases>
       <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
     </repository>
-    <!--
-      The Super POM's \`central\`, switched off rather than merely outranked.
-
-      A repository declared here is *added* to the inherited \`central\`, not substituted for
-      it, so with only the block above there were two places a com.clickhouse.chdb artifact could come
-      from. That is fatal to the point of this script: once we publish, a broken artifact we
-      have just deployed to \${REPO} could be masked by a good one on Central, and the check
-      would report that consuming the driver from a repository works. The one thing it exists
-      to catch is exactly that.
-
-      Both \`releases\` and \`snapshots\` disabled means the resolver never consults it, and the
-      URL names nothing so a future change that re-enabled it would fail loudly rather than
-      reach the network. Verified by asking for a Central-only artifact and watching it fail:
-      "Could not find artifact com.zaxxer:HikariCP:jar:5.1.0 in chdb-verify".
-
-      Kept under its own id rather than renaming the block above to \`central\`, which is the
-      other way to do this. Two reasons. Provenance: Maven records the repository an artifact
-      came from by *id* in _remote.repositories, so reusing \`central\` would make our file
-      repository indistinguishable from the real one and the assertion further down could not
-      be written. And plugin repositories keep the id \`central\` pointing at the real Central
-      (see below), so an artifact fetched through that path is recorded as \`central=\` and
-      would then look available from \`central\` to project-scope resolution too, because that
-      bookkeeping is keyed by id and not by URL.
-    -->
+    <!-- Arrow Java requires third-party artifacts from Central. The file repository remains
+         first; the provenance check below rejects any com.clickhouse.chdb artifact that Maven
+         fetched from Central or a mirror, including the parent and BOM POMs. -->
     <repository>
       <id>central</id>
-      <url>file://${WORK}/there-is-no-such-repository</url>
-      <releases><enabled>false</enabled></releases>
+      <url>https://repo.maven.apache.org/maven2</url>
+      <releases><enabled>true</enabled></releases>
       <snapshots><enabled>false</enabled></snapshots>
     </repository>
   </repositories>
@@ -330,7 +309,7 @@ done
 #
 # Maven writes _remote.repositories beside each downloaded file, recording the repository that
 # served it. Anything other than chdb-verify means this run did not test what it claims to:
-# most likely the `central` block above stopped being disabled, or a <mirrorOf>*</mirrorOf> in
+# most likely Central served a chDB coordinate, or a <mirrorOf>*</mirrorOf> in
 # the caller's settings.xml intercepted the file repository. Both are reasons to stop rather
 # than to report a pass.
 #
