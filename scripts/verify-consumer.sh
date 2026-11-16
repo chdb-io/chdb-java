@@ -267,11 +267,19 @@ cat > "${CONSUMER}/pom.xml" <<EOF
       <groupId>com.clickhouse.chdb</groupId>
       <artifactId>${MODULE}</artifactId>
     </dependency>
-    <dependency>
-      <groupId>com.clickhouse.chdb</groupId>
-      <artifactId>chdb-arrow</artifactId>
-    </dependency>
   </dependencies>
+  <!-- The default graph proves the platform POM alone brings in JDBC. -->
+  <profiles>
+    <profile>
+      <id>arrow</id>
+      <dependencies>
+        <dependency>
+          <groupId>com.clickhouse.chdb</groupId>
+          <artifactId>chdb-arrow</artifactId>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
 </project>
 EOF
 
@@ -286,6 +294,10 @@ EOF
 
 CP="$(cat "${WORK}/cp.txt")"
 ok "resolved with no version declared, so the imported BOM supplied it"
+case "$CP" in
+  *"/com/clickhouse/chdb/chdb-arrow/"*.jar*)
+    die "the platform-only graph unexpectedly contains chdb-arrow; it cannot prove the native POM brings JDBC" ;;
+esac
 
 # The point of the whole exercise: these bytes came out of a repository.
 # Split on the classpath separator rather than piping into a loop: a `die` inside a pipeline
@@ -324,31 +336,33 @@ sha1_of_string() {
   else printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1; fi
 }
 REPO_KEY_HURL="chdb-verify-$(sha1_of_string "file://${REPO}")"
-PROVENANCE_LINES=0
-while IFS= read -r record; do
-  while IFS= read -r line; do
-    case "$line" in
-      \#*|"") continue ;;
-    esac
-    PROVENANCE_LINES=$((PROVENANCE_LINES + 1))
-    case "$line" in
-      *">chdb-verify="*) ;;
-      *">${REPO_KEY_HURL}="*) ;;
-      *)
-        die "a com.clickhouse.chdb artifact was served by a repository other than the throwaway one:
+verify_chdb_provenance() {
+  local provenance_lines=0 record line
+  while IFS= read -r record; do
+    while IFS= read -r line; do
+      case "$line" in
+        \#*|"") continue ;;
+      esac
+      provenance_lines=$((provenance_lines + 1))
+      case "$line" in
+        *">chdb-verify="*|*">${REPO_KEY_HURL}="*) ;;
+        *)
+          die "a com.clickhouse.chdb artifact was served by a repository other than the throwaway one:
   ${record}
   ${line}
 Only 'chdb-verify' (or, on Maven 3.10+, '${REPO_KEY_HURL}') proves the artifact under test is the
 one this run deployed. If a mirror in your settings.xml claims '*', run this with -s pointing at
 a settings file that does not."
-        ;;
-    esac
-  done < "$record"
-done < <(find "${CONSUMER_M2}/com/clickhouse/chdb" -name '_remote.repositories' -type f)
-[ "$PROVENANCE_LINES" -gt 0 ] \
-  || die "no _remote.repositories entries under ${CONSUMER_M2}/com/clickhouse/chdb: nothing was actually
+          ;;
+      esac
+    done < "$record"
+  done < <(find "${CONSUMER_M2}/com/clickhouse/chdb" -name '_remote.repositories' -type f)
+  [ "$provenance_lines" -gt 0 ] \
+    || die "no _remote.repositories entries under ${CONSUMER_M2}/com/clickhouse/chdb: nothing was actually
 downloaded, so this run proved nothing about resolving from a repository."
-ok "all ${PROVENANCE_LINES} downloaded com.clickhouse.chdb files came from the throwaway repository, not from Central"
+  ok "all ${provenance_lines} downloaded com.clickhouse.chdb files came from the throwaway repository, not from Central"
+}
+verify_chdb_provenance
 # Located by its repository path rather than by a file name, and this matters more than it
 # looks. A snapshot exists under two names at once: the remote repository holds
 # chdb-jdbc-26.7.2-rc.2.1-20260909.081309-1.jar, and Maven's local repository ends up with
@@ -378,10 +392,6 @@ $(printf '%s' "$CP" | tr ':' '\n' | sed 's/^/  /')"
 [ -s "$JDBC_ONLY" ] || die "the resolved chdb-jdbc jar is missing or empty: ${JDBC_ONLY}"
 ok "chdb-jdbc arrived transitively from ${MODULE}, from the local repository"
 printf '   as: %s\n' "$(basename "$JDBC_ONLY")"
-case "$CP" in
-  *"/com/clickhouse/chdb/chdb-arrow/"*.jar*) ;;
-  *) die "chdb-arrow is not on the consumer classpath from the file repository" ;;
-esac
 
 # ---------------------------------------------------------------- 3. run a query
 
@@ -434,38 +444,6 @@ printf '%s\n' "$OUT" | grep -q "engine=${ENGINE_VERSION}" \
 printf '%s\n' "$OUT" | grep -q 'rows=1000 sum=499500' \
   || die "the query returned the wrong answer"
 ok "query ran, engine reports the pinned ${ENGINE_VERSION}"
-
-cat > "${CONSUMER}/src/ArrowConsumer.java" <<'EOF'
-import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.BigIntVector;
-import org.chdb.arrow.ArrowQuery;
-import org.chdb.arrow.ArrowSession;
-
-public final class ArrowConsumer {
-    public static void main(String[] args) throws Exception {
-        try (RootAllocator allocator = new RootAllocator();
-                ArrowSession session = ArrowSession.openInMemory();
-                ArrowQuery query = session.queryArrow("SELECT toInt64(42) AS id", allocator)) {
-            if (!query.loadNextBatch()) {
-                throw new IllegalStateException("No Arrow batch");
-            }
-            long id = ((BigIntVector) query.getVectorSchemaRoot().getVector("id")).get(0);
-            if (id != 42 || query.loadNextBatch()) {
-                throw new IllegalStateException("Wrong Arrow result: " + id);
-            }
-            System.out.println("arrow=" + id);
-        }
-    }
-}
-EOF
-"$JAVAC" -cp "$CP" -d "${CONSUMER}/classes" "${CONSUMER}/src/ArrowConsumer.java"
-step "Reading Arrow from the JAR in the local repository"
-ARROW_OUT="$("$JAVA" --add-opens=java.base/java.nio=ALL-UNNAMED \
-  -cp "${CP}:${CONSUMER}/classes" -Dchdb.cache.dir="$CACHE" ArrowConsumer 2>&1)" \
-  || die "the consumer could not read Arrow: ${ARROW_OUT}"
-printf '%s\n' "$ARROW_OUT" | grep -q 'arrow=42' \
-  || die "the Arrow consumer returned the wrong result: ${ARROW_OUT}"
-ok "Arrow reader returned 42 from the packaged JNI/engine pair"
 
 # The extraction half of question 5: the libraries a consumer actually loaded are the ones the
 # cache holds, and they are byte-identical to what build-native.sh staged. If the JAR round
@@ -532,6 +510,54 @@ reads exactly like the no-package-at-all case:
 ${WRONG_OUT}"
 ok "names chdb-native-${OTHER_PLATFORM}, and says which package is on the classpath instead"
 printf '%s\n' "$WRONG_OUT" | grep -A6 'No chDB native runtime' | sed 's/^/   | /'
+
+# ---------------------------------------------------------------- 5. the separate Arrow dependency graph
+
+step "Resolving Arrow as an optional dependency"
+(
+  cd "$CONSUMER"
+  mvn "${MVN_FLAGS[@]}" -Dmaven.repo.local="$CONSUMER_M2" -Parrow \
+    dependency:build-classpath -Dmdep.outputFile="${WORK}/cp-arrow.txt"
+) > "${WORK}/resolve-arrow.log" 2>&1 \
+  || { tail -40 "${WORK}/resolve-arrow.log"; die "the Arrow consumer could not resolve its dependencies"; }
+ARROW_CP="$(cat "${WORK}/cp-arrow.txt")"
+case "$ARROW_CP" in
+  *"/com/clickhouse/chdb/chdb-arrow/"*.jar*) ;;
+  *) die "chdb-arrow is not on the optional consumer classpath from the file repository" ;;
+esac
+verify_chdb_provenance
+
+cat > "${CONSUMER}/src/ArrowConsumer.java" <<'EOF'
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
+import org.chdb.arrow.ArrowQuery;
+import org.chdb.arrow.ArrowSession;
+
+public final class ArrowConsumer {
+    public static void main(String[] args) throws Exception {
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory();
+                ArrowQuery query = session.queryArrow("SELECT toInt64(42) AS id", allocator)) {
+            if (!query.loadNextBatch()) {
+                throw new IllegalStateException("No Arrow batch");
+            }
+            long id = ((BigIntVector) query.getVectorSchemaRoot().getVector("id")).get(0);
+            if (id != 42 || query.loadNextBatch()) {
+                throw new IllegalStateException("Wrong Arrow result: " + id);
+            }
+            System.out.println("arrow=" + id);
+        }
+    }
+}
+EOF
+"$JAVAC" -cp "$ARROW_CP" -d "${CONSUMER}/classes" "${CONSUMER}/src/ArrowConsumer.java"
+step "Reading Arrow from the JAR in the local repository"
+ARROW_OUT="$("$JAVA" --add-opens=java.base/java.nio=ALL-UNNAMED \
+  -cp "${ARROW_CP}:${CONSUMER}/classes" -Dchdb.cache.dir="$CACHE" ArrowConsumer 2>&1)" \
+  || die "the consumer could not read Arrow: ${ARROW_OUT}"
+printf '%s\n' "$ARROW_OUT" | grep -q 'arrow=42' \
+  || die "the Arrow consumer returned the wrong result: ${ARROW_OUT}"
+ok "Arrow reader returned 42 from the packaged JNI/engine pair"
 
 printf '\n\033[1mAll consumer checks passed for %s at %s.\033[0m\n' "$PLATFORM" "$VERSION"
 printf 'Not covered here: whether a %s MB artifact survives a real upload and download.\n' \
