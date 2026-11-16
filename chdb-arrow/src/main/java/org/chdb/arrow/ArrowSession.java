@@ -254,9 +254,16 @@ public final class ArrowSession implements AutoCloseable {
     public synchronized long insertOwnedReader(
             String tableName, ArrowReader reader, BufferAllocator allocator)
             throws IOException, SQLException {
+        return insertOwnedReader(tableName, reader, allocator, ArrowInsertOptions.DEFAULT);
+    }
+
+    /** Insert with explicit null-to-default behavior for non-nullable destination columns. */
+    public synchronized long insertOwnedReader(String tableName, ArrowReader reader,
+            BufferAllocator allocator, ArrowInsertOptions options) throws IOException, SQLException {
         Objects.requireNonNull(tableName, "tableName");
         Objects.requireNonNull(reader, "reader");
         Objects.requireNonNull(allocator, "allocator");
+        Objects.requireNonNull(options, "options");
         if (connection == null) {
             throw new IllegalStateException("Arrow session is closed");
         }
@@ -278,7 +285,8 @@ public final class ArrowSession implements AutoCloseable {
             }
             try (ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
                 Data.exportArrayStream(allocator, owned, stream);
-                return connection.insertArrowStreamNative(tableName, stream.memoryAddress());
+                return connection.insertArrowStreamNative(
+                        tableName, stream.memoryAddress(), options.nativeFlags());
             }
         }
     }
@@ -286,8 +294,15 @@ public final class ArrowSession implements AutoCloseable {
     /** Inserts one caller-owned batch; the root remains valid after the call returns. */
     public long insertBatch(String tableName, VectorSchemaRoot root, BufferAllocator allocator)
             throws IOException, SQLException {
+        return insertBatch(tableName, root, allocator, ArrowInsertOptions.DEFAULT);
+    }
+
+    /** Insert one caller-owned batch with explicit null-to-default behavior. */
+    public long insertBatch(String tableName, VectorSchemaRoot root, BufferAllocator allocator,
+            ArrowInsertOptions options) throws IOException, SQLException {
         Objects.requireNonNull(root, "root");
-        return insertOwnedReader(tableName, new SingleBatchReader(allocator, root), allocator);
+        Objects.requireNonNull(options, "options");
+        return insertOwnedReader(tableName, new SingleBatchReader(allocator, root), allocator, options);
     }
 
     private void requireNoActiveQuery() {

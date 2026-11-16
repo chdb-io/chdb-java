@@ -361,6 +361,12 @@ public final class ChdbConnection implements Connection {
 
     /** Synchronous native Arrow insert, using the same single-statement execution rules. */
     public long insertArrowStreamNative(String tableName, long streamAddress) throws SQLException {
+        return insertArrowStreamNative(tableName, streamAddress, 0);
+    }
+
+    /** Native insert with a fixed set of validated Arrow insert choices. */
+    public long insertArrowStreamNative(String tableName, long streamAddress, int optionFlags)
+            throws SQLException {
         statementSlot.acquire("insert Arrow stream");
         boolean entered = false;
         try {
@@ -368,7 +374,10 @@ public final class ChdbConnection implements Connection {
             if (!entered || isClosed()) {
                 throw ChdbExceptions.closed("Connection");
             }
-            return ChdbNative.insertArrowStream(handle, Utf8.encode(tableName), streamAddress);
+            return optionFlags == 0
+                    ? ChdbNative.insertArrowStream(handle, Utf8.encode(tableName), streamAddress)
+                    : ChdbNative.insertArrowStreamWithOptions(
+                            handle, Utf8.encode(tableName), streamAddress, optionFlags);
         } catch (ChdbNativeException e) {
             throw ChdbExceptions.wrap("Arrow insert failed", e);
         } finally {
