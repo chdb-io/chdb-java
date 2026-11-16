@@ -1,9 +1,19 @@
 # chDB Arrow (in development)
 
-This optional artifact currently contains experimental A1 batch/A2 reader registration,
-A3 materialized output, A4 incremental output, and A5 synchronous insert. It is not an implementation of the complete
-A1–A6 native Arrow contract.
-It does not use Arrow IPC, and it does not promise zero copies inside ClickHouse.
+This optional Java module lets an application query an in-memory Arrow batch or one-shot reader, read typed query results all at once or in batches, and insert Arrow data into an existing table. It is experimental; the full ownership, error, compatibility and type tests described by the native Arrow contract remain a separate acceptance gate.
+It exchanges Arrow data through the native C Data/C Stream interfaces rather than Arrow Inter-Process Communication (IPC) bytes. C Data shares a schema, buffers and release callbacks; C Stream supplies successive batches. Internal conversion may still copy data.
+
+## Arrow documentation in this Java binding
+
+| What you need | Where to look |
+| --- | --- |
+| Install the optional Arrow module and matching native package | [Getting started](#getting-started) and [Testing from source](#testing-from-source) below |
+| Query an in-memory Java Arrow batch or reader | [Query a caller-owned Arrow batch](#query-a-caller-owned-arrow-batch) and [API and ownership notes](#api-and-ownership-notes) below |
+| Read typed results or insert a batch | [Read SQL results as Arrow batches](#read-sql-results-as-arrow-batches), [Insert a batch](#insert-a-batch-into-an-existing-table), and [`ArrowSessionTest`](src/test/java/org/chdb/arrow/ArrowSessionTest.java) |
+| Check output type options | [`ArrowOptions`](src/main/java/org/chdb/arrow/ArrowOptions.java) and [its tests](src/test/java/org/chdb/arrow/ArrowOptionsTest.java) |
+| Decide on Arrow Database Connectivity (ADBC) instead | An existing, verified Java ADBC client can use standard Arrow results or bulk ingest. It does not replace `registerOwnedReader` for a temporary SQL `FROM` source; Java Database Connectivity (JDBC) `ResultSet` is a separate row-oriented API. |
+
+This module README is the Java binding's Arrow entry point. See the [core ownership contract](https://github.com/chdb-io/chdb-core/blob/main/docs/NATIVE_ARROW_BINDING_CONTRACT.md) for native ABI details; the standard JDBC docs are not Arrow usage instructions.
 
 ## Getting started
 
@@ -243,7 +253,7 @@ platform, and run its `scripts/build-native.sh <platform-id>` first.
 
 The earlier core `26.11.0-rc.2` omitted a `get_schema` release during registration:
 a value-correct Java scan left 148 bytes in the Arrow allocator. The rc.3 release
-includes that fix, so **A1/A2/A5 tests are not skipped** on this baseline. One
+includes that fix, so the Arrow input and insert tests run on this baseline. One
 separate regression for an unparseable String inserted into Int64 remains disabled
 pending core investigation; it must not be reported as passing. CI exercises the
 same suite on all four native platforms and Java 11/17/21/25 without a version
