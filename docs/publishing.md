@@ -40,7 +40,7 @@ scripts/build-native.sh macos-x86_64                      # on an Intel Mac
 JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-x86_64-gnu
 JAVA_HOME=/path/to/linux-jdk scripts/build-native-in-container.sh linux-aarch64-gnu
 
-mvn versions:set -DnewVersion=1.0.0        # a release, not the -SNAPSHOT in the POM
+mvn versions:set -DnewVersion=1.1.0        # a release, not the -SNAPSHOT in the POM
 mvn -Prelease deploy
 ```
 

@@ -17,6 +17,11 @@ restating.
 
 ## Running order
 
+The release owner selected `v1.1.0` as the first stable Java version on 2026-11-17,
+skipping `1.0.0` GA after the published `1.0.0-rc.1` and `rc.2` test versions. The
+version decision does not waive any gate below. The development POMs remain
+`1.1.0-SNAPSHOT` until step 8 cuts a separate release commit and tag.
+
 The tracks below say *what* and *who*. This says *when*, because each step can invalidate the
 next. Eight steps. Four of them need somebody outside this repository — 1 needs DNS access to
 `chdb.org`, 2 may need Sonatype support, 5 needs chdb-io, and 6 needs two projects willing to

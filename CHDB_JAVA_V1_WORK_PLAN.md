@@ -1,7 +1,7 @@
 # chDB Java binding V1 work plan
 
 > Status: Draft  
-> Updated: 2026-09-08  
+> Updated: 2026-11-17
 > Target repository: `chdb-io/chdb-java`
 
 ## 1. Project goal
@@ -201,7 +201,8 @@ META-INF/sbom/
 
 ### 4.3 Versioning rules
 
-The binding is versioned on its own, in SemVer — `MAJOR.MINOR.PATCH`, first release `1.0.0`.
+The binding is versioned on its own, in SemVer — `MAJOR.MINOR.PATCH`. The first stable
+release is `1.1.0` by the release owner's 2026-11-17 decision; `1.0.0` GA is skipped.
 The number describes the Java API, which is the question a consumer asks it.
 
 The engine version is not in it. It is recorded in each native package's
@@ -215,21 +216,22 @@ a break in the Java API could ship as a trailing `.2`.
 
 | Case | Version |
 |---|---|
-| First release | `1.0.0` |
-| Fix in the driver, loader or JNI shim | `1.0.1` |
-| New engine baseline, no Java API change | `1.1.0` |
+| First stable release | `1.1.0` |
+| Fix in the driver, loader or JNI shim after it | `1.1.1` |
+| Subsequent engine baseline with new capability | `1.2.0` |
 | Breaking change to the Java API | `2.0.0` |
 | First Maven RC / first test version | `1.0.0-rc.1` |
 
 Release rules:
 
-- A published artifact is immutable. Never overwrite `1.0.0`; any fix ships as `1.0.1`.
-- `chdb-jdbc`, the four platform packages and `chdb-bom` always carry the same version.
+- A published artifact is immutable. Never overwrite `1.1.0`; any fix ships as `1.1.1`.
+- `chdb-jdbc`, optional `chdb-arrow`, the four platform packages and `chdb-bom` always carry the same version.
 - An engine change is a `MINOR` bump when it changes what the driver can do and a `PATCH` when it does not. It is never invisible: the manifest and the release notes name the engine.
 - A binding built on an engine RC is an RC and cannot be V1 GA.
 - `-SNAPSHOT` is for development and never reaches Maven Central.
-- **`-rc.<n>` is the shared-repository pre-release qualifier.** The first test version is
-  `1.0.0-rc.1`, followed by `1.0.0-rc.2` and then the stable `1.0.0` release.
+- **`-rc.<n>` is the shared-repository pre-release qualifier.** `1.0.0-rc.1` and
+  `1.0.0-rc.2` were published as test versions; there will be no `1.0.0` GA. The next
+  stable release is `1.1.0`, after the V1 gates below are satisfied.
 
 To remove string-parsing ambiguity, every artifact manifest records these separately:
 
@@ -523,7 +525,7 @@ Exit condition: a Java user who knows nothing about the implementation can insta
 - [ ] Freeze the public Java API and the JNI ABI.
 - [ ] Write the release notes and the known limitations.
 - [ ] Publish an RC and hold a soak and external validation window of at least one week.
-- [ ] Once every V1 release gate passes, publish the first release, `1.0.0`, built on a stable engine.
+- [ ] Once every V1 release gate passes, publish the first stable release, `1.1.0`, built on a stable engine.
 
 ## 6. Milestones
 

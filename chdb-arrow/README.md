@@ -19,7 +19,7 @@ This module README is the Java binding's Arrow entry point. See the [core owners
 
 `chdb-arrow` is **not published yet**. The published Java `1.0.0-rc.2` and its
 native packages cannot run this branch's Arrow API. To try it now, build the
-matching `1.0.0-rc.3-SNAPSHOT` Java and native artifacts from this checkout (see
+matching `1.1.0-SNAPSHOT` Java and native artifacts from this checkout (see
 [Testing from source](#testing-from-source) below). Once a matching set of
 artifacts is available, a Maven consumer needs the optional Arrow module and
 **one** native package for its runtime platform, at the same binding version:
@@ -29,13 +29,13 @@ artifacts is available, a Maven consumer needs the optional Arrow module and
   <dependency>
     <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-arrow</artifactId>
-    <version>1.0.0-rc.3-SNAPSHOT</version>
+    <version>1.1.0-SNAPSHOT</version>
   </dependency>
   <!-- Example for macOS arm64; choose the package for your runtime platform. -->
   <dependency>
     <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-native-macos-aarch64</artifactId>
-    <version>1.0.0-rc.3-SNAPSHOT</version>
+    <version>1.1.0-SNAPSHOT</version>
   </dependency>
 </dependencies>
 ```

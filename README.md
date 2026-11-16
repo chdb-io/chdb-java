@@ -7,7 +7,8 @@ streaming, forward-only result sets over ClickHouse SQL.
 > **Status: release candidate.** The current Maven release candidate is `v1.0.0-rc.2`, built with
 > chDB Core `26.11.0-rc.2`. RC artifacts are available from the public chDB Maven repository; the
 > public API is not frozen. This development branch targets stable core `26.11.1` and adds an
-> optional `chdb-arrow` module for the next Java RC; those artifacts have not been published. See the
+> optional `chdb-arrow` module for the planned `v1.1.0` stable release; those artifacts have not
+> been published. See the
 > [Arrow Java getting-started guide](chdb-arrow/README.md#getting-started) for examples
 > and [What works today](#what-works-today) for the JDBC release status.
 
@@ -26,7 +27,7 @@ try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
 ## Support matrix
 
 The existing JDBC binding has built and passed its full suite on these four platforms and
-Java 11, 17, 21 and 25 in CI. The new Arrow module is added to the PR matrix for the next RC,
+Java 11, 17, 21 and 25 in CI. The new Arrow module is added to the PR matrix for `1.1.0`,
 but is not yet a published-platform claim:
 
 | | Linux glibc | macOS |
@@ -46,7 +47,7 @@ but is not yet a published-platform claim:
 - **Engine in this source branch:** chDB Core **26.11.1**, pinned. Published Java
   `1.0.0-rc.2` still uses core `26.11.0-rc.2`. The C ABI is version-locked, so the driver
   refuses to run against a different engine build rather than risking a struct-layout mismatch.
-  This stable core meets the engine-release requirement for a future Java `1.0.0`, but the
+  This stable core meets the engine-release requirement for the planned Java `1.1.0`, but the
   remaining Java release gates still apply ([work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md)).
 - **Not supported:** Windows, musl (Alpine), 32-bit, GraalVM Native Image, Android.
 
@@ -113,14 +114,14 @@ all-platforms package, on purpose: it would be the sum of those four.
 
 ### Versioning
 
-SemVer, on the binding alone: `1.0.0` is the first release and a major bump means a breaking
+SemVer, on the binding alone: `1.1.0` is the first stable release and a major bump means a breaking
 change to the Java API. The engine version is not part of it — it is in each package's
 `manifest.properties`, pinned in [`scripts/engine.properties`](scripts/engine.properties) and
 named in the release notes (`26.11.0-rc.2` for the published Java RC, `26.11.1`
 in this development branch), and the driver refuses to load any other build.
 
-The first test version is the RC `1.0.0-rc.1`; later candidates increment the final number, and
-the first stable Maven release is `1.0.0`. RCs use the permanent `com.clickhouse.chdb` groupId,
+The first test versions were `1.0.0-rc.1` and `1.0.0-rc.2`; `1.0.0` GA is intentionally skipped.
+The first stable Maven release is planned as `1.1.0`. RCs use the permanent `com.clickhouse.chdb` groupId,
 so publishing stable releases to Maven Central will not change dependency coordinates.
 
 ## Connecting

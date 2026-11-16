@@ -28,12 +28,12 @@ chdb-core #221 — `scripts/run-signal-window-test.sh measure` reports zero on i
 26.11.0-rc.1 is a chdb-core **pre-release** again, pinned to validate the ClickHouse 26.11
 baseline ahead of the stable v26.11.1, so the same §4.3 rule applies to it: only `-rc.<n>`
 versions can be cut while it is the baseline, and the stable release has to be pinned before
-`1.0.0`. The signal-handler fix holds on it — `measure` reports zero and `stress` survives 6 of
+the first Java GA. The signal-handler fix holds on it — `measure` reports zero and `stress` survives 6 of
 6 on Linux x86_64.
 
 26.11.0-rc.2 is the same baseline plus chdb-core #312, a pre-release too, so nothing about
 §4.3 changes: `1.0.0-rc.2` is cut from it, `1.0.0-rc.1` stays on 26.7.3, and v26.11.1
-has to be pinned before `1.0.0`. The signal-handler fix holds on it too: `measure` reports
+has to be pinned before the first stable Java version (now planned as `1.1.0`). The signal-handler fix holds on it too: `measure` reports
 zero and `stress` survives 6 of 6 on Linux x86_64.
 
 26.11.0-rc.3 includes chdb-core #323's Arrow registration-schema and failed array-wrapper
