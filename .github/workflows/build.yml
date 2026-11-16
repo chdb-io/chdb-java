@@ -224,7 +224,7 @@ jobs:
             fi
 
             # The optional Arrow module uses Arrow Java's C Data JNI on the same staged
-            # release pair. All A1/A2 registration and A5 insert tests must run on rc.3;
+            # release pair. All Arrow registration and insert tests must run on this baseline;
             # no local-engine or skipEngineVersionCheck override is allowed in PR CI.
             if mvn $MAVEN_ARGS -pl chdb-arrow -am test \
                  -Djvm="$HOME_DIR/bin/java" \
@@ -232,7 +232,7 @@ jobs:
                  -Dchdb.library.path="$LIBS" \
                  -DargLine=--add-opens=java.base/java.nio=ALL-UNNAMED \
                  -DfailIfNoTests=true; then
-              echo "Arrow Java $VERSION passed (see report for the separate core conversion regression)"
+              echo "Arrow Java $VERSION passed"
             else
               echo "::error::Arrow integration tests failed on Java $VERSION"
               failed="$failed $VERSION-arrow"

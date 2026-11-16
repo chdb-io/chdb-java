@@ -167,7 +167,7 @@ step "Deploying to a throwaway file:// repository"
 (
   cd "$ROOT"
   mvn "${MVN_FLAGS[@]}" deploy \
-    -pl ".,chdb-bom,chdb-jdbc,${MODULE}" \
+    -pl ".,chdb-bom,chdb-jdbc,chdb-arrow,${MODULE}" \
     -DskipTests \
     -Dmaven.install.skip=true \
     -DaltDeploymentRepository="chdb-verify::file://${REPO}"
@@ -179,12 +179,13 @@ for coord in \
   "com/clickhouse/chdb/chdb-java-parent/${VERSION}" \
   "com/clickhouse/chdb/chdb-bom/${VERSION}" \
   "com/clickhouse/chdb/chdb-jdbc/${VERSION}" \
+  "com/clickhouse/chdb/chdb-arrow/${VERSION}" \
   "com/clickhouse/chdb/${MODULE}/${VERSION}"; do
   [ -d "${REPO}/${coord}" ] || die "nothing published at ${coord}"
   # A JAR with no POM resolves for a direct dependency and then quietly brings in nothing.
   compgen -G "${REPO}/${coord}/*.pom" > /dev/null || die "no POM published at ${coord}"
 done
-ok "parent, BOM, driver and ${MODULE} are in the repository, each with a POM"
+ok "parent, BOM, driver, Arrow and ${MODULE} are in the repository, each with a POM"
 
 case "$VERSION" in
   *-SNAPSHOT)
@@ -229,34 +230,13 @@ cat > "${CONSUMER}/pom.xml" <<EOF
       <releases><enabled>true</enabled></releases>
       <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
     </repository>
-    <!--
-      The Super POM's \`central\`, switched off rather than merely outranked.
-
-      A repository declared here is *added* to the inherited \`central\`, not substituted for
-      it, so with only the block above there were two places a com.clickhouse.chdb artifact could come
-      from. That is fatal to the point of this script: once we publish, a broken artifact we
-      have just deployed to \${REPO} could be masked by a good one on Central, and the check
-      would report that consuming the driver from a repository works. The one thing it exists
-      to catch is exactly that.
-
-      Both \`releases\` and \`snapshots\` disabled means the resolver never consults it, and the
-      URL names nothing so a future change that re-enabled it would fail loudly rather than
-      reach the network. Verified by asking for a Central-only artifact and watching it fail:
-      "Could not find artifact com.zaxxer:HikariCP:jar:5.1.0 in chdb-verify".
-
-      Kept under its own id rather than renaming the block above to \`central\`, which is the
-      other way to do this. Two reasons. Provenance: Maven records the repository an artifact
-      came from by *id* in _remote.repositories, so reusing \`central\` would make our file
-      repository indistinguishable from the real one and the assertion further down could not
-      be written. And plugin repositories keep the id \`central\` pointing at the real Central
-      (see below), so an artifact fetched through that path is recorded as \`central=\` and
-      would then look available from \`central\` to project-scope resolution too, because that
-      bookkeeping is keyed by id and not by URL.
-    -->
+    <!-- Arrow Java requires third-party artifacts from Central. The file repository remains
+         first; the provenance check below rejects any com.clickhouse.chdb artifact that Maven
+         fetched from Central or a mirror, including the parent and BOM POMs. -->
     <repository>
       <id>central</id>
-      <url>file://${WORK}/there-is-no-such-repository</url>
-      <releases><enabled>false</enabled></releases>
+      <url>https://repo.maven.apache.org/maven2</url>
+      <releases><enabled>true</enabled></releases>
       <snapshots><enabled>false</enabled></snapshots>
     </repository>
   </repositories>
@@ -288,6 +268,18 @@ cat > "${CONSUMER}/pom.xml" <<EOF
       <artifactId>${MODULE}</artifactId>
     </dependency>
   </dependencies>
+  <!-- The default graph proves the platform POM alone brings in JDBC. -->
+  <profiles>
+    <profile>
+      <id>arrow</id>
+      <dependencies>
+        <dependency>
+          <groupId>com.clickhouse.chdb</groupId>
+          <artifactId>chdb-arrow</artifactId>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
 </project>
 EOF
 
@@ -302,6 +294,10 @@ EOF
 
 CP="$(cat "${WORK}/cp.txt")"
 ok "resolved with no version declared, so the imported BOM supplied it"
+case "$CP" in
+  *"/com/clickhouse/chdb/chdb-arrow/"*.jar*)
+    die "the platform-only graph unexpectedly contains chdb-arrow; it cannot prove the native POM brings JDBC" ;;
+esac
 
 # The point of the whole exercise: these bytes came out of a repository.
 # Split on the classpath separator rather than piping into a loop: a `die` inside a pipeline
@@ -325,7 +321,7 @@ done
 #
 # Maven writes _remote.repositories beside each downloaded file, recording the repository that
 # served it. Anything other than chdb-verify means this run did not test what it claims to:
-# most likely the `central` block above stopped being disabled, or a <mirrorOf>*</mirrorOf> in
+# most likely Central served a chDB coordinate, or a <mirrorOf>*</mirrorOf> in
 # the caller's settings.xml intercepted the file repository. Both are reasons to stop rather
 # than to report a pass.
 #
@@ -340,31 +336,33 @@ sha1_of_string() {
   else printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1; fi
 }
 REPO_KEY_HURL="chdb-verify-$(sha1_of_string "file://${REPO}")"
-PROVENANCE_LINES=0
-while IFS= read -r record; do
-  while IFS= read -r line; do
-    case "$line" in
-      \#*|"") continue ;;
-    esac
-    PROVENANCE_LINES=$((PROVENANCE_LINES + 1))
-    case "$line" in
-      *">chdb-verify="*) ;;
-      *">${REPO_KEY_HURL}="*) ;;
-      *)
-        die "a com.clickhouse.chdb artifact was served by a repository other than the throwaway one:
+verify_chdb_provenance() {
+  local provenance_lines=0 record line
+  while IFS= read -r record; do
+    while IFS= read -r line; do
+      case "$line" in
+        \#*|"") continue ;;
+      esac
+      provenance_lines=$((provenance_lines + 1))
+      case "$line" in
+        *">chdb-verify="*|*">${REPO_KEY_HURL}="*) ;;
+        *)
+          die "a com.clickhouse.chdb artifact was served by a repository other than the throwaway one:
   ${record}
   ${line}
 Only 'chdb-verify' (or, on Maven 3.10+, '${REPO_KEY_HURL}') proves the artifact under test is the
 one this run deployed. If a mirror in your settings.xml claims '*', run this with -s pointing at
 a settings file that does not."
-        ;;
-    esac
-  done < "$record"
-done < <(find "${CONSUMER_M2}/com/clickhouse/chdb" -name '_remote.repositories' -type f)
-[ "$PROVENANCE_LINES" -gt 0 ] \
-  || die "no _remote.repositories entries under ${CONSUMER_M2}/com/clickhouse/chdb: nothing was actually
+          ;;
+      esac
+    done < "$record"
+  done < <(find "${CONSUMER_M2}/com/clickhouse/chdb" -name '_remote.repositories' -type f)
+  [ "$provenance_lines" -gt 0 ] \
+    || die "no _remote.repositories entries under ${CONSUMER_M2}/com/clickhouse/chdb: nothing was actually
 downloaded, so this run proved nothing about resolving from a repository."
-ok "all ${PROVENANCE_LINES} downloaded com.clickhouse.chdb files came from the throwaway repository, not from Central"
+  ok "all ${provenance_lines} downloaded com.clickhouse.chdb files came from the throwaway repository, not from Central"
+}
+verify_chdb_provenance
 # Located by its repository path rather than by a file name, and this matters more than it
 # looks. A snapshot exists under two names at once: the remote repository holds
 # chdb-jdbc-26.7.2-rc.2.1-20260909.081309-1.jar, and Maven's local repository ends up with
@@ -512,6 +510,54 @@ reads exactly like the no-package-at-all case:
 ${WRONG_OUT}"
 ok "names chdb-native-${OTHER_PLATFORM}, and says which package is on the classpath instead"
 printf '%s\n' "$WRONG_OUT" | grep -A6 'No chDB native runtime' | sed 's/^/   | /'
+
+# ---------------------------------------------------------------- 5. the separate Arrow dependency graph
+
+step "Resolving Arrow as an optional dependency"
+(
+  cd "$CONSUMER"
+  mvn "${MVN_FLAGS[@]}" -Dmaven.repo.local="$CONSUMER_M2" -Parrow \
+    dependency:build-classpath -Dmdep.outputFile="${WORK}/cp-arrow.txt"
+) > "${WORK}/resolve-arrow.log" 2>&1 \
+  || { tail -40 "${WORK}/resolve-arrow.log"; die "the Arrow consumer could not resolve its dependencies"; }
+ARROW_CP="$(cat "${WORK}/cp-arrow.txt")"
+case "$ARROW_CP" in
+  *"/com/clickhouse/chdb/chdb-arrow/"*.jar*) ;;
+  *) die "chdb-arrow is not on the optional consumer classpath from the file repository" ;;
+esac
+verify_chdb_provenance
+
+cat > "${CONSUMER}/src/ArrowConsumer.java" <<'EOF'
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
+import org.chdb.arrow.ArrowQuery;
+import org.chdb.arrow.ArrowSession;
+
+public final class ArrowConsumer {
+    public static void main(String[] args) throws Exception {
+        try (RootAllocator allocator = new RootAllocator();
+                ArrowSession session = ArrowSession.openInMemory();
+                ArrowQuery query = session.queryArrow("SELECT toInt64(42) AS id", allocator)) {
+            if (!query.loadNextBatch()) {
+                throw new IllegalStateException("No Arrow batch");
+            }
+            long id = ((BigIntVector) query.getVectorSchemaRoot().getVector("id")).get(0);
+            if (id != 42 || query.loadNextBatch()) {
+                throw new IllegalStateException("Wrong Arrow result: " + id);
+            }
+            System.out.println("arrow=" + id);
+        }
+    }
+}
+EOF
+"$JAVAC" -cp "$ARROW_CP" -d "${CONSUMER}/classes" "${CONSUMER}/src/ArrowConsumer.java"
+step "Reading Arrow from the JAR in the local repository"
+ARROW_OUT="$("$JAVA" --add-opens=java.base/java.nio=ALL-UNNAMED \
+  -cp "${ARROW_CP}:${CONSUMER}/classes" -Dchdb.cache.dir="$CACHE" ArrowConsumer 2>&1)" \
+  || die "the consumer could not read Arrow: ${ARROW_OUT}"
+printf '%s\n' "$ARROW_OUT" | grep -q 'arrow=42' \
+  || die "the Arrow consumer returned the wrong result: ${ARROW_OUT}"
+ok "Arrow reader returned 42 from the packaged JNI/engine pair"
 
 printf '\n\033[1mAll consumer checks passed for %s at %s.\033[0m\n' "$PLATFORM" "$VERSION"
 printf 'Not covered here: whether a %s MB artifact survives a real upload and download.\n' \

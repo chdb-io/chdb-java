@@ -311,6 +311,7 @@ jobs:
         # preflight already checked `build` was green: the staged bytes here are new bytes.
         run: |
           set -euo pipefail
+          exec </dev/null
           case "${{ matrix.platform }}" in
             macos-*) OS=macos ;;
             *)       OS=linux ;;
@@ -323,6 +324,10 @@ jobs:
           mvn $MAVEN_ARGS -pl chdb-integration-tests -am verify \
             -Dchdb.it.platform=${{ matrix.platform }} \
             -Dchdb.it.library.path="$LIBS"
+          mvn $MAVEN_ARGS -pl chdb-arrow -am test \
+            -Dchdb.arrow.it=true -Dchdb.library.path="$LIBS" \
+            -DargLine=--add-opens=java.base/java.nio=ALL-UNNAMED \
+            -DfailIfNoTests=true
 
       - name: Upload the staged platform package
         uses: actions/upload-artifact@v4
@@ -482,7 +487,7 @@ jobs:
           if [ "$DRY_RUN" = "true" ]; then GOAL=verify; fi
           echo "mvn -Prelease $GOAL for $VERSION ($CHANNEL)"
           mvn $MAVEN_ARGS -Prelease "$GOAL" \
-            -pl .,chdb-bom,chdb-jdbc,chdb-native-macos-aarch64,chdb-native-macos-x86_64,chdb-native-linux-x86_64-gnu,chdb-native-linux-aarch64-gnu
+            -pl .,chdb-bom,chdb-jdbc,chdb-arrow,chdb-native-macos-aarch64,chdb-native-macos-x86_64,chdb-native-linux-x86_64-gnu,chdb-native-linux-aarch64-gnu
 
       - name: What was produced
         if: always()

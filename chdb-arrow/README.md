@@ -19,7 +19,7 @@ This module README is the Java binding's Arrow entry point. See the [core owners
 
 `chdb-arrow` is **not published yet**. The published Java `1.0.0-rc.2` and its
 native packages cannot run this branch's Arrow API. To try it now, build the
-matching `1.0.0-rc.3-SNAPSHOT` Java and native artifacts from this checkout (see
+matching `1.1.0-SNAPSHOT` Java and native artifacts from this checkout (see
 [Testing from source](#testing-from-source) below). Once a matching set of
 artifacts is available, a Maven consumer needs the optional Arrow module and
 **one** native package for its runtime platform, at the same binding version:
@@ -29,13 +29,13 @@ artifacts is available, a Maven consumer needs the optional Arrow module and
   <dependency>
     <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-arrow</artifactId>
-    <version>1.0.0-rc.3-SNAPSHOT</version>
+    <version>1.1.0-SNAPSHOT</version>
   </dependency>
   <!-- Example for macOS arm64; choose the package for your runtime platform. -->
   <dependency>
     <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-native-macos-aarch64</artifactId>
-    <version>1.0.0-rc.3-SNAPSHOT</version>
+    <version>1.1.0-SNAPSHOT</version>
   </dependency>
 </dependencies>
 ```
@@ -233,9 +233,9 @@ published Java `1.0.0-rc.2` platform JAR has JNI ABI 2 and cannot run this work-
 ABI 5 module. Arrow Java 19.0.0 on classpath also requires
 `--add-opens=java.base/java.nio=ALL-UNNAMED` on supported JDKs.
 
-The current source pins chDB core `26.11.0-rc.3`. For a macOS arm64 release-asset
+The current source pins stable chDB core `26.11.1`. For a macOS arm64 release-asset
 smoke test, compile the Java side (`mvn -pl chdb-jdbc -am compile`), then run
-`scripts/build-native.sh macos-aarch64`. That script downloads the exact rc.3 asset,
+`scripts/build-native.sh macos-aarch64`. That script downloads the exact v26.11.1 asset,
 verifies its SHA-256 and stages the engine plus JNI shim in
 `chdb-native-macos-aarch64/target/native/`. Run the opt-in test with the staged pair:
 
@@ -257,8 +257,8 @@ Choose the corresponding native module if building on another supported
 platform, and run its `scripts/build-native.sh <platform-id>` first.
 
 The earlier core `26.11.0-rc.2` omitted a `get_schema` release during registration:
-a value-correct Java scan left 148 bytes in the Arrow allocator. The rc.3 release
-includes that fix, so the Arrow input and insert tests run on this baseline. CI exercises the
+a value-correct Java scan left 148 bytes in the Arrow allocator. The later rc.3 fix
+is included in v26.11.1, so the Arrow input and insert tests run on this baseline. CI exercises the
 same suite on all four native platforms and Java 11/17/21/25 without a version
 override. No production deployment should use a local `--local-engine` package or
 `chdb.skipEngineVersionCheck`.

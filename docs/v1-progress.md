@@ -15,8 +15,8 @@ green.
 
 The baseline subsequently moved to **engine 26.7.2-rc.2** (issue #8), **26.7.3**,
 **26.11.0-rc.1** and **26.11.0-rc.2**. This development branch now targets
-**26.11.0-rc.3** for Arrow registration fixes. The sixteen-way result above describes
-26.7.0; rc.3 still needs the four-platform CI matrix before making that claim.
+**26.11.1**, the stable release after the Arrow registration fixes. The sixteen-way result
+above describes 26.7.0; the new baseline needs its own four-platform CI matrix.
 
 26.7.3 is a **stable** chdb-core release, which cleared the [work plan §4.3
 ](../CHDB_JAVA_V1_WORK_PLAN.md) bar that 26.7.2-rc.2 could not: a binding built on an engine
@@ -28,17 +28,17 @@ chdb-core #221 — `scripts/run-signal-window-test.sh measure` reports zero on i
 26.11.0-rc.1 is a chdb-core **pre-release** again, pinned to validate the ClickHouse 26.11
 baseline ahead of the stable v26.11.1, so the same §4.3 rule applies to it: only `-rc.<n>`
 versions can be cut while it is the baseline, and the stable release has to be pinned before
-`1.0.0`. The signal-handler fix holds on it — `measure` reports zero and `stress` survives 6 of
+the first Java GA. The signal-handler fix holds on it — `measure` reports zero and `stress` survives 6 of
 6 on Linux x86_64.
 
 26.11.0-rc.2 is the same baseline plus chdb-core #312, a pre-release too, so nothing about
 §4.3 changes: `1.0.0-rc.2` is cut from it, `1.0.0-rc.1` stays on 26.7.3, and v26.11.1
-has to be pinned before `1.0.0`. The signal-handler fix holds on it too: `measure` reports
+has to be pinned before the first stable Java version (now planned as `1.1.0`). The signal-handler fix holds on it too: `measure` reports
 zero and `stress` survives 6 of 6 on Linux x86_64.
 
 26.11.0-rc.3 includes chdb-core #323's Arrow registration-schema and failed array-wrapper
-cleanup fixes. The optional `chdb-arrow` module is under development against this published
-core RC; local macOS arm64 tests do not substitute for its four-platform CI run.
+cleanup fixes. Stable v26.11.1 includes them. The optional `chdb-arrow` module is being
+prepared for the next Java RC; local macOS arm64 tests do not substitute for its four-platform CI run.
 
 ---
 
@@ -51,7 +51,7 @@ core RC; local macOS arm64 tests do not substitute for its four-platform CI run.
 | ✅ | Four glibc/macOS platforms | `Platform`, with musl detected and refused |
 | ✅ | Direct JNI is the mainline, ADBC the experiment | no Arrow Java dependency anywhere |
 | ✅ | Engine release, dynamic-library checksum and symbol set pinned | `scripts/engine.properties`, SHA-256 per platform from the GitHub release digests |
-| 🟡 | Consistency check across `chdb_version()`, tag and header version | all three agreed on v26.11.0-rc.2. The rc.3 macOS arm64 release tarball header is now vendored and reports `26.11.0-rc.3`; runtime and the other platforms need CI confirmation. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). Still enforced against `engine.properties` rather than the header |
+| 🟡 | Consistency check across `chdb_version()`, tag and header version | The v26.11.1 macOS arm64 release tarball header is now vendored byte-for-byte and reports `26.11.1`; its runtime agrees. The other platforms need CI confirmation. The `26.5.1-rc.3` constant blamed on upstream turned out to be ours: the vendored header had been copied from chdb-core's source tree instead of its release tarball — [findings §2](upstream-findings.md). Still enforced against `engine.properties` rather than the header |
 | ✅ | C API split into required and optional symbols | 18 required, linker- and load-checked; `chdb_classify_query_n` and `chdb_shutdown` optional via `dlsym`, and present on the current baseline |
 | ⬜ | C ABI version and compatibility promise confirmed with Core | needs upstream agreement |
 | ✅ | Signal-handler requirement raised upstream | reproduced, measured and written up in [findings §1](upstream-findings.md), filed as chdb-core #221, and fixed by chdb-core #224 in engine v26.7.3 — the shim's guard now reports no handler to repair, and `run-signal-window-test.sh measure` reports zero |
