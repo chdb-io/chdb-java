@@ -7,8 +7,8 @@ streaming, forward-only result sets over ClickHouse SQL.
 > **Status: release candidate.** The current Maven release candidate is `v1.0.0-rc.2`, built with
 > chDB Core `26.11.0-rc.2`. RC artifacts are available from the public chDB Maven repository; the
 > public API is not frozen. This development branch targets stable core `26.11.1` and adds an
-> optional `chdb-arrow` module for the planned `v1.1.0` stable release; those artifacts have not
-> been published. See the
+> optional `chdb-arrow` module for the proposed `v1.1.0-rc.1` validation release ahead of
+> `v1.1.0` stable; those artifacts are not published yet. See the
 > [Arrow Java getting-started guide](chdb-arrow/README.md#getting-started) for examples
 > and [What works today](#what-works-today) for the JDBC release status.
 
