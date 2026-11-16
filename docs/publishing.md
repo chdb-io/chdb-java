@@ -403,16 +403,21 @@ Each step can invalidate the next, so:
 
 ---
 
-## 8. RCs on GitHub Packages
+## 8. RCs on maven.chdb.io
 
-The first test version is `1.0.0-rc.1`, released by pushing the tag `v1.0.0-rc.1`. The
-`.github/workflows/rc-release.yml` workflow builds all four native packages on native runners
-and publishes the parent POM, JDBC driver, platform packages and BOM to:
+`1.0.0-rc.1` and `1.0.0-rc.2` were earlier test versions. The next proposed test version is
+`v1.1.0-rc.1`, before the planned `v1.1.0` stable release. The development POMs stay at
+`1.1.0-SNAPSHOT`; `.github/workflows/rc-release.yml` derives `1.1.0-rc.1` from the tag and
+sets it in the build workspace. The Central release workflow explicitly excludes `-rc.*`
+tags, so the same tag cannot start both publication routes.
 
-```text
-https://maven.pkg.github.com/chdb-io/chdb-java
-```
+The RC workflow builds on all four native runners, tests Arrow against each staged pair,
+and produces a `maven-repository` artifact containing the parent POM, BOM, JDBC, optional
+Arrow and all four platform packages. **A successful workflow does not publish them.** After
+inspecting that artifact, use the [Vercel Maven gateway runbook](../deploy/vercel-maven/README.md)
+to upload it manually. `scripts/publish-rc-repository.sh` checks all versioned paths before
+upload and refuses to overwrite a previously published artifact.
 
-Consumers configure that repository and a GitHub classic PAT with `read:packages`. Stable
-versions keep the same coordinates and later move to Maven Central; no dependency coordinate
-change is required.
+Consumers add `https://maven.chdb.io` as a Maven repository and specify the exact RC version;
+no GitHub PAT is needed. This RC remains a pre-release and does not satisfy the stable release
+gates in `docs/release-readiness.md`.

@@ -64,6 +64,9 @@ on:
     # succeeded for this exact commit rather than assuming a tag implies a tested tree.
     tags:
       - "v*"
+      # RC tags are handled by rc-release.yml and staged for maven.chdb.io. Without this
+      # exclusion they also start the Central workflow, which fails on the SNAPSHOT POM.
+      - "!v*-rc.*"
       # Never a preview: `v1.0.0-preview.1` matches `v*` and preflight would accept it, so
       # the Central path would stage, sign and offer a preview in the portal, where a release
       # cannot be unpublished. preview-release.yml publishes those.
