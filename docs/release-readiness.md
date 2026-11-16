@@ -5,7 +5,8 @@ part, and which parts need someone else's approval.
 
 Written as three separate tracks because they proceed independently and have different
 blockers: **signing and publishing** is mechanical and self-service, **the namespace** needs
-DNS access, and **licences** need a person with authority to say yes.
+access through the ClickHouse Central workspace, and **licences** need a person with authority
+to say yes.
 
 `docs/publishing.md` is the reference — the release profile, the namespace claim, the
 publishing limits, the licence inventory — and is the only place any of those numbers live.
@@ -23,19 +24,18 @@ version decision does not waive any gate below. The development POMs remain
 `1.1.0-SNAPSHOT` until step 8 cuts a separate release commit and tag.
 
 The tracks below say *what* and *who*. This says *when*, because each step can invalidate the
-next. Eight steps. Four of them need somebody outside this repository — 1 needs DNS access to
-`chdb.org`, 2 may need Sonatype support, 5 needs chdb-io, and 6 needs two projects willing to
-depend on us — so those are the ones to start asking about early. Steps 3, 4, 7 and 8 are
-self-service.
+next. Eight steps. Four of them need somebody outside this repository — 1 needs the ClickHouse
+Central workspace admin, 2 may need Sonatype support, 5 needs chdb-io, and 6 needs two
+projects willing to depend on us — so those are the ones to start asking about early. Steps
+3, 4, 7 and 8 are self-service.
 
-### 1. Claim the `org.chdb` namespace — needs DNS access to `chdb.org`
+### 1. Confirm `com.clickhouse.chdb` publishing access — needs the ClickHouse Central workspace
 
-Register at <https://central.sonatype.com>, start a namespace claim for `org.chdb`, and hand
-the TXT record Sonatype names to whoever administers the `chdb.org` zone. Verified
-automatically, no human review, no queue. §1.3 has the detail, including why there is no
-fallback.
+All POMs use `com.clickhouse.chdb`. The stable release must be published from the ClickHouse
+Central workspace by an account with permission for that namespace, not under a personal
+fallback coordinate. §1.3 has the detail.
 
-**Done when:** `org.chdb` shows as verified in the portal.
+**Done when:** the publisher can see and publish to `com.clickhouse.chdb` in that workspace.
 
 ### 2. Read the Usage Center, and ask for an exception if the numbers are tight
 
@@ -160,7 +160,7 @@ seven rows as absent; they were built in #13 and this is the state after it.
 
 | Requirement | Status |
 |---|---|
-| `sources` JAR | **done** — a real one for `chdb-jdbc`, empty by construction for the native packages |
+| `sources` JAR | **done** — real ones for `chdb-jdbc` and `chdb-arrow`, empty by construction for the native packages |
 | `javadoc` JAR | **done**, same split |
 | GPG signature (`.asc`) per file | **done**, verified end to end with a disposable key |
 | `<scm>` in the POM | **done** |
@@ -174,10 +174,10 @@ seven rows as absent; they were built in #13 and this is the state after it.
 | Proof the artifacts work when consumed from a repository | **done locally** — §1.5 |
 | Portal token in a CI secret | **not started** — running order step 3 |
 | A GPG key that is the project's rather than a laptop's | **not started** — §1.2 |
-| `org.chdb` namespace | **not started**, and the one item with no workaround — §1.3 |
+| `com.clickhouse.chdb` workspace permission | **not verified** — §1.3 |
 
 So the mechanics are finished and the remaining items in this track are two credentials and
-one DNS record. `docs/publishing.md` §1 is the runbook for what the profile does.
+the workspace publishing grant. `docs/publishing.md` §1 is the runbook for what the profile does.
 
 ### 1.2 The GPG key — self-service, but decide whose key it is
 
@@ -205,30 +205,15 @@ part is the key itself and the four secrets in running-order step 3. Signing loc
 laptop for the first release is fine and is the faster path to finding out whether the rest
 works.
 
-### 1.3 The namespace — needs DNS access, approved automatically
+### 1.3 The namespace — ClickHouse Central workspace
 
-`org.chdb` is **unclaimed**: Maven Central returns zero artifacts for it, and for `io.chdb`,
-`com.chdb` and `io.github.chdb-io` as well. So there is no conflict to resolve, only a claim to
-make.
+The permanent coordinate in the POMs is `com.clickhouse.chdb`. The publisher must have a
+ClickHouse Central workspace account and permission to upload to that namespace. A personal
+`io.github.<username>` coordinate is not a substitute: it would change every dependency users
+write. See `docs/publishing.md` §3 for the token and workspace setup.
 
-Verification is by DNS. `chdb.org` resolves (13.248.169.48), so whoever administers that zone
-adds a TXT record Sonatype names during registration, Sonatype's checker sees it, and the
-namespace is granted. No human review, no waiting on a queue.
-
-**There is no fallback, contrary to what an earlier version of this section said.** It offered
-`io.github.chdb-io`, verified by creating a repository under the `chdb-io` GitHub org. That is
-not available; Sonatype's wording, quoted in `docs/publishing.md` §3, is that only the GitHub
-username used to sign up is supported, so `io.github.<organisation>` cannot be registered
-automatically. GitHub verification would grant `io.github.<maintainer-username>` — a personal
-coordinate, and the wrong thing to publish an organisation's driver under.
-
-**So DNS access to `chdb.org` is a hard prerequisite**, not a convenience, and it is worth
-confirming who has it before anything else in this document is started. `org.chdb` is also the
-coordinate already in every POM, README and document; changing it later is a breaking change
-for consumers.
-
-**Action:** register at <https://central.sonatype.com>, start the `org.chdb` namespace claim,
-and hand the TXT record to whoever runs `chdb.org` DNS.
+**Action:** ask the ClickHouse Central workspace admin to confirm publisher access for
+`com.clickhouse.chdb`, then verify it in the portal before attempting the release upload.
 
 ### 1.4 Publishing limits — check the org's standing before the first release
 
@@ -384,7 +369,7 @@ the inventory as a gap and estimated half a day for it; it is done, and
 |---|---|---|
 | Apache-2.0 on our own code | already done | no |
 | Generating and publishing a GPG key | any maintainer | no |
-| `org.chdb` namespace claim | whoever runs `chdb.org` DNS | automatic once the TXT record is up |
+| `com.clickhouse.chdb` publishing grant | ClickHouse Central workspace admin | required |
 | Shipping the engine's licence inventory | already done | no |
 | **Whether redistributing `libchdb.so` under Apache-2.0 discharges the obligations of the eleven copyleft components** | **chdb-io / ClickHouse legal** | **yes, and it is the only real gate in this track** |
 | Whether chDB counts as "commercial nature" for Central | whoever owns the Sonatype relationship | yes |

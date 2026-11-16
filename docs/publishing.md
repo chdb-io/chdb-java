@@ -11,7 +11,7 @@ ClickHouse Publisher Pro setup is ready.
 | | |
 |---|---|
 | POM metadata Central requires | **done** — `<scm>`, `<developers>`, `<licenses>`, `<organization>`, `<issueManagement>` |
-| Sources and javadoc jars | **done** — real ones for `chdb-jdbc`, empty ones for the native packages |
+| Sources and javadoc jars | **done** — real ones for `chdb-jdbc` and `chdb-arrow`, empty ones for the native packages |
 | GPG signing | **done and verified** — signs jar, sources, javadoc and pom |
 | Publishing plugin | **done** — `central-publishing-maven-plugin`, `autoPublish=false` |
 | Third-party licence inventory | **done** — generated from the engine, shipped in the package, drift-tested |
@@ -183,9 +183,9 @@ not available — Sonatype's wording:
 > namespace.
 
 GitHub verification would give `io.github.<maintainer-username>`, which is a personal
-coordinate and the wrong thing to publish an organisation's driver under. **DNS access to
-`chdb.org` is therefore a hard prerequisite**, not a convenience, and it is worth confirming
-who has it before anything else in this document is started.
+coordinate and the wrong thing to publish an organisation's driver under. The remaining
+requirement is publisher access to `com.clickhouse.chdb` in the ClickHouse Central workspace;
+this document does not assume that access has already been granted.
 
 ## 4. Publishing limits — check before the first release
 
