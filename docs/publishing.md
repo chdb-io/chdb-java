@@ -405,9 +405,9 @@ Each step can invalidate the next, so:
 
 ## 8. RCs on maven.chdb.io
 
-`1.0.0-rc.1` and `1.0.0-rc.2` were earlier test versions. The next proposed test version is
-`v1.1.0-rc.1`, before the planned `v1.1.0` stable release. The development POMs stay at
-`1.1.0-SNAPSHOT`; `.github/workflows/rc-release.yml` derives `1.1.0-rc.1` from the tag and
+`1.0.0-rc.1` and `1.0.0-rc.2` were earlier test versions. `v1.1.0-rc.1` was published to
+`maven.chdb.io` on 2026-11-17, before the planned `v1.1.0` stable release. The development
+POMs stay at `1.1.0-SNAPSHOT`; `.github/workflows/rc-release.yml` derives `1.1.0-rc.1` from the tag and
 sets it in the build workspace. The Central release workflow explicitly excludes `-rc.*`
 tags, so the same tag cannot start both publication routes.
 
@@ -417,6 +417,11 @@ Arrow and all four platform packages. **A successful workflow does not publish t
 inspecting that artifact, use the [Vercel Maven gateway runbook](../deploy/vercel-maven/README.md)
 to upload it manually. `scripts/publish-rc-repository.sh` checks all versioned paths before
 upload and refuses to overwrite a previously published artifact.
+
+The [RC build](https://github.com/chdb-io/chdb-java/actions/runs/43980175644) passed on all
+four platforms. Its 70 immutable Maven files were uploaded manually; the public copies of
+all 14 JAR/POM files matched the staged SHA-256 values, and a fresh-cache macOS arm64 consumer
+ran JDBC and Arrow against the published `1.1.0-rc.1` package.
 
 Consumers add `https://maven.chdb.io` as a Maven repository and specify the exact RC version;
 no GitHub PAT is needed. This RC remains a pre-release and does not satisfy the stable release
