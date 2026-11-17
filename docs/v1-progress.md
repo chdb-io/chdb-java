@@ -15,8 +15,10 @@ green.
 
 The baseline subsequently moved to **engine 26.7.2-rc.2** (issue #8), **26.7.3**,
 **26.11.0-rc.1** and **26.11.0-rc.2**. This development branch now targets
-**26.11.1**, the stable release after the Arrow registration fixes. The sixteen-way result
-above describes 26.7.0; the new baseline needs its own four-platform CI matrix.
+**26.11.1**, the stable release after the Arrow registration fixes. The `1.1.0-rc.1` tag
+passed its four-platform build and Arrow checks, and its Maven repository was published on
+2026-11-17. The older sixteen-way result above describes 26.7.0; the new baseline also passed
+the main branch Java 11/17/21/25 platform matrix before tagging.
 
 26.7.3 is a **stable** chdb-core release, which cleared the [work plan §4.3
 ](../CHDB_JAVA_V1_WORK_PLAN.md) bar that 26.7.2-rc.2 could not: a binding built on an engine
@@ -37,8 +39,9 @@ has to be pinned before the first stable Java version (now planned as `1.1.0`). 
 zero and `stress` survives 6 of 6 on Linux x86_64.
 
 26.11.0-rc.3 includes chdb-core #323's Arrow registration-schema and failed array-wrapper
-cleanup fixes. Stable v26.11.1 includes them. The optional `chdb-arrow` module is being
-prepared for the next Java RC; local macOS arm64 tests do not substitute for its four-platform CI run.
+cleanup fixes. Stable v26.11.1 includes them. The optional `chdb-arrow` module is included in
+published Java `1.1.0-rc.1`; its four-platform RC tests passed, and a public Maven macOS arm64
+consumer check completed after upload.
 
 ---
 

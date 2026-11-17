@@ -4,11 +4,10 @@ A JDBC driver for [chDB](https://github.com/chdb-io/chdb-core), the embedded bui
 ClickHouse. It runs the engine in your JVM's process — no server, no network — and gives you
 streaming, forward-only result sets over ClickHouse SQL.
 
-> **Status: release candidate.** The current Maven release candidate is `v1.0.0-rc.2`, built with
-> chDB Core `26.11.0-rc.2`. RC artifacts are available from the public chDB Maven repository; the
-> public API is not frozen. This development branch targets stable core `26.11.1` and adds an
-> optional `chdb-arrow` module for the proposed `v1.1.0-rc.1` validation release ahead of
-> `v1.1.0` stable; those artifacts are not published yet. See the
+> **Status: release candidate.** The current Maven release candidate is `v1.1.0-rc.1`, built
+> with stable chDB Core `26.11.1` and including the optional `chdb-arrow` module. It is
+> available from the public chDB Maven repository; the public API is not frozen. The stable
+> `v1.1.0` release remains gated. See the
 > [Arrow Java getting-started guide](chdb-arrow/README.md#getting-started) for examples
 > and [What works today](#what-works-today) for the JDBC release status.
 
@@ -26,9 +25,9 @@ try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
 
 ## Support matrix
 
-The existing JDBC binding has built and passed its full suite on these four platforms and
-Java 11, 17, 21 and 25 in CI. The new Arrow module is added to the PR matrix for `1.1.0`,
-but is not yet a published-platform claim:
+The JDBC and Arrow suites pass on these four platforms in CI, with Java 11, 17, 21 and 25
+covered by the branch build matrix. The tagged RC also built and tested all four native pairs;
+the published macOS arm64 artifact was independently consumed from `maven.chdb.io`:
 
 | | Linux glibc | macOS |
 |---|---|---|
@@ -45,7 +44,8 @@ but is not yet a published-platform claim:
   `manifest.properties`, and CI runs the whole test suite on AlmaLinux 8 to demonstrate the
   floor rather than infer it from symbol versions.
 - **Engine in this source branch:** chDB Core **26.11.1**, pinned. Published Java
-  `1.0.0-rc.2` still uses core `26.11.0-rc.2`. The C ABI is version-locked, so the driver
+  `1.1.0-rc.1` uses this core; the older `1.0.0-rc.2` uses `26.11.0-rc.2`. The C ABI is
+  version-locked, so the driver
   refuses to run against a different engine build rather than risking a struct-layout mismatch.
   This stable core meets the engine-release requirement for the planned Java `1.1.0`, but the
   remaining Java release gates still apply ([work plan §4.3](CHDB_JAVA_V1_WORK_PLAN.md)).
@@ -60,7 +60,7 @@ on. The native package pulls in the driver, so declaring it alone is enough.
 <dependency>
   <groupId>com.clickhouse.chdb</groupId>
   <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
-  <version>1.0.0-rc.2</version>
+  <version>1.1.0-rc.1</version>
 </dependency>
 ```
 
@@ -82,7 +82,7 @@ architecture — declare the driver plus each native package you need:
     <dependency>
       <groupId>com.clickhouse.chdb</groupId>
       <artifactId>chdb-bom</artifactId>
-      <version>1.0.0-rc.2</version>
+      <version>1.1.0-rc.1</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
@@ -107,10 +107,9 @@ architecture — declare the driver plus each native package you need:
 
 The BOM keeps the driver and every native package on one version, which they must be.
 
-**A native package is large**, because it contains the whole engine: 112 MB for macOS arm64,
-144 MB for macOS x86_64, 158 MB for Linux aarch64 and 177 MB for Linux x86_64 on engine
-26.11.0-rc.2 (unchanged from rc.1), and about 350 to 545 MB unpacked. There is no
-all-platforms package, on purpose: it would be the sum of those four.
+**A native package is large**, because it contains the whole engine: about 110 MiB for macOS
+arm64, 127 MiB for macOS x86_64, 157 MiB for Linux aarch64 and 176 MiB for Linux x86_64
+in `1.1.0-rc.1`. There is no all-platforms package, on purpose: it would be the sum of those four.
 
 ### Versioning
 

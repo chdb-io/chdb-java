@@ -17,11 +17,18 @@ This module README is the Java binding's Arrow entry point. See the [core owners
 
 ## Getting started
 
-`chdb-arrow` is **not published yet**. The published Java `1.0.0-rc.2` and its
-native packages cannot run this branch's Arrow API. To try it now, build the
-matching `1.1.0-SNAPSHOT` Java and native artifacts from this checkout (see
-[Testing from source](#testing-from-source) below). Once a matching set of
-artifacts is available, a Maven consumer needs the optional Arrow module and
+`chdb-arrow` is published as `1.1.0-rc.1` at `https://maven.chdb.io`. The older
+`1.0.0-rc.2` native packages cannot run this Arrow module: keep all binding
+artifacts on the same version. Add the public repository (no credentials required):
+
+```xml
+<repository>
+  <id>chdb-rc</id>
+  <url>https://maven.chdb.io</url>
+</repository>
+```
+
+A Maven consumer needs the optional Arrow module and
 **one** native package for its runtime platform, at the same binding version:
 
 ```xml
@@ -29,13 +36,13 @@ artifacts is available, a Maven consumer needs the optional Arrow module and
   <dependency>
     <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-arrow</artifactId>
-    <version>1.1.0-SNAPSHOT</version>
+    <version>1.1.0-rc.1</version>
   </dependency>
   <!-- Example for macOS arm64; choose the package for your runtime platform. -->
   <dependency>
     <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-native-macos-aarch64</artifactId>
-    <version>1.1.0-SNAPSHOT</version>
+    <version>1.1.0-rc.1</version>
   </dependency>
 </dependencies>
 ```
@@ -228,9 +235,9 @@ associated copy/allocation cost.
 ## Testing from source
 
 The test `ArrowSessionTest` is opt-in (`-Dchdb.arrow.it=true`) and requires a matching
-engine and JNI shim in the directory given by `-Dchdb.library.path`. The previously
-published Java `1.0.0-rc.2` platform JAR has JNI ABI 2 and cannot run this work-in-progress
-ABI 5 module. Arrow Java 19.0.0 on classpath also requires
+engine and JNI shim in the directory given by `-Dchdb.library.path`. The published
+`1.1.0-rc.1` platform JAR has JNI ABI 5; the older `1.0.0-rc.2` ABI 2 package is not
+interchangeable. Arrow Java 19.0.0 on classpath also requires
 `--add-opens=java.base/java.nio=ALL-UNNAMED` on supported JDKs.
 
 The current source pins stable chDB core `26.11.1`. For a macOS arm64 release-asset
