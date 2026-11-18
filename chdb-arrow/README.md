@@ -17,6 +17,10 @@ This module README is the Java binding's Arrow entry point. See the [core owners
 
 ## Getting started
 
+For the planned stable `1.1.0` version, see the
+[Maven Central installation guide](../docs/releases/1.1.0.md#optional-arrow-support).
+Those coordinates require completed Central publication; the existing RC instructions follow.
+
 `chdb-arrow` is published as `1.1.0-rc.1` at `https://maven.chdb.io`. The older
 `1.0.0-rc.2` native packages cannot run this Arrow module: keep all binding
 artifacts on the same version. Add the public repository (no credentials required):

@@ -33,23 +33,53 @@ Java 11 on macOS ARM64 resolved the published coordinates and returned JDBC
 contained no Arrow dependency. These are technical consumption checks, not reports from
 two independent external projects or a long-running concurrent soak.
 
-The local release-preparation branch changes the reactor version to `1.1.0`; this does not
-mean that version is tagged, uploaded, approved or published. The engine, JNI ABI and Java
-API version properties are unchanged. Before a stable tag or upload:
+PR #47 merged the reactor version `1.1.0` at `30e3bd5ca53ff5f530346983dbfedd5b94cba8dd`.
+The source-branch build `44410639227` passed, but merged-commit build `44414628416` passed
+13 of 14 jobs: Linux x86_64 failed before compilation while resolving
+`org.junit:junit-bom:5.10.2` from Central. An independent GET of that exact POM now returns
+HTTP 200; the original runner-side failure cause remains unconfirmed. The owner confirmed a
+failed-job rerun, and attempt 2 is in progress on the same commit. Its Java compilation has
+passed the previous failure point; the complete result is still required.
 
-- Obtain the written engine-redistribution decision required by step 5 below.
-- Complete the two-external-project gate and a current-engine concurrent soak, or record an
-  explicit release-owner decision about those gates. The historical 75-minute soak on the
-  old `feat/concurrent-soak` branch used an older engine and is not evidence for this release.
+The version change does not mean `1.1.0` is tagged, uploaded or published. The engine,
+JNI ABI and Java API version properties are unchanged. Before a stable tag or upload:
+
+- The release owner provided the project redistribution authorization recorded below.
+  Preserve the required licenses and notices; this is not a claim of legal review.
+- The release owner explicitly waived the two-external-project acceptance gate and the
+  current-engine concurrent-soak gate for `1.1.0` on 2026-11-19. These are waived, not passed.
+  The historical 75-minute soak on the old `feat/concurrent-soak` branch used an older engine
+  and is not evidence for this release.
 - Protect `v*` against update and deletion. The repository currently exposes only the active
   branch ruleset `Need PR`; no active tag ruleset was found.
 - Recheck the ClickHouse workspace's current Usage Center. The browser session is signed
   out, so the earlier `888/1000` file-count observation is not a fresh quota check.
-- Finish release notes and stable installation documentation, then obtain successful
-  four-platform CI for the exact release commit before creating its matching tag.
+- [Release notes and stable installation instructions](releases/1.1.0.md) are prepared.
+  Obtain successful four-platform CI for the exact final release commit before creating
+  its matching tag; successful CI on an earlier commit does not satisfy that check.
 
 The existing one-week RC-window waiver and deferral of environment reviewers/admin-bypass
-settings remain unchanged. No additional gate was waived by this preparation.
+settings remain unchanged. Apart from the two acceptance-gate waivers recorded above, no
+additional gate was waived. Internal project redistribution authorization is now confirmed,
+not waived. Stable-tag push, Central upload and Portal Publish still require separate
+per-operation confirmation.
+
+### Release-owner redistribution authorization — 2026-11-19
+
+Shawn Chen explicitly confirmed the following scope for this release:
+
+> 我作为 chDB 项目的授权负责人，批准 chdb-java `1.1.0` 捆绑并再分发官方 chdb-core
+> `26.11.1` 的四平台引擎，通过 ClickHouse Central 组织发布到 `com.clickhouse.chdb`，
+> 并保留应随包提供的许可证和 notices。
+
+This is project-owner authorization, not a legal-opinion or legal-review claim. Inspection
+of all four downloaded snapshot native JARs found `META-INF/licenses/README.txt`,
+`LICENSE-chdb-java.txt`, `engine-third-party.tsv`, and `META-INF/sbom/bom.json`.
+All four bundled inventories match the committed `26.11.1` inventory SHA-256
+`8183a651f5e7f454b5048f99e9cca4ae487594cebbc181c94ac8c432496973ce`.
+These checks establish presence and consistency, not an independent legal determination
+that every third-party obligation has been discharged. Preserve and recheck these materials
+in the actual stable artifacts rather than inferring their presence from the snapshot alone.
 
 Local preparation validation passed all 12 release-tooling tests, 178 JDBC unit tests,
 one Arrow unit test, and standalone `1.1.0` consumer-POM checks for all six modules on
