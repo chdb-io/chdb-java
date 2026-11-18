@@ -33,14 +33,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test consumer POM release checks
-        run: python3 -m unittest discover -s scripts -p 'test_consumer_poms.py'
+      - name: Test release tooling
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: maven
+
+      - name: Install the pinned Maven toolchain
+        run: bash scripts/setup-maven.sh
 
       - name: Compile and run unit tests
         run: mvn $MAVEN_ARGS -pl chdb-jdbc -am test
@@ -63,6 +66,8 @@ jobs:
           distribution: temurin
           java-version: "26"
           cache: maven
+      - name: Install the pinned Maven toolchain
+        run: bash scripts/setup-maven.sh
       - run: mvn $MAVEN_ARGS -pl chdb-jdbc -am test
 
   # The real matrix: build the shim, stage the platform package, run the integration tests
@@ -118,6 +123,9 @@ jobs:
           distribution: temurin
           java-version: "11"
           cache: maven
+
+      - name: Install the pinned Maven toolchain
+        run: bash scripts/setup-maven.sh
 
       # ubuntu-22.04 rather than 24.04 on purpose: the shim's glibc and libstdc++ requirements
       # are whatever the build image has, so building on the oldest supported image is what
@@ -362,6 +370,9 @@ jobs:
           path: target/engine/download
           key: chdb-engine-${{ matrix.platform }}-${{ hashFiles('scripts/engine.properties') }}
 
+      - name: Install the pinned Maven toolchain
+        run: bash scripts/setup-maven.sh
+
       - name: Build the Java side and resolve the test classpath
         run: |
           mvn $MAVEN_ARGS -pl chdb-integration-tests -am test-compile dependency:build-classpath             -Dmdep.outputFile="$PWD/target/it-cp.txt" -Dmdep.includeScope=test
@@ -442,6 +453,9 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
+
+      - name: Install the pinned Maven toolchain
+        run: bash scripts/setup-maven.sh
 
       - name: Cache the pinned engine download
         uses: actions/cache@v4
