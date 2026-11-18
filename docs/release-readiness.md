@@ -16,7 +16,47 @@ restating.
 
 ---
 
-## Snapshot validation checkpoint — 2026-11-19
+## Stable release preparation checkpoint — 2026-11-19
+
+PR #46 merged at `7cb8f7357ece877eade00482141de96550796eb4`. Its complete `build`
+run `44403289591` passed all 14 jobs. Real snapshot run `44405871446` then succeeded
+on that same commit, including all four staging jobs and the unified Central deployment.
+The Maven-toolchain failure is fixed; the earlier HTTP 502 did not recur, but its original
+server-side cause was not established.
+
+An isolated consumer downloaded all six modules from Central's snapshot repository.
+All 24 POM, main-JAR, sources and javadoc signatures verified against signing fingerprint
+`313B34913A0E8153DE70C9222314498A0D48461B`; every native manifest names the expected
+commit and engine `26.11.1`. With a separate Maven cache and credential-free settings,
+Java 11 on macOS ARM64 resolved the published coordinates and returned JDBC
+`engine=26.11.1 rows=1000 sum=499500` and Arrow `arrow=42`. The JDBC-only classpath
+contained no Arrow dependency. These are technical consumption checks, not reports from
+two independent external projects or a long-running concurrent soak.
+
+The local release-preparation branch changes the reactor version to `1.1.0`; this does not
+mean that version is tagged, uploaded, approved or published. The engine, JNI ABI and Java
+API version properties are unchanged. Before a stable tag or upload:
+
+- Obtain the written engine-redistribution decision required by step 5 below.
+- Complete the two-external-project gate and a current-engine concurrent soak, or record an
+  explicit release-owner decision about those gates. The historical 75-minute soak on the
+  old `feat/concurrent-soak` branch used an older engine and is not evidence for this release.
+- Protect `v*` against update and deletion. The repository currently exposes only the active
+  branch ruleset `Need PR`; no active tag ruleset was found.
+- Recheck the ClickHouse workspace's current Usage Center. The browser session is signed
+  out, so the earlier `888/1000` file-count observation is not a fresh quota check.
+- Finish release notes and stable installation documentation, then obtain successful
+  four-platform CI for the exact release commit before creating its matching tag.
+
+The existing one-week RC-window waiver and deferral of environment reviewers/admin-bypass
+settings remain unchanged. No additional gate was waived by this preparation.
+
+Local preparation validation passed all 12 release-tooling tests, 178 JDBC unit tests,
+one Arrow unit test, and standalone `1.1.0` consumer-POM checks for all six modules on
+Java 11. The 29 native Arrow tests were skipped in this unit-only run; no four-platform
+test or stable Central upload is claimed for the new release-version commit yet.
+
+## Earlier snapshot validation checkpoint — 2026-11-19
 
 PR #45 is merged at `7649ef3`. The `maven-central` environment now exists with the four
 expected secrets, and the maintainer has admin access. The release owner explicitly waived
