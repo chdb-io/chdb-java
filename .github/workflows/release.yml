@@ -116,6 +116,9 @@ jobs:
           java-version: "11"
           cache: maven
 
+      - name: Install the pinned Maven toolchain
+        run: bash scripts/setup-maven.sh
+
       - name: Resolve the version and the channel
         id: resolve
         env:
@@ -261,6 +264,9 @@ jobs:
           java-version: "11"
           cache: maven
 
+      - name: Install the pinned Maven toolchain
+        run: bash scripts/setup-maven.sh
+
       - name: Cache the pinned engine download
         uses: actions/cache@v4
         with:
@@ -383,6 +389,9 @@ jobs:
           # The *name* of the variable holding the passphrase, which is what maven-gpg-plugin
           # reads. The release profile passes --pinentry-mode loopback so it never wants a tty.
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Install the pinned Maven toolchain
+        run: bash scripts/setup-maven.sh
 
       - name: Download every staged platform package
         uses: actions/download-artifact@v4

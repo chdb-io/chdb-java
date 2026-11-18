@@ -16,6 +16,37 @@ restating.
 
 ---
 
+## Snapshot validation checkpoint — 2026-11-19
+
+PR #45 is merged at `7649ef3`. The `maven-central` environment now exists with the four
+expected secrets, and the maintainer has admin access. The release owner explicitly waived
+the one-week RC waiting window for 1.1.0 and deferred required environment reviewers and
+disabling administrator bypass. Other release gates are not waived.
+
+- Signed four-platform dry run `44269092646`, attempt 2, succeeded. All 24 signatures were
+  produced; the six POM signatures were independently verified against the published key.
+- Real snapshot run `44272921635`, attempt 1, failed while uploading to Central with HTTP
+  502, including a JDBC signature and metadata checksums. Partial metadata is visible, but
+  referenced artifacts are missing; snapshot publishing and consumption are not complete.
+- Attempt 2 ran on an Ubuntu ARM64 runner and stopped with `mvn: command not found`, exit
+  127, before Maven or another Central upload began. This is a separate tooling failure,
+  not evidence that the 502 is resolved or that signing credentials are wrong.
+
+The local tooling fix explicitly bootstraps Apache Maven 3.9.16 from a pinned, SHA-512-verified
+Apache distribution in build and release jobs. `setup-java` supplies Java, not Maven; runner
+labels alone must not be treated as a Maven installation contract.
+
+Local validation passed: all 12 release-tooling regression tests (including installation
+without system Maven, failed downloads, checksum rejection, and the macOS checksum fallback),
+ShellCheck and workflow structure checks. The actual Apache archive was downloaded and
+verified with Homebrew excluded from PATH, then the installed Maven ran 178 JDBC unit tests
+and one Arrow unit test successfully on Java 11. The 29 native Arrow tests were not enabled
+in that local toolchain smoke test. CI validation of the tooling fix is still pending.
+
+After the fix is reviewed and merged, start a new snapshot workflow at the new commit.
+Rerunning the old workflow again would still use its old checkout without the tooling fix.
+Each new push, PR creation, merge, or actual publishing attempt needs its own confirmation.
+
 ## Central preparation checkpoint — 2026-11-18
 
 The Central path uses plan A: six JAR modules (JDBC, Arrow and four native platforms),
