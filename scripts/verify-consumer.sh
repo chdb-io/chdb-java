@@ -10,7 +10,7 @@
 # anything:
 #
 #   1. do the POMs resolve from a repository rather than from target/?   -- yes, checked below
-#   2. does the BOM do what a BOM should when imported?                  -- yes, checked below
+#   2. can consumers resolve without an internal parent or BOM?          -- yes, checked below
 #   3. does declaring exactly one platform package yield a working
 #      driver, and what is the error when someone declares none or
 #      the wrong one?                                                    -- checked below
@@ -167,7 +167,7 @@ step "Deploying to a throwaway file:// repository"
 (
   cd "$ROOT"
   mvn "${MVN_FLAGS[@]}" deploy \
-    -pl ".,chdb-bom,chdb-jdbc,chdb-arrow,${MODULE}" \
+    -pl ".,chdb-jdbc,chdb-arrow,${MODULE}" \
     -DskipTests \
     -Dmaven.install.skip=true \
     -DaltDeploymentRepository="chdb-verify::file://${REPO}"
@@ -176,8 +176,6 @@ step "Deploying to a throwaway file:// repository"
 # Every artifact a consumer needs has to be in there, POM included -- a jar with no POM
 # resolves for a direct dependency and then fails to bring in chdb-jdbc.
 for coord in \
-  "com/clickhouse/chdb/chdb-java-parent/${VERSION}" \
-  "com/clickhouse/chdb/chdb-bom/${VERSION}" \
   "com/clickhouse/chdb/chdb-jdbc/${VERSION}" \
   "com/clickhouse/chdb/chdb-arrow/${VERSION}" \
   "com/clickhouse/chdb/${MODULE}/${VERSION}"; do
@@ -185,7 +183,13 @@ for coord in \
   # A JAR with no POM resolves for a direct dependency and then quietly brings in nothing.
   compgen -G "${REPO}/${coord}/*.pom" > /dev/null || die "no POM published at ${coord}"
 done
-ok "parent, BOM, driver, Arrow and ${MODULE} are in the repository, each with a POM"
+for internal in chdb-java-parent chdb-bom; do
+  [ ! -e "${REPO}/com/clickhouse/chdb/${internal}" ] \
+    || die "internal ${internal} must not be published"
+done
+python3 "${SCRIPT_DIR}/check-consumer-poms.py" --version "$VERSION" \
+  --modules chdb-jdbc chdb-arrow "$MODULE"
+ok "driver, Arrow and ${MODULE} have standalone POMs; no parent or BOM was published"
 
 case "$VERSION" in
   *-SNAPSHOT)
@@ -212,8 +216,7 @@ printf 'native jar:    %s MB\n' "$(( $(wc -c < "$NATIVE_JAR") / 1024 / 1024 ))"
 
 step "Building a consumer project outside this checkout"
 
-# The shape the README tells a user to write: import the BOM, declare one platform package,
-# name no versions. If the BOM does not manage the versions this will not resolve.
+# Declare exactly one platform package and a shared version property, with no BOM.
 cat > "${CONSUMER}/pom.xml" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0">
@@ -232,7 +235,7 @@ cat > "${CONSUMER}/pom.xml" <<EOF
     </repository>
     <!-- Arrow Java requires third-party artifacts from Central. The file repository remains
          first; the provenance check below rejects any com.clickhouse.chdb artifact that Maven
-         fetched from Central or a mirror, including the parent and BOM POMs. -->
+         fetched from Central or a mirror. -->
     <repository>
       <id>central</id>
       <url>https://repo.maven.apache.org/maven2</url>
@@ -249,23 +252,15 @@ cat > "${CONSUMER}/pom.xml" <<EOF
     neither. The asymmetry is the point: our artifacts are isolated, Maven's are not.
   -->
 
-  <dependencyManagement>
-    <dependencies>
-      <dependency>
-        <groupId>com.clickhouse.chdb</groupId>
-        <artifactId>chdb-bom</artifactId>
-        <version>${VERSION}</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
-    </dependencies>
-  </dependencyManagement>
+  <properties>
+    <chdb.version>${VERSION}</chdb.version>
+  </properties>
 
   <dependencies>
-    <!-- No version: if the BOM does not supply it, this project does not build. -->
     <dependency>
       <groupId>com.clickhouse.chdb</groupId>
       <artifactId>${MODULE}</artifactId>
+      <version>\${chdb.version}</version>
     </dependency>
   </dependencies>
   <!-- The default graph proves the platform POM alone brings in JDBC. -->
@@ -276,6 +271,7 @@ cat > "${CONSUMER}/pom.xml" <<EOF
         <dependency>
           <groupId>com.clickhouse.chdb</groupId>
           <artifactId>chdb-arrow</artifactId>
+          <version>\${chdb.version}</version>
         </dependency>
       </dependencies>
     </profile>
@@ -293,7 +289,11 @@ EOF
 ) > "${WORK}/resolve.log" 2>&1 || { tail -40 "${WORK}/resolve.log"; die "the consumer could not resolve its dependencies; see ${WORK}/resolve.log"; }
 
 CP="$(cat "${WORK}/cp.txt")"
-ok "resolved with no version declared, so the imported BOM supplied it"
+ok "resolved with one platform dependency and no parent or BOM"
+for internal in chdb-java-parent chdb-bom; do
+  [ ! -e "${CONSUMER_M2}/com/clickhouse/chdb/${internal}" ] \
+    || die "consumer tried to resolve internal ${internal}"
+done
 case "$CP" in
   *"/com/clickhouse/chdb/chdb-arrow/"*.jar*)
     die "the platform-only graph unexpectedly contains chdb-arrow; it cannot prove the native POM brings JDBC" ;;

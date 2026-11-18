@@ -77,35 +77,32 @@ Building for several platforms — a CI matrix, or a distribution your users ins
 architecture — declare the driver plus each native package you need:
 
 ```xml
-<dependencyManagement>
-  <dependencies>
-    <dependency>
-      <groupId>com.clickhouse.chdb</groupId>
-      <artifactId>chdb-bom</artifactId>
-      <version>1.1.0-rc.1</version>
-      <type>pom</type>
-      <scope>import</scope>
-    </dependency>
-  </dependencies>
-</dependencyManagement>
+<properties>
+  <chdb.version>1.1.0-rc.1</chdb.version>
+</properties>
 
 <dependencies>
   <dependency>
-      <groupId>com.clickhouse.chdb</groupId>
+    <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-jdbc</artifactId>
+    <version>${chdb.version}</version>
   </dependency>
   <dependency>
     <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-native-linux-x86_64-gnu</artifactId>
+    <version>${chdb.version}</version>
   </dependency>
   <dependency>
     <groupId>com.clickhouse.chdb</groupId>
     <artifactId>chdb-native-macos-aarch64</artifactId>
+    <version>${chdb.version}</version>
   </dependency>
 </dependencies>
 ```
 
-The BOM keeps the driver and every native package on one version, which they must be.
+Use the same `chdb.version` for the driver, optional Arrow module and all native packages.
+The Central publishing configuration selects six library modules with standalone consumer POMs; the internal
+parent and BOM are not published. Existing RC coordinates remain available from the RC repository.
 
 **A native package is large**, because it contains the whole engine: about 110 MiB for macOS
 arm64, 127 MiB for macOS x86_64, 157 MiB for Linux aarch64 and 176 MiB for Linux x86_64
@@ -317,7 +314,7 @@ The resulting package is stamped `engine.source=local` and must not be published
 chdb-jdbc/                      pure-Java driver, loader and type mapping
 chdb-jni/                       the JNI shim (C++17, ~1400 lines)
 chdb-native-<platform>/         one Maven package per platform
-chdb-bom/                       keeps them all on one version
+chdb-bom/                       legacy RC BOM (not published to Central)
 chdb-integration-tests/         tests that need a real engine
 chdb-examples/                  runnable examples
 scripts/engine.properties       the pinned engine version and its checksums

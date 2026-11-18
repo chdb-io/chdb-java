@@ -2,6 +2,8 @@
 target/
 build/
 *.class
+.flattened-pom.xml
+__pycache__/
 
 # Native artefacts: 350 MB of engine and a built shim. Produced by
 # scripts/build-native.sh into <module>/target/native, never committed.

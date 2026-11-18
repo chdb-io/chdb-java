@@ -76,6 +76,8 @@
     <junit.version>5.10.2</junit.version>
     <surefire.version>3.2.5</surefire.version>
     <failsafe.version>3.2.5</failsafe.version>
+    <!-- Internal reactor POMs are never published; the six library modules opt in. -->
+    <maven.deploy.skip>true</maven.deploy.skip>
   </properties>
 
   <modules>
@@ -103,6 +105,35 @@
   </dependencyManagement>
 
   <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>flatten-maven-plugin</artifactId>
+        <version>1.7.3</version>
+        <configuration>
+          <flattenMode>ossrh</flattenMode>
+          <flattenDependencyMode>inherited</flattenDependencyMode>
+          <pomElements>
+            <!-- Do not leak the Central publishing extension into consumer builds. -->
+            <build>remove</build>
+            <repositories>remove</repositories>
+            <pluginRepositories>remove</pluginRepositories>
+          </pomElements>
+        </configuration>
+        <executions>
+          <execution>
+            <id>flatten-consumer-pom</id>
+            <phase>process-resources</phase>
+            <goals><goal>flatten</goal></goals>
+          </execution>
+          <execution>
+            <id>clean-consumer-pom</id>
+            <phase>clean</phase>
+            <goals><goal>clean</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
     <pluginManagement>
       <plugins>
         <plugin>
@@ -165,7 +196,7 @@
         <plugin>
           <groupId>org.sonatype.central</groupId>
           <artifactId>central-publishing-maven-plugin</artifactId>
-          <version>0.11.0</version>
+          <version>0.12.0</version>
         </plugin>
       </plugins>
     </pluginManagement>
@@ -199,6 +230,7 @@
                   <goal>sign</goal>
                 </goals>
                 <configuration>
+                  <skip>${maven.deploy.skip}</skip>
                   <!--
                     Loopback pinentry so the passphrase can come from a CI secret rather than a
                     terminal. Harmless interactively: gpg-agent still caches as usual.
@@ -217,25 +249,16 @@
             <extensions>true</extensions>
             <configuration>
               <publishingServerId>central</publishingServerId>
+              <skipPublishing>${maven.deploy.skip}</skipPublishing>
+              <checksums>required</checksums>
               <!--
-                Deliberately not automatic. A release here spans seven modules (and their
-                parent POM) and hundreds of megabytes, and cannot be unpublished; a human
+                Deliberately not automatic. A release here spans six library modules
+                and hundreds of megabytes, and cannot be unpublished; a human
                 confirming the bundle in the portal is worth the
                 extra step, at least until several releases have gone out uneventfully.
               -->
               <autoPublish>false</autoPublish>
-              <!--
-                Wait for Sonatype's validation and report the result, rather than uploading and
-                returning. VALIDATED is also the plugin's default; it is written out because
-                the release workflow's success is taken to mean "the bundle is valid and
-                waiting", and that should not depend on a default.
-
-                This replaces a waitUntilValidated element, which is not a parameter of
-                central-publishing-maven-plugin 0.11.0 — the mojo declares waitUntil,
-                waitMaxTime, waitPollingInterval and waitForPublishCompletion, and nothing
-                named waitUntilValidated. Maven drops configuration elements a mojo does not
-                declare rather than failing on them, so it had been doing nothing at all.
-              -->
+              <!-- Upload success means validated and waiting for manual Portal approval. -->
               <waitUntil>VALIDATED</waitUntil>
             </configuration>
           </plugin>

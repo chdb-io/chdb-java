@@ -33,6 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test consumer POM release checks
+        run: python3 -m unittest discover -s scripts -p 'test_consumer_poms.py'
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -279,8 +282,8 @@ jobs:
 
       - name: Consume the driver as a repository artifact
         # Issue #10: nothing had ever depended on this as a published artifact, and a reactor
-        # build cannot find the things a consumer hits -- the POMs come from target/, the BOM is
-        # never imported, and the native libraries are read from a directory rather than
+        # build cannot find the things a consumer hits -- reactor POMs can hide broken
+        # published dependencies, and native libraries are read from a directory rather than
         # unpacked from a JAR in a local repository.
         #
         # The script deploys to a throwaway file:// repository and resolves from it in a project
