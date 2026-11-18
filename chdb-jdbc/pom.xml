@@ -11,6 +11,9 @@
   </parent>
 
   <artifactId>chdb-jdbc</artifactId>
+  <properties>
+    <maven.deploy.skip>false</maven.deploy.skip>
+  </properties>
   <packaging>jar</packaging>
   <name>chDB JDBC Driver</name>
   <description>

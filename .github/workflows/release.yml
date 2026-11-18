@@ -482,15 +482,17 @@ jobs:
         # chdb-integration-tests are not published, and the integration suite has already run
         # on each platform's own runner, where it could actually exercise that platform.
         #
-        # `verify`, not `package`, for the dry run: signing is bound to verify, so `package`
-        # would silently produce no .asc files and prove nothing.
+        # Exercise the deploy lifecycle even in a dry run. Plugin 0.12.0 skipUpload
+        # suppresses both release uploads and deferred snapshot uploads.
         run: |
           set -euo pipefail
-          GOAL=deploy
-          if [ "$DRY_RUN" = "true" ]; then GOAL=verify; fi
-          echo "mvn -Prelease $GOAL for $VERSION ($CHANNEL)"
-          mvn $MAVEN_ARGS -Prelease "$GOAL" \
-            -pl .,chdb-bom,chdb-jdbc,chdb-arrow,chdb-native-macos-aarch64,chdb-native-macos-x86_64,chdb-native-linux-x86_64-gnu,chdb-native-linux-aarch64-gnu
+          MODULES=chdb-jdbc,chdb-arrow,chdb-native-macos-aarch64,chdb-native-macos-x86_64,chdb-native-linux-x86_64-gnu,chdb-native-linux-aarch64-gnu
+          # Validate flattened POMs before anything can be uploaded. The deploy invocation
+          # regenerates them from the same checkout using the same release profile.
+          mvn $MAVEN_ARGS -Prelease process-resources -pl "$MODULES" -am
+          python3 scripts/check-consumer-poms.py --version "$VERSION"
+          mvn $MAVEN_ARGS -Prelease deploy -DskipUpload="$DRY_RUN" \
+            -pl ".,$MODULES"
 
       - name: What was produced
         if: always()
@@ -534,7 +536,9 @@ jobs:
           path: |
             **/target/*.asc
             **/target/*.pom
+            **/.flattened-pom.xml
             **/target/native/META-INF/chdb/native/*/*/manifest.properties
             **/target/native/META-INF/chdb/native/*/*/sha256sums.txt
           if-no-files-found: warn
+          include-hidden-files: true
           retention-days: 90

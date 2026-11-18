@@ -16,6 +16,42 @@ restating.
 
 ---
 
+## Central preparation checkpoint — 2026-11-18
+
+The Central path uses plan A: six JAR modules (JDBC, Arrow and four native platforms),
+standalone flattened consumer POMs, and no published parent or BOM. The legacy RC publishing
+workflow retains its original parent/BOM coordinates for compatibility. Use one `chdb.version`
+property in consumer projects instead of importing a BOM.
+
+Verified against `chdb-io/chdb-java` on this date: `maven-central` environment is absent,
+repository-level secrets are absent, and the current maintainer has write but not admin access.
+Inherited organization secrets were not verified. Namespace publishing access was confirmed
+in the preceding Portal review; a successful Central upload has not yet been demonstrated.
+
+The release owner still needs to identify the project signing key, arrange the environment's
+four secrets and reviewers with an administrator, and supply evidence for the licence,
+external-consumer and concurrent-soak gates below. Never place credentials in this file.
+The work plan also requires at least one week of RC soak and external validation. The
+`v1.1.0-rc.1` publication on 2026-11-17 does not complete that window before 2026-11-24.
+Any change to that gate must be an explicit release-owner decision, not an assumption in CI.
+
+Keep POMs at `1.1.0-SNAPSHOT` for the dry run and real snapshot validation. Only then prepare
+the `1.1.0` release commit, its successful four-platform `build`, and its matching tag.
+Each remote mutation requires separate user confirmation under the machine's standing rules.
+
+Local preparation checks passed on macOS ARM64 with engine `26.11.1`:
+
+- Seven regression tests for the consumer POM validator and all six generated release POMs.
+- Java 11: 178 JDBC unit tests and all 30 Arrow tests, including 29 native integration tests.
+- A fresh `file://` consumer repository: no parent/BOM, transitive JDBC, native extraction
+  checksum verification, correct query results, loader error paths and Arrow reading.
+- Three-module signed snapshot dry run (JDBC, Arrow, macOS ARM64): twelve GPG signatures
+  verified with an isolated disposable test key. `skipUpload=true` stopped snapshot deployment;
+  publishing endpoints were also overridden to an unreachable localhost port for this test.
+
+These checks are not a four-platform CI dry run, a production-key check, a network upload,
+two independent external-project reports, legal approval, or a long-running concurrent soak.
+
 ## Running order
 
 The release owner selected `v1.1.0` as the first stable Java version on 2026-11-17,
@@ -65,8 +101,9 @@ not whether to carry on.
 | `CENTRAL_TOKEN_PASSWORD` | portal token password |
 
 **Done when:** `release.yml` run with `channel=snapshot` and `dry_run=true` produces a `.asc`
-for every artifact. That exercises staging on all four platforms, signing and packaging, and
-uploads nothing.
+for every library artifact. It exercises all four platforms, standalone POM validation, signing
+and the deploy lifecycle using Central plugin `0.12.0` with `skipUpload=true`. No artifacts
+are sent to Central; ordinary GitHub Actions staging and metadata artifacts are still uploaded.
 
 ### 4. Enable SNAPSHOTs for the namespace and publish a snapshot
 
@@ -256,9 +293,9 @@ scripts/verify-consumer.sh
 ```
 
 It deploys to a throwaway `file://` repository, builds a consumer project outside this checkout
-with its own empty local repository, imports the BOM, declares exactly one platform package with
-no version, and runs a query. It asserts that the POMs resolve from a repository, that the BOM
-supplies the versions, that `chdb-jdbc` arrives transitively, that the libraries are unpacked
+with its own empty local repository, declares exactly one platform package with an explicit
+version property, and runs a query. It asserts that standalone POMs resolve without a parent
+or BOM, that `chdb-jdbc` arrives transitively, that the libraries are unpacked
 from the JAR rather than read from `target/`, that their checksums match what
 `scripts/build-native.sh` staged, and that the "no platform package" and "wrong platform
 package" errors each name the coordinate the machine actually needs. `build` runs it on all
@@ -266,8 +303,8 @@ four platforms, so the answer cannot go stale between releases.
 
 **What the gate found on its first run**, which is the part issue #10 asks for:
 
-- The BOM import and the transitive `chdb-jdbc` dependency were already right, and are now
-  asserted rather than assumed.
+- Originally this checked a BOM import. Plan A now checks resolution without any parent or
+  BOM and preserves the transitive `chdb-jdbc` assertion.
 - **A snapshot deploy does not write the filenames a reactor build uses.** It writes
   `chdb-jdbc-<version>-<timestamp>-1.jar` plus a `maven-metadata.xml` that maps `-SNAPSHOT` onto
   that timestamp; without the metadata a consumer gets a 404 for a version that is demonstrably
@@ -444,8 +481,9 @@ them found real defects when first run.
 profile, the signing, the licence inventory, the four-platform assembly, and a local proof that
 the artifacts work when consumed from a repository rather than from the reactor.
 
-What is left is a DNS record on `chdb.org`, a decision about whose key signs, a licence answer
-from whoever owns the engine, two projects willing to depend on a snapshot, and a concurrent
-soak. The **Running order** at the top of this file is the sequence, because each of those can
+What remains is the configured Central publishing environment and production signing key,
+a licence answer from whoever owns the engine, two projects willing to depend on a snapshot,
+and concurrent soak plus the RC validation window. Namespace access was confirmed in the
+preceding Portal review. The **Running order** at the top of this file is the sequence, because each gate can
 invalidate the next; §3.1 is the part of Track 3 that blocks, and §3.2 is the part that does
 not.

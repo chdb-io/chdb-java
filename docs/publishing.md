@@ -1,12 +1,27 @@
 # Publishing runbook
 
-Everything needed to publish `com.clickhouse.chdb` artifacts. The first test version is
-`1.0.0-rc.1`, published to GitHub Packages; stable releases go to Maven Central once the
-ClickHouse Publisher Pro setup is ready.
+Everything needed to publish `com.clickhouse.chdb` artifacts. The current RC is
+`1.1.0-rc.1` on `maven.chdb.io`; the first stable release targets Maven Central after the
+credentials, configuration and release-readiness gates are complete.
 
 ---
 
 ## Status
+
+**Central preparation update (2026-11-18):** the Central configuration now selects only JDBC,
+Arrow and the four native platform modules. `flatten-maven-plugin` generates standalone
+consumer POMs during ordinary builds as well as releases, so neither the internal parent nor
+BOM is published to Central. The RC workflow below retains its historical parent/BOM layout.
+`scripts/check-consumer-poms.py` rejects unflattened or incomplete consumer metadata before
+Central upload. `checksums=required` avoids optional SHA-256/SHA-512 sidecars; GPG signatures
+remain required. The native libraries' embedded SHA-256 verification is unchanged.
+
+The Central plugin is pinned to `0.12.0`. A workflow dry run executes `deploy` with
+`-DskipUpload=true`, exercising staging without sending releases or snapshots to Central.
+It does not validate the account token or replace Sonatype's server-side validation. CI
+still stores native staging files and release metadata as GitHub Actions artifacts.
+Actual uploads keep `autoPublish=false`; release bundles wait for manual Portal approval.
+See `docs/release-readiness.md` for the current blockers and release-owner decisions.
 
 | | |
 |---|---|
@@ -15,9 +30,9 @@ ClickHouse Publisher Pro setup is ready.
 | GPG signing | **done and verified** — signs jar, sources, javadoc and pom |
 | Publishing plugin | **done** — `central-publishing-maven-plugin`, `autoPublish=false` |
 | Third-party licence inventory | **done** — generated from the engine, shipped in the package, drift-tested |
-| `com.clickhouse.chdb` namespace | **pending** — stable releases use the ClickHouse Central workspace |
+| `com.clickhouse.chdb` namespace | **confirmed in preceding Portal review** — Central upload not yet exercised |
 | A way to stage all four platforms for one release | **done** — `.github/workflows/release.yml`, issue #15 |
-| GitHub Packages RC publishing | **implemented** — `.github/workflows/rc-release.yml` |
+| Public Maven RC repository | **implemented** — `.github/workflows/rc-release.yml` stages for `maven.chdb.io` |
 | Proof that the artifacts work when consumed from a repository | **done, locally** — `scripts/verify-consumer.sh`, issue #10 |
 | GPG key for the project | **not started** — needs a decision about whose key |
 | Position on the LGPL components | **not started** — needs chdb-io |
@@ -113,8 +128,8 @@ and the publishing plugin talks to Sonatype. What it adds:
 
 - `maven-gpg-plugin` at `verify`, with `--pinentry-mode loopback` so the passphrase can come
   from a CI secret rather than a terminal.
-- `central-publishing-maven-plugin` with `autoPublish=false`. A release here spans seven
-  modules plus their parent POM and hundreds of megabytes; it cannot be unpublished. A human
+- `central-publishing-maven-plugin` with `autoPublish=false`. A release here spans six
+  library modules and hundreds of megabytes; it cannot be unpublished. A human
   confirming the bundle in the portal is worth
   the extra step, at least until several releases have gone out uneventfully.
 - Sources and javadoc jars. `chdb-jdbc` and `chdb-arrow` produce real ones. The four native packages produce
@@ -376,7 +391,7 @@ Each step can invalidate the next, so:
    ```
 
    That deploys to a throwaway `file://` repository and resolves from it in a project outside
-   this checkout, with its own empty local repository — so the POMs, the BOM import, the
+   this checkout, with its own empty local repository — so the standalone POMs (no parent/BOM), the
    transitive `chdb-jdbc` dependency, the unpack-from-JAR path and both "wrong platform
    package" error messages are all exercised against a repository rather than a reactor. What
    it cannot exercise is a network transfer: a `file://` deploy is a copy. **So the only thing

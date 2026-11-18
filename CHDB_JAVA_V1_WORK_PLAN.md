@@ -518,7 +518,7 @@ Exit condition: a Java user who knows nothing about the implementation can insta
 
 - [ ] Publish a Maven snapshot.
 - [ ] Have at least two external Java projects try the snapshot.
-- [ ] Verify the POM transitive dependencies and the BOM.
+- [ ] Verify standalone consumer POMs and transitive dependencies without an internal parent or BOM (Central plan A).
 - [ ] Verify sources, javadoc, signatures, licences and the SBOM.
 - [ ] Verify that a Maven Central download checksums identically to the CI artifact.
 - [ ] Verify the real download and first load on all four platforms.

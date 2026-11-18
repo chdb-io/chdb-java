@@ -20,6 +20,7 @@
   </description>
 
   <properties>
+    <maven.deploy.skip>false</maven.deploy.skip>
     <chdb.platform.id>linux-x86_64-gnu</chdb.platform.id>
     <chdb.platform.os>linux</chdb.platform.os>
     <chdb.platform.arch>x86_64</chdb.platform.arch>
