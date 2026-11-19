@@ -11,6 +11,10 @@ streaming, forward-only result sets over ClickHouse SQL.
 > [Arrow Java getting-started guide](chdb-arrow/README.md#getting-started) for examples
 > and [What works today](#what-works-today) for the JDBC release status.
 
+The [1.1.0 release notes and Central installation guide](docs/releases/1.1.0.md) describe the
+planned stable coordinates. They do not mean Portal publication has completed; the RC
+instructions below remain available while the stable release is being prepared.
+
 ```java
 try (Connection connection = DriverManager.getConnection("jdbc:chdb::memory:");
         PreparedStatement statement = connection.prepareStatement(
